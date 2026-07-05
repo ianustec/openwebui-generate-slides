@@ -1,13 +1,17 @@
 # Assets
 
-Metti qui gli screenshot usati dal README e dal post Reddit.
+Screenshots used by the README and the Reddit post.
 
-Suggeriti (esporta le slide come PNG da PowerPoint/LibreOffice):
+- `cover.png` — cover slide
+- `kpi.png` — `kpi_row` layout
+- `chart.png` — `chart` layout
+- `funnel.png` — `funnel` diagram
+- `hero.png` — 2x2 preview grid (used as the README banner and Reddit image)
 
-- `cover.png` — slide di copertina
-- `kpi.png` — layout `kpi_row`
-- `chart.png` — layout `chart`
-- `funnel.png` — diagramma `funnel`
-- `hero.png` — immagine di anteprima larga per il post Reddit (griglia 2x2 di slide)
+Regenerate them from the example deck:
 
-Formato consigliato: PNG 1600px di larghezza, sfondo reale delle slide.
+```bash
+python examples/build.py                                   # -> examples/demo_tech_deck.pptx
+soffice --headless --convert-to pdf examples/demo_tech_deck.pptx
+pdftoppm -png -r 150 demo_tech_deck.pdf slide              # one PNG per slide
+```
