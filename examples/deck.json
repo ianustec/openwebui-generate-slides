@@ -1,0 +1,133 @@
+{
+  "title": "Self-Hosted AI in Production",
+  "subtitle": "Shipping local LLMs with Open WebUI",
+  "author": "IANUSTEC",
+  "theme": "auto",
+  "footer": "IANUSTEC · 2026",
+  "slides": [
+    {
+      "layout": "cover",
+      "eyebrow": "TECH BRIEF 2026",
+      "title": "Self-Hosted AI in Production",
+      "subtitle": "How teams ship local LLMs with Open WebUI",
+      "author": "IANUSTEC",
+      "icon": "cpu",
+      "date": "April 2026",
+      "chips": ["Local LLMs", "Privacy-first", "Open source"]
+    },
+    {
+      "layout": "section",
+      "number": "01",
+      "eyebrow": "PART I",
+      "title": "Why self-host",
+      "lead": "Control, privacy and cost at scale"
+    },
+    {
+      "layout": "kpi_row",
+      "title": "The case in numbers",
+      "eyebrow": "PART I — CONTEXT",
+      "stats": [
+        { "value": "-63%", "label": "Inference cost vs. hosted APIs", "change": "at scale" },
+        { "value": "100%", "label": "Data stays on your infra", "change": "no egress" },
+        { "value": "8ms", "label": "Median network hop (LAN)", "change": "vs 120ms cloud" }
+      ]
+    },
+    {
+      "layout": "icon_grid_3",
+      "title": "What you gain",
+      "items": [
+        { "icon": "lock", "title": "Data control", "description": "Prompts and documents never leave your network." },
+        { "icon": "dollar-sign", "title": "Predictable cost", "description": "Fixed GPU spend instead of per-token billing." },
+        { "icon": "settings", "title": "Full customization", "description": "Swap models, add tools, tune the stack." }
+      ]
+    },
+    {
+      "layout": "comparison_two",
+      "title": "Local vs. Hosted",
+      "eyebrow": "PART I — TRADE-OFFS",
+      "columns": [
+        { "heading": "Self-hosted", "icon": "server", "highlight": true, "badge": "Recommended", "points": ["Data sovereignty", "Flat GPU cost", "Offline capable", "Model freedom"] },
+        { "heading": "Hosted API", "icon": "cloud", "points": ["Zero ops", "Instant scale", "Latest frontier models", "Pay per token"] }
+      ]
+    },
+    {
+      "layout": "chart",
+      "title": "Tokens/sec by GPU tier",
+      "eyebrow": "PART II — PERFORMANCE",
+      "chart_type": "bar",
+      "labels": ["RTX 4090", "L40S", "A100 80GB", "H100"],
+      "values": [78, 96, 132, 210],
+      "insight_title": "Takeaway",
+      "insight": [
+        "H100 nearly triples 4090 throughput.",
+        "L40S is the sweet spot for mid-size teams."
+      ]
+    },
+    {
+      "layout": "chart",
+      "title": "Monthly cost: local vs. API",
+      "eyebrow": "PART II — ECONOMICS",
+      "chart_type": "line",
+      "labels": ["Q1", "Q2", "Q3", "Q4"],
+      "datasets": [
+        { "label": "Self-hosted", "data": [4200, 4200, 4400, 4400] },
+        { "label": "Hosted API", "data": [3100, 5200, 8600, 13800] }
+      ],
+      "insight_title": "Break-even",
+      "insight": ["Self-hosting wins past moderate usage as API cost scales with traffic."]
+    },
+    {
+      "layout": "process_flow",
+      "title": "From prompt to answer",
+      "steps": [
+        { "when": "1", "title": "Ingest", "description": "Open WebUI receives the chat request." },
+        { "when": "2", "title": "Route", "description": "Gateway picks the model + tools." },
+        { "when": "3", "title": "Infer", "description": "Local LLM runs on your GPUs." },
+        { "when": "4", "title": "Return", "description": "Streamed response with citations." }
+      ]
+    },
+    {
+      "layout": "funnel",
+      "title": "Adoption journey",
+      "nodes": [
+        { "label": "Pilot", "description": "One team, one use case" },
+        { "label": "Rollout", "description": "SSO + shared models" },
+        { "label": "Tools", "description": "RAG, docs, automations" },
+        { "label": "Platform", "description": "Org-wide AI layer" }
+      ]
+    },
+    {
+      "layout": "table",
+      "title": "Reference stack",
+      "headers": ["Layer", "Component", "Notes"],
+      "rows": [
+        ["UI", "Open WebUI", "Chat, tools, RAG"],
+        ["Serving", "vLLM / Ollama", "OpenAI-compatible API"],
+        ["Models", "Llama / Qwen / Mistral", "Quantized for GPU fit"],
+        ["Infra", "Kubernetes + GPU", "Autoscaling workers"]
+      ]
+    },
+    {
+      "layout": "quote",
+      "quote": "Own your models, own your data, own your roadmap.",
+      "author": "Platform Engineering",
+      "role": "IANUSTEC"
+    },
+    {
+      "layout": "alert",
+      "level": "tip",
+      "title": "Ops tip",
+      "body": "Start with a single quantized model behind vLLM and measure tokens/sec under real load before scaling out GPUs. Right-size, then replicate."
+    },
+    {
+      "layout": "closing",
+      "eyebrow": "THANKS",
+      "title": "Build it open, run it yours",
+      "takeaways": [
+        "Self-hosting pays off as usage grows.",
+        "Open WebUI + tools = a real AI platform."
+      ],
+      "contact": "hello@ianustec.com"
+    }
+  ]
+}

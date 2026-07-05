@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pptx
+!examples/demo_tech_deck.pptx
+*.pdf
+.venv/
+.DS_Store
