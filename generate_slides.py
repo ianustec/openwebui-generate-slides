@@ -1,12 +1,12 @@
 """
-title: Genera Presentazione
+title: Generate Slides
 author: IANUSTEC
 author_url: https://ianustec.com
 funding_url: https://github.com/ianustec
-description: Genera presentazioni PowerPoint (.pptx) native di alta qualita da una spec JSON - grafica a layer, grafici nativi, icone, layout ricchi
+description: Generate high-quality native PowerPoint (.pptx) presentations from a JSON spec - layered graphics, native charts, icons, rich layouts
 requirements: python-pptx, pillow
 required_open_webui_version: 0.4.0
-version: 1.0.0
+version: 1.0.1
 license: MIT
 """
 
@@ -389,7 +389,7 @@ def _slugify(text: str, *, max_len: int = 60) -> str:
     t = t.lower()
     t = re.sub(r"[^a-z0-9]+", "-", t)
     t = re.sub(r"-{2,}", "-", t).strip("-")
-    return (t or "presentazione")[:max_len]
+    return (t or "presentation")[:max_len]
 
 
 def _as_list(val) -> list:
@@ -1483,7 +1483,7 @@ def _r_closing(deck, slide_dict, page):
     eb = _first(slide_dict, "eyebrow", "kicker", default="")
     if eb:
         _eyebrow(slide, t, eb, y=1.4, dark=True)
-    title = _first(slide_dict, "title", "heading", default="Grazie")
+    title = _first(slide_dict, "title", "heading", default="Thank you")
     tb, tf = _textbox(slide, MARGIN, 1.85, 9.5, 1.4)
     _add_para(tf, _strip_md(str(title)), first=True, size=40, color=t["on_dark"],
               bold=True, font=t["head_font"], line=1.03, space_after=0)
@@ -1721,25 +1721,25 @@ class Tools:
     class Valves(BaseModel):
         default_theme: str = Field(
             default="auto",
-            description="Tema di default (auto | midnight | forest | ocean | ...).",
+            description="Default theme (auto | midnight | forest | ocean | ...).",
         )
         footer_label: str = Field(
             default="",
-            description="Etichetta di default nel footer (override via spec.footer).",
+            description="Default footer label (overridden by spec.footer).",
         )
         unsplash_access_key: str = Field(
-            default="", description="Chiave Unsplash per immagini stock (opzionale)."
+            default="", description="Unsplash key for stock images (optional)."
         )
         image_generation: bool = Field(
-            default=False, description="Abilita generazione immagini AI via OpenWebUI."
+            default=False, description="Enable AI image generation via Open WebUI."
         )
         max_image_px: int = Field(
-            default=1600, description="Larghezza massima immagini (px)."
+            default=1600, description="Maximum image width (px)."
         )
-        emit_status: bool = Field(default=True, description="Emetti eventi di stato.")
+        emit_status: bool = Field(default=True, description="Emit status events.")
         pptx_export_dir: str = Field(
             default="/app/backend/data/cache/files",
-            description="Directory di fallback per il salvataggio.",
+            description="Fallback directory for saving.",
         )
 
     # -- status / link helpers -------------------------------------------
@@ -1756,8 +1756,8 @@ class Tools:
         if not emitter:
             return
         msg = (
-            f"\n\n---\n\n\U0001F4CA **Presentazione pronta** · {slides} slide · {kb} KB\n\n"
-            f"\U0001F4E5 [Scarica {fname}]({url})\n\n---\n"
+            f"\n\n---\n\n\U0001F4CA **Presentation ready** · {slides} slides · {kb} KB\n\n"
+            f"\U0001F4E5 [Download {fname}]({url})\n\n---\n"
         )
         try:
             await emitter({"type": "message", "data": {"content": msg}})
@@ -1768,7 +1768,7 @@ class Tools:
         slug = _slugify(title)
         day = datetime.now(timezone.utc).strftime("%Y%m%d")
         short = uuid.uuid4().hex[:6]
-        filename = f"presentazione-{slug}_{day}_{short}.pptx"
+        filename = f"presentation-{slug}_{day}_{short}.pptx"
         if _HAS_OWUI_FILES and request is not None and user_dict:
             try:
                 user_model = Users.get_user_by_id(user_dict["id"])
@@ -1806,18 +1806,18 @@ class Tools:
     @staticmethod
     def _error(msg: str) -> str:
         return (
-            "[TOOL_RESULT — usa il testo qui sotto come risposta finale, "
-            "senza questa riga di istruzione.]\n\n"
-            f"Non sono riuscito a generare la presentazione: {msg}"
+            "[TOOL_RESULT — use the text below as your final reply, "
+            "without this instruction line.]\n\n"
+            f"I couldn't generate the presentation: {msg}"
         )
 
     @staticmethod
     def _success(fname: str, url: str) -> str:
         return (
-            "[TOOL_RESULT — riproduci il link markdown qui sotto come tua "
-            "risposta finale, per permettere all'utente di scaricare il file. "
-            "Non includere questa riga.]\n\n"
-            "Ecco la presentazione:\n\n"
+            "[TOOL_RESULT — reproduce the markdown link below as your final "
+            "reply, so the user can download the file. "
+            "Do not include this line.]\n\n"
+            "Here is the presentation:\n\n"
             f"[{fname}]({url})"
         )
 
@@ -1894,71 +1894,71 @@ class Tools:
         __metadata__: Any = None,
         __request__: Any = None,
     ) -> str:
-        """Crea una presentazione PowerPoint (.pptx) NATIVA di alta qualita e
-        restituisce un link di download. Usa questo strumento ogni volta che
-        l'utente chiede slide, una presentazione, un deck, un pitch o simili.
+        """Create a high-quality NATIVE PowerPoint (.pptx) presentation and
+        return a download link. Use this tool whenever the user asks for slides,
+        a presentation, a deck, a pitch or similar.
 
-        Il parametro `content` DEVE essere UNA SOLA stringa JSON (nessun testo
-        prima o dopo, nessun blocco markdown). Struttura:
+        The `content` parameter MUST be a SINGLE JSON string (no text before or
+        after, no markdown fence). Structure:
 
         {
-          "title": "Titolo della presentazione",
-          "subtitle": "Sottotitolo (opzionale)",
-          "author": "Autore / studio (opzionale)",
+          "title": "Presentation title",
+          "subtitle": "Subtitle (optional)",
+          "author": "Author / company (optional)",
           "theme": "auto",              // auto | midnight | forest | ocean |
                                         // coral | terracotta | teal | berry |
                                         // sage | cherry | charcoal | slate
-          "accent": "#C99A3B",          // opz.: forza il colore accento
-          "footer": "Etichetta footer",  // opz.
+          "accent": "#C99A3B",          // opt: force the accent color
+          "footer": "Footer label",      // opt
           "slides": [ { "layout": "...", ... }, ... ]
         }
 
-        Ogni slide ha un `layout` e i campi coerenti col layout. Campi comuni:
-        `title`, `eyebrow` (occhiello es. "PARTE I"), `subtitle`.
+        Each slide has a `layout` and fields consistent with that layout. Common
+        fields: `title`, `eyebrow` (kicker, e.g. "PART I"), `subtitle`.
 
-        LAYOUT DISPONIBILI e campi principali:
+        AVAILABLE LAYOUTS and main fields:
         - "cover":        title, subtitle, author, eyebrow, icon, date, chips[]
-        - "section":      number ("01"), eyebrow, title, lead   (divisore capitolo)
-        - "title_bullets":title, eyebrow, bullets[] (o points/items)
-        - "title_body":   title, eyebrow, body (paragrafi separati da \n)
-        - "two_column_text"/"comparison_two": left{}, right{} OPPURE columns[];
-              ogni card: {heading, icon, subtitle, description, points[],
-              highlight:true, badge:"Piu scelto"}
-        - "kpi_row":      title, stats[] con {value, label, change}
-        - "timeline_horizontal"/"process_flow": steps[] con {when, title, description}
-        - "icon_list_vertical": items[] con {icon, title, description}
-        - "icon_grid_2x2"/"icon_grid_3"/"pillars": items[] con {icon, title, description}
+        - "section":      number ("01"), eyebrow, title, lead   (chapter divider)
+        - "title_bullets":title, eyebrow, bullets[] (or points/items)
+        - "title_body":   title, eyebrow, body (paragraphs separated by \n)
+        - "two_column_text"/"comparison_two": left{}, right{} OR columns[];
+              each card: {heading, icon, subtitle, description, points[],
+              highlight:true, badge:"Most chosen"}
+        - "kpi_row":      title, stats[] with {value, label, change}
+        - "timeline_horizontal"/"process_flow": steps[] with {when, title, description}
+        - "icon_list_vertical": items[] with {icon, title, description}
+        - "icon_grid_2x2"/"icon_grid_3"/"pillars": items[] with {icon, title, description}
         - "chart":        chart_type (bar|line|area|pie|doughnut|radar|stacked_bar),
-              labels[] e values[]  OPPURE  datasets[]{label,data[]};
-              opz. insight[]/insight_title per testo laterale
-        - "funnel"/"pyramid"/"cycle"/"quadrant"/"bullseye": nodes[] con
-              {label, description}; quadrant accetta x_axis/y_axis e points[]
+              labels[] and values[]  OR  datasets[]{label,data[]};
+              opt. insight[]/insight_title for side text
+        - "funnel"/"pyramid"/"cycle"/"quadrant"/"bullseye": nodes[] with
+              {label, description}; quadrant accepts x_axis/y_axis and points[]
         - "quote":        quote, author, role
-        - "alert":        title, level (info|tip|warning|danger), body o bullets[]
-        - "table":        headers[], rows[] (liste o lista di dict)
+        - "alert":        title, level (info|tip|warning|danger), body or bullets[]
+        - "table":        headers[], rows[] (lists or list of dicts)
         - "text_image_right"/"image_left_text_right": title, bullets[]/body,
-              image_hint ("query stock") o image_url o base64
+              image_hint ("stock query") or image_url or base64
         - "image_full_caption": title, subtitle, image_hint/image_url
         - "closing":      title, eyebrow, takeaways[], contact
 
-        LINEE GUIDA DI DESIGN (rispettale):
-        - Struttura "a sandwich": inizia con "cover", usa "section" tra i macro-
-          temi, chiudi con "closing". Alterna layout: NON ripetere la stessa
-          slide di elenco puntato di fila.
-        - 3-6 bullet per slide, brevi. Preferisci dati/numeri: usa "kpi_row",
-          "chart", "funnel"/"pyramid" invece di lunghi elenchi.
-        - Usa `eyebrow` per numerare le parti ("PARTE I — CONTESTO").
-        - Icone: nomi tipo target, rocket, lightbulb, shield, lock, users,
+        DESIGN GUIDELINES (follow them):
+        - "Sandwich" structure: start with "cover", use "section" between macro
+          topics, end with "closing". Alternate layouts: do NOT repeat the same
+          bulleted-list slide back to back.
+        - 3-6 short bullets per slide. Prefer data/numbers: use "kpi_row",
+          "chart", "funnel"/"pyramid" instead of long lists.
+        - Use `eyebrow` to number the parts ("PART I — CONTEXT").
+        - Icons: names like target, rocket, lightbulb, shield, lock, users,
           trending-up, bar-chart, cloud, cpu, dollar-sign, check-circle, award,
           layers, scale, workflow, globe, calendar, book-open, settings.
-        - Scegli `theme:"auto"` se non specificato: viene dedotto dal contenuto.
-        - 10-18 slide per un deck completo; non generare muri di testo.
+        - Choose `theme:"auto"` if unspecified: it is inferred from the content.
+        - 10-18 slides for a full deck; do not generate walls of text.
 
-        Restituisce una riga [TOOL_RESULT ...] con il link markdown da mostrare
-        all'utente per scaricare il .pptx.
+        Returns a [TOOL_RESULT ...] line with the markdown link to show the user
+        so they can download the .pptx.
         """
         if not _HAS_PPTX:
-            return self._error("python-pptx non e installato nel runtime.")
+            return self._error("python-pptx is not installed in the runtime.")
         # parse + salvage
         try:
             spec = json.loads(content) if isinstance(content, str) else content
@@ -1972,35 +1972,35 @@ class Tools:
             try:
                 spec = json.loads(cleaned.strip())
             except json.JSONDecodeError as exc:
-                return self._error(f"JSON non valido: {exc}")
+                return self._error(f"Invalid JSON: {exc}")
         if not isinstance(spec, dict):
-            return self._error("Il parametro `content` deve essere un oggetto JSON.")
+            return self._error("The `content` parameter must be a JSON object.")
         if spec.get("theme") in (None, "") and self.valves.default_theme:
             spec["theme"] = self.valves.default_theme
 
-        await self._emit(__event_emitter__, "Generazione presentazione...", done=False)
+        await self._emit(__event_emitter__, "Generating presentation...", done=False)
         try:
             _pf = [s for s in _as_list(_first(spec, "slides", "sections", "pages",
                                               "deck", default=[])) if isinstance(s, dict)]
             if any(_resolve_layout(s) in ("image_full_caption", "image_grid",
                    "text_image_right", "image_left_text_right") for s in _pf):
-                await self._emit(__event_emitter__, "Recupero immagini...", done=False)
+                await self._emit(__event_emitter__, "Fetching images...", done=False)
                 await self._prefetch_images(_pf, __request__, __user__)
             data, n = self._build(spec)
         except Exception as exc:
             import traceback
             traceback.print_exc()
-            return self._error(f"Errore di rendering: {exc}")
+            return self._error(f"Rendering error: {exc}")
 
-        await self._emit(__event_emitter__, "Salvataggio file...", done=False)
-        fname, url, err = self._save(data, title=spec.get("title", "presentazione"),
+        await self._emit(__event_emitter__, "Saving file...", done=False)
+        fname, url, err = self._save(data, title=spec.get("title", "presentation"),
                                      request=__request__, user_dict=__user__)
         if not url:
-            await self._emit(__event_emitter__, "Salvataggio fallito.", done=True)
-            return self._error(f"Presentazione creata ma salvataggio fallito ({err}).")
+            await self._emit(__event_emitter__, "Save failed.", done=True)
+            return self._error(f"Presentation created but saving failed ({err}).")
         await self._emit_link(__event_emitter__, fname, url, slides=n,
                               kb=max(1, round(len(data) / 1024)))
-        await self._emit(__event_emitter__, "Presentazione pronta.", done=True)
+        await self._emit(__event_emitter__, "Presentation ready.", done=True)
         return self._success(fname, url)
 
 
@@ -2132,11 +2132,11 @@ def _normalize_chart(slide: dict):
         if isinstance(vals, list) and vals and isinstance(vals[0], dict):
             # [{label,value}]
             labels = [_first(d, "label", "name", "title", "x", default="") for d in vals]
-            series = [(_first(slide, "series_label", "dataset_label", default="Valore"),
+            series = [(_first(slide, "series_label", "dataset_label", default="Value"),
                        [_num(_first(d, "value", "y", "amount", "count", default=0)) for d in vals],
                        None)]
         elif isinstance(vals, list):
-            series = [(_first(slide, "series_label", "dataset_label", default="Valore"),
+            series = [(_first(slide, "series_label", "dataset_label", default="Value"),
                        [_num(v) for v in vals], None)]
 
     if not labels:
@@ -2145,12 +2145,12 @@ def _normalize_chart(slide: dict):
             arr = slide.get(key)
             if isinstance(arr, list) and arr and isinstance(arr[0], dict):
                 labels = [_first(d, "label", "name", "title", "x", default="") for d in arr]
-                series = [("Valore", [_num(_first(d, "value", "y", "amount", default=0)) for d in arr], None)]
+                series = [("Value", [_num(_first(d, "value", "y", "amount", default=0)) for d in arr], None)]
                 break
 
     labels = [str(lb) for lb in _as_list(labels)] if labels else []
     if not series and labels:
-        series = [("Valore", [0.0] * len(labels), None)]
+        series = [("Value", [0.0] * len(labels), None)]
     return ctype, labels, series
 
 
