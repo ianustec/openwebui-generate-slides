@@ -6,7 +6,7 @@ funding_url: https://github.com/ianustec
 description: Generate high-quality native PowerPoint (.pptx) presentations from a JSON spec - layered graphics, native charts, icons, rich layouts
 requirements: python-pptx, pillow
 required_open_webui_version: 0.4.0
-version: 1.0.1
+version: 1.0.2
 license: MIT
 """
 
@@ -2234,10 +2234,15 @@ def _style_chart(chart, theme, ctype, *, single_series, want_labels=True):
                 dl.show_percentage = True
                 dl.show_value = False
                 dl.font.bold = True
-                try:
-                    dl.position = XL_LABEL_POSITION.CENTER
-                except Exception:
-                    pass
+                # NOTE: doughnut charts do NOT allow ``<c:dLblPos>``. Emitting it
+                # makes PowerPoint report a content error, "repair" the file and
+                # drop the chart (the slide then looks empty). Only pie charts
+                # accept a data-label position.
+                if ctype == "PIE":
+                    try:
+                        dl.position = XL_LABEL_POSITION.CENTER
+                    except Exception:
+                        pass
             if ctype == "DOUGHNUT":
                 try:
                     chart.plots[0].gap_width = 0
