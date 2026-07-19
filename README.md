@@ -1,5 +1,7 @@
 # Generate Slides — Native PPTX engine for Open WebUI
 
+> Part of **[NEURA Office](https://github.com/ianustec/neura-office)**: native Word, PowerPoint and Excel for Open WebUI.
+
 A [Open WebUI](https://github.com/open-webui/open-webui) **Tool** that generates
 **native PowerPoint (.pptx)** presentations from a JSON spec produced by the model.
 It doesn't export HTML or images: it builds the slides directly with `python-pptx`,
