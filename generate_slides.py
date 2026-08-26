@@ -973,7 +973,7 @@ async def _ai_image(prompt: str, request, user_dict) -> Optional[bytes]:
     if not (_HAS_OWUI_IMAGES and request is not None and user_dict and prompt):
         return None
     try:
-        user_model = Users.get_user_by_id(user_dict["id"]) if _HAS_OWUI_FILES else None
+        user_model = await Users.get_user_by_id(user_dict["id"]) if _HAS_OWUI_FILES else None
         res = await _owui_image_generations(
             request=request, form_data=_OwuiImageForm(prompt=prompt), user=user_model
         )
@@ -984,7 +984,7 @@ async def _ai_image(prompt: str, request, user_dict) -> Optional[bytes]:
             if u and u.startswith("/"):
                 # local cache path
                 path = u.lstrip("/")
-                for base in ("/app/backend/data", ""):
+                for base in (os.environ.get("DATA_DIR", "/app/backend/data"), ""):
                     fp = os.path.join(base, path) if base else path
                     if os.path.isfile(fp):
                         with open(fp, "rb") as fh:
@@ -1738,7 +1738,11 @@ class Tools:
         )
         emit_status: bool = Field(default=True, description="Emit status events.")
         pptx_export_dir: str = Field(
-            default="/app/backend/data/cache/files",
+            default=os.path.join(
+                os.environ.get("DATA_DIR", "/app/backend/data"),
+                "cache",
+                "files",
+            ),
             description="Fallback directory for saving.",
         )
 
@@ -1764,14 +1768,14 @@ class Tools:
         except Exception:
             pass
 
-    def _save(self, data: bytes, *, title, request, user_dict):
+    async def _save(self, data: bytes, *, title, request, user_dict):
         slug = _slugify(title)
         day = datetime.now(timezone.utc).strftime("%Y%m%d")
         short = uuid.uuid4().hex[:6]
         filename = f"presentation-{slug}_{day}_{short}.pptx"
         if _HAS_OWUI_FILES and request is not None and user_dict:
             try:
-                user_model = Users.get_user_by_id(user_dict["id"])
+                user_model = await Users.get_user_by_id(user_dict["id"])
                 if user_model:
                     upload = UploadFile(
                         file=BytesIO(data),
@@ -1782,7 +1786,7 @@ class Tools:
                                 "presentationml.presentation"
                         }),
                     )
-                    item = upload_file_handler(request=request, file=upload,
+                    item = await upload_file_handler(request=request, file=upload,
                                                metadata={}, process=False,
                                                user=user_model)
                     fid = getattr(item, "id", None) if item else None
@@ -1791,7 +1795,7 @@ class Tools:
             except Exception as exc:
                 print(f"[generate_slides] Files API save failed: {exc}")
         export_dir = (self.valves.pptx_export_dir or "").strip() or \
-            "/app/backend/data/cache/files"
+            os.path.join(os.environ.get("DATA_DIR", "/app/backend/data"), "cache", "files")
         try:
             os.makedirs(export_dir, mode=0o775, exist_ok=True)
             path = os.path.join(export_dir, filename)
@@ -1993,7 +1997,7 @@ class Tools:
             return self._error(f"Rendering error: {exc}")
 
         await self._emit(__event_emitter__, "Saving file...", done=False)
-        fname, url, err = self._save(data, title=spec.get("title", "presentation"),
+        fname, url, err = await self._save(data, title=spec.get("title", "presentation"),
                                      request=__request__, user_dict=__user__)
         if not url:
             await self._emit(__event_emitter__, "Save failed.", done=True)
