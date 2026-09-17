@@ -6,7 +6,7 @@ funding_url: https://github.com/ianustec
 description: Generate high-quality native PowerPoint (.pptx) presentations from a JSON spec - layered graphics, native charts, icons, rich layouts
 requirements: python-pptx, pillow
 required_open_webui_version: 0.4.0
-version: 1.0.2
+version: 1.0.3
 license: MIT
 """
 
@@ -24,6 +24,8 @@ license: MIT
 # License: MIT — Copyright (c) IANUSTEC.
 # ============================================================================
 
+import inspect
+import logging
 import os
 import re
 import json
@@ -86,6 +88,28 @@ try:
     _HAS_OWUI_IMAGES = True
 except Exception:
     _HAS_OWUI_IMAGES = False
+
+log = logging.getLogger(__name__)
+
+
+async def _maybe_await(value):
+    """Await coroutines; pass through sync return values (OWUI v0.6 vs v0.11)."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _extract_file_id(item) -> Optional[str]:
+    """FileModel.id or dict['id'] from upload_file_handler."""
+    if not item:
+        return None
+    fid = getattr(item, "id", None)
+    if fid:
+        return str(fid)
+    if isinstance(item, dict):
+        fid = item.get("id")
+        return str(fid) if fid else None
+    return None
 
 
 # ============================================================================
@@ -1752,9 +1776,19 @@ class Tools:
                 pass
 
     @staticmethod
-    async def _emit_link(emitter, fname, url, *, slides=0, kb=0):
+    async def _emit_link(emitter, fname, url, *, slides=0, kb=0, file_id=None):
         if not emitter:
             return
+        file_entry = {"type": "file", "url": url, "name": fname}
+        if file_id:
+            file_entry["id"] = file_id
+        try:
+            await emitter({
+                "type": "files",
+                "data": {"files": [file_entry]},
+            })
+        except Exception:
+            pass
         msg = (
             f"\n\n---\n\n\U0001F4CA **Presentation ready** · {slides} slides · {kb} KB\n\n"
             f"\U0001F4E5 [Download {fname}]({url})\n\n---\n"
@@ -1764,17 +1798,20 @@ class Tools:
         except Exception:
             pass
 
-    def _save(self, data: bytes, *, title, request, user_dict):
+    async def _save(self, data: bytes, *, title, request, user_dict):
         slug = _slugify(title)
         day = datetime.now(timezone.utc).strftime("%Y%m%d")
         short = uuid.uuid4().hex[:6]
         filename = f"presentation-{slug}_{day}_{short}.pptx"
-        if _HAS_OWUI_FILES and request is not None and user_dict:
+        user_id = (user_dict or {}).get("id") if isinstance(user_dict, dict) else None
+        if _HAS_OWUI_FILES and request is not None and user_id:
             try:
-                user_model = Users.get_user_by_id(user_dict["id"])
+                user_model = await _maybe_await(Users.get_user_by_id(user_id))
                 if user_model:
+                    buf = BytesIO(data)
+                    buf.seek(0)
                     upload = UploadFile(
-                        file=BytesIO(data),
+                        file=buf,
                         filename=filename,
                         headers=Headers({
                             "content-type":
@@ -1782,14 +1819,32 @@ class Tools:
                                 "presentationml.presentation"
                         }),
                     )
-                    item = upload_file_handler(request=request, file=upload,
-                                               metadata={}, process=False,
-                                               user=user_model)
-                    fid = getattr(item, "id", None) if item else None
+                    item = await _maybe_await(upload_file_handler(
+                        request=request, file=upload,
+                        metadata={}, process=False,
+                        user=user_model,
+                    ))
+                    fid = _extract_file_id(item)
                     if fid:
-                        return filename, f"/api/v1/files/{fid}/content", None
-            except Exception as exc:
-                print(f"[generate_slides] Files API save failed: {exc}")
+                        return filename, f"/api/v1/files/{fid}/content", None, fid
+                    log.warning(
+                        "[generate_slides] Files API returned no file id "
+                        "(type=%s)",
+                        type(item).__name__,
+                    )
+                else:
+                    log.warning(
+                        "[generate_slides] user not found for Files API: %s",
+                        user_id,
+                    )
+            except Exception:
+                log.exception("[generate_slides] Files API save failed")
+        elif not _HAS_OWUI_FILES:
+            log.debug("[generate_slides] Open WebUI Files API unavailable")
+        elif request is None or not user_id:
+            log.debug(
+                "[generate_slides] missing request or user id for Files API"
+            )
         export_dir = (self.valves.pptx_export_dir or "").strip() or \
             "/app/backend/data/cache/files"
         try:
@@ -1798,10 +1853,13 @@ class Tools:
             with open(path, "wb") as fh:
                 fh.write(data)
             if os.path.isfile(path) and os.path.getsize(path) > 0:
-                return filename, f"/cache/files/{filename}", None
+                log.warning(
+                    "[generate_slides] saved via cache fallback: %s", filename
+                )
+                return filename, f"/cache/files/{filename}", None, None
         except Exception as exc:
-            return filename, None, str(exc)
-        return filename, None, "impossibile salvare"
+            return filename, None, str(exc), None
+        return filename, None, "impossibile salvare", None
 
     @staticmethod
     def _error(msg: str) -> str:
@@ -1993,13 +2051,16 @@ class Tools:
             return self._error(f"Rendering error: {exc}")
 
         await self._emit(__event_emitter__, "Saving file...", done=False)
-        fname, url, err = self._save(data, title=spec.get("title", "presentation"),
-                                     request=__request__, user_dict=__user__)
+        fname, url, err, file_id = await self._save(
+            data, title=spec.get("title", "presentation"),
+            request=__request__, user_dict=__user__,
+        )
         if not url:
             await self._emit(__event_emitter__, "Save failed.", done=True)
             return self._error(f"Presentation created but saving failed ({err}).")
         await self._emit_link(__event_emitter__, fname, url, slides=n,
-                              kb=max(1, round(len(data) / 1024)))
+                              kb=max(1, round(len(data) / 1024)),
+                              file_id=file_id)
         await self._emit(__event_emitter__, "Presentation ready.", done=True)
         return self._success(fname, url)
 
