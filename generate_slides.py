@@ -997,7 +997,11 @@ async def _ai_image(prompt: str, request, user_dict) -> Optional[bytes]:
     if not (_HAS_OWUI_IMAGES and request is not None and user_dict and prompt):
         return None
     try:
-        user_model = Users.get_user_by_id(user_dict["id"]) if _HAS_OWUI_FILES else None
+        user_model = (
+            await _maybe_await(Users.get_user_by_id(user_dict["id"]))
+            if _HAS_OWUI_FILES
+            else None
+        )
         res = await _owui_image_generations(
             request=request, form_data=_OwuiImageForm(prompt=prompt), user=user_model
         )
