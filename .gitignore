@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 *.pptx
 !examples/demo_tech_deck.pptx
+!examples/fixtures/*.pptx
 *.pdf
+examples/output/
+doc/online_templates/inspect_output/
 .venv/
 .DS_Store

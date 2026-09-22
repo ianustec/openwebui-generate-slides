@@ -1,0 +1,4 @@
+# Pin for reproducible NF5 baseline (check_baseline.py / build.py)
+pydantic==2.13.5
+python-pptx==1.0.2
+pillow==12.3.0

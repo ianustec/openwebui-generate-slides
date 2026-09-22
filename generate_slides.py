@@ -33,8 +33,11 @@ import uuid
 import base64
 import unicodedata
 from datetime import datetime, timezone
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from io import BytesIO
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Iterator, Optional
 
 from pydantic import BaseModel, Field
 
@@ -44,7 +47,8 @@ try:
     from pptx.util import Inches, Pt  # type: ignore
     from pptx.dml.color import RGBColor  # type: ignore
     from pptx.enum.text import PP_ALIGN, MSO_ANCHOR  # type: ignore
-    from pptx.enum.shapes import MSO_SHAPE  # type: ignore
+    from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE  # type: ignore
+    from pptx.enum.dml import MSO_FILL_TYPE  # type: ignore
     from pptx.oxml.ns import qn  # type: ignore
     from pptx.chart.data import CategoryChartData  # type: ignore
     from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION, XL_LABEL_POSITION  # type: ignore
@@ -79,6 +83,25 @@ try:
     _HAS_OWUI_FILES = True
 except Exception:
     _HAS_OWUI_FILES = False
+
+# --- OpenWebUI file download (reference template) ---------------------------
+_HAS_OWUI_FILE_DOWNLOAD = False
+_OwuiFiles = None
+_OwuiStorage = None
+try:
+    from open_webui.models.files import Files as _OwuiFiles  # type: ignore
+    from open_webui.storage.provider import Storage as _OwuiStorage  # type: ignore
+
+    _HAS_OWUI_FILE_DOWNLOAD = True
+except Exception:
+    pass
+
+_REFERENCE_PPTX_MAX_BYTES = 25 * 1024 * 1024
+_PPTX_EXTENSIONS = (".pptx", ".potx")
+_PPTX_MIMES = (
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-powerpoint",
+)
 
 # --- OpenWebUI AI image generation (optional) -------------------------------
 try:
@@ -1048,6 +1071,927 @@ async def _resolve_one_image(item, valves, request, user_dict, ratio=1.4):
 
 
 # ============================================================================
+# Template engine (parse reference .pptx — Fase 1)
+# ----------------------------------------------------------------------------
+# Dual path geometry:
+#   Classic mode: fixed MARGIN / FOOTER_Y / CONTENT_* constants in renderers.
+#   Template mode: content frame from deck.frame (parsed reference .pptx).
+# Activation requires AND: valves.template_mode_enabled + reference_file_id +
+# successful parse/clone (clone wired in later phases).
+# ============================================================================
+
+TEMPLATE_MARGIN_IN = 0.15
+TEMPLATE_FOOTER_RESERVE_IN = 0.35
+SAFE_ZONE_METHOD = "max_empty_rect"
+_SAFE_ZONE_MIN_AREA_SQ_IN = 1.0
+# Edge-grid is O(n^4) in decoration count; Slidesgo decks can have 100+ shapes/slide.
+_MAX_SAFE_ZONE_GRID_CELLS = 2_000_000
+
+
+@dataclass
+class _BBox:
+    x: float
+    y: float
+    w: float
+    h: float
+    method: Optional[str] = None
+
+
+@dataclass
+class _ShapeRecord:
+    id: int
+    kind: str
+    name: str
+    bbox: _BBox
+    has_text: bool
+    text: Optional[str]
+    z_order: int
+
+
+@dataclass
+class _Decoration:
+    shape_id: int
+    kind: str
+    name: str
+    bbox: _BBox
+    z_order: int
+
+
+@dataclass
+class _SlideTemplate:
+    index: int
+    shapes: list[_ShapeRecord] = field(default_factory=list)
+    decorations: list[_Decoration] = field(default_factory=list)
+    text_verbatim: list[str] = field(default_factory=list)
+    safe_zone: Optional[_BBox] = None
+    background: dict = field(default_factory=dict)
+    shape_count: int = 0
+    picture_count: int = 0
+
+
+@dataclass
+class _TemplatePack:
+    slide_width_in: float
+    slide_height_in: float
+    slides: list[_SlideTemplate] = field(default_factory=list)
+    theme: dict = field(default_factory=dict)
+    decorations_source: str = "slide"
+
+
+def _emu_in(emu: int) -> float:
+    return float(emu) / EMU_IN
+
+
+def _shape_bbox(shape) -> _BBox:
+    return _BBox(
+        x=_emu_in(shape.left),
+        y=_emu_in(shape.top),
+        w=_emu_in(shape.width),
+        h=_emu_in(shape.height),
+    )
+
+
+def _shape_kind(shape) -> str:
+    if not _HAS_PPTX:
+        return "unsupported"
+    try:
+        st = shape.shape_type
+    except Exception:
+        return "unsupported"
+    mapping = {
+        MSO_SHAPE_TYPE.PICTURE: "picture",
+        MSO_SHAPE_TYPE.TEXT_BOX: "textbox",
+        MSO_SHAPE_TYPE.AUTO_SHAPE: "autoshape",
+        MSO_SHAPE_TYPE.GROUP: "group",
+        MSO_SHAPE_TYPE.CHART: "chart",
+        MSO_SHAPE_TYPE.TABLE: "table",
+        MSO_SHAPE_TYPE.LINE: "connector",
+        MSO_SHAPE_TYPE.FREEFORM: "autoshape",
+        MSO_SHAPE_TYPE.PLACEHOLDER: "textbox",
+    }
+    return mapping.get(st, "unsupported")
+
+
+def _shape_text(shape) -> Optional[str]:
+    if not getattr(shape, "has_text_frame", False):
+        return None
+    try:
+        tf = shape.text_frame
+        parts = []
+        for para in tf.paragraphs:
+            t = (para.text or "").strip()
+            if t:
+                parts.append(t)
+        if not parts:
+            raw = (tf.text or "").strip()
+            return raw or None
+        return "\n".join(parts)
+    except Exception:
+        return None
+
+
+def _group_child_shapes(shape) -> list:
+    try:
+        if _HAS_PPTX and shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            return list(shape.shapes)
+    except Exception:
+        pass
+    return []
+
+
+def _is_text_shape(shape) -> bool:
+    if not _HAS_PPTX:
+        return False
+    children = _group_child_shapes(shape)
+    if children:
+        return any(_is_text_shape(ch) for ch in children)
+    try:
+        if getattr(shape, "is_placeholder", False):
+            return True
+    except Exception:
+        pass
+    try:
+        if shape.shape_type == MSO_SHAPE_TYPE.PLACEHOLDER:
+            return True
+    except Exception:
+        pass
+    txt = _shape_text(shape)
+    if txt:
+        return True
+    try:
+        if shape.shape_type == MSO_SHAPE_TYPE.TEXT_BOX and shape.has_text_frame:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _iter_shapes(
+    slide, *, flatten_groups: bool = True
+) -> Iterator[tuple[Any, int]]:
+    """Yield (shape, z_order) in deterministic slide order."""
+    z = 0
+    for shape in slide.shapes:
+        if flatten_groups and _group_child_shapes(shape):
+            for ch in _group_child_shapes(shape):
+                yield ch, z
+                z += 1
+        else:
+            yield shape, z
+            z += 1
+
+
+def _shape_to_record(shape, z_order: int) -> _ShapeRecord:
+    txt = _shape_text(shape)
+    kind = _shape_kind(shape)
+    has_text = bool(txt) or _is_text_shape(shape)
+    sid = int(getattr(shape, "shape_id", 0) or 0)
+    name = str(getattr(shape, "name", "") or "")
+    return _ShapeRecord(
+        id=sid,
+        kind=kind,
+        name=name,
+        bbox=_shape_bbox(shape),
+        has_text=has_text,
+        text=txt,
+        z_order=z_order,
+    )
+
+
+def _extract_decorations(slide) -> list[_Decoration]:
+    out: list[_Decoration] = []
+    for z, shape in enumerate(slide.shapes):
+        if _is_text_shape(shape):
+            continue
+        sid = int(getattr(shape, "shape_id", 0) or 0)
+        out.append(
+            _Decoration(
+                shape_id=sid,
+                kind=_shape_kind(shape),
+                name=str(getattr(shape, "name", "") or ""),
+                bbox=_shape_bbox(shape),
+                z_order=z,
+            )
+        )
+    return out
+
+
+def _rgb_to_hex(rgb) -> Optional[str]:
+    if rgb is None:
+        return None
+    try:
+        return f"{int(rgb[0]):02X}{int(rgb[1]):02X}{int(rgb[2]):02X}"
+    except Exception:
+        return None
+
+
+def _theme_color_from_element(el) -> Optional[str]:
+    if el is None:
+        return None
+    try:
+        srgb = el.find(qn("a:srgbClr"))
+        if srgb is not None and srgb.get("val"):
+            return str(srgb.get("val")).upper()
+        sys_clr = el.find(qn("a:sysClr"))
+        if sys_clr is not None and sys_clr.get("lastClr"):
+            return str(sys_clr.get("lastClr")).upper()
+    except Exception:
+        pass
+    return None
+
+
+def _extract_theme_from_prs(prs) -> dict:
+    theme = {
+        "dk1": None,
+        "lt1": None,
+        "accent1": None,
+        "major_font": "Calibri",
+        "minor_font": "Calibri",
+    }
+    try:
+        theme_part = prs.slide_master.part.theme_part
+        root = theme_part.element
+        clr_scheme = root.find(".//" + qn("a:clrScheme"))
+        if clr_scheme is not None:
+            for key, tag in (
+                ("dk1", "a:dk1"),
+                ("lt1", "a:lt1"),
+                ("accent1", "a:accent1"),
+            ):
+                node = clr_scheme.find(qn(tag))
+                val = _theme_color_from_element(node)
+                if val:
+                    theme[key] = val
+        font_scheme = root.find(".//" + qn("a:fontScheme"))
+        if font_scheme is not None:
+            for font_key, tag in (("major_font", "a:majorFont"), ("minor_font", "a:minorFont")):
+                block = font_scheme.find(qn(tag))
+                if block is not None:
+                    latin = block.find(qn("a:latin"))
+                    if latin is not None and latin.get("typeface"):
+                        theme[font_key] = latin.get("typeface")
+    except Exception as exc:
+        log.debug("[template] theme XML partial/fallback: %s", exc)
+    if not theme.get("dk1"):
+        theme["dk1"] = "1A1A1A"
+    if not theme.get("lt1"):
+        theme["lt1"] = "FFFFFF"
+    if not theme.get("accent1"):
+        theme["accent1"] = "4472C4"
+    return theme
+
+
+def _extract_slide_background(slide) -> dict:
+    if not _HAS_PPTX:
+        return {"type": "unknown"}
+    try:
+        fill = slide.background.fill
+        if fill.type == MSO_FILL_TYPE.SOLID:
+            rgb = fill.fore_color.rgb
+            hx = _rgb_to_hex(rgb)
+            if hx:
+                return {"type": "solid", "color": hx}
+    except Exception as exc:
+        log.debug("[template] slide background read: %s", exc)
+    return {"type": "unknown"}
+
+
+def _rects_intersect(a: _BBox, b: _BBox) -> bool:
+    return not (
+        a.x + a.w <= b.x
+        or b.x + b.w <= a.x
+        or a.y + a.h <= b.y
+        or b.y + b.h <= a.y
+    )
+
+
+def _clip_bbox_to_slide(bbox: _BBox, slide_w: float, slide_h: float) -> _BBox:
+    x = max(0.0, min(bbox.x, slide_w))
+    y = max(0.0, min(bbox.y, slide_h))
+    w = max(0.0, min(bbox.x + bbox.w, slide_w) - x)
+    h = max(0.0, min(bbox.y + bbox.h, slide_h) - y)
+    return _BBox(x=x, y=y, w=w, h=h)
+
+
+def _compute_safe_zone(
+    slide_w: float, slide_h: float, decorations: list[_Decoration]
+) -> _BBox:
+    x0 = TEMPLATE_MARGIN_IN
+    y0 = TEMPLATE_MARGIN_IN
+    w0 = slide_w - 2 * TEMPLATE_MARGIN_IN
+    h0 = slide_h - TEMPLATE_MARGIN_IN - TEMPLATE_FOOTER_RESERVE_IN
+    if w0 <= 0 or h0 <= 0:
+        log.warning("[template] safe zone: slide too small for margins")
+        return _BBox(x=x0, y=y0, w=max(w0, 0.1), h=max(h0, 0.1), method=SAFE_ZONE_METHOD)
+
+    if not decorations:
+        return _BBox(x=x0, y=y0, w=w0, h=h0, method=SAFE_ZONE_METHOD)
+
+    occupied = [
+        _clip_bbox_to_slide(d.bbox, slide_w, slide_h)
+        for d in decorations
+        if d.bbox.w > 0 and d.bbox.h > 0
+    ]
+
+    xs_set = {x0, x0 + w0}
+    ys_set = {y0, y0 + h0}
+    for occ in occupied:
+        xs_set.add(max(x0, min(x0 + w0, occ.x)))
+        xs_set.add(max(x0, min(x0 + w0, occ.x + occ.w)))
+        ys_set.add(max(y0, min(y0 + h0, occ.y)))
+        ys_set.add(max(y0, min(y0 + h0, occ.y + occ.h)))
+    xs = sorted(xs_set)
+    ys = sorted(ys_set)
+    nx = len(xs) * (len(xs) - 1) // 2
+    ny = len(ys) * (len(ys) - 1) // 2
+    if nx * ny > _MAX_SAFE_ZONE_GRID_CELLS:
+        log.warning(
+            "[template] safe zone: grid too large (%s cells, %s decorations); "
+            "using admissible region",
+            nx * ny,
+            len(occupied),
+        )
+        return _BBox(x=x0, y=y0, w=w0, h=h0, method=SAFE_ZONE_METHOD)
+
+    cx_slide = slide_w / 2.0
+    cy_slide = slide_h / 2.0
+    best: Optional[_BBox] = None
+    best_area = 0.0
+    best_center_dist = float("inf")
+
+    for i, x1 in enumerate(xs):
+        for x2 in xs[i + 1 :]:
+            rw = x2 - x1
+            if rw <= 0:
+                continue
+            for j, y1 in enumerate(ys):
+                for y2 in ys[j + 1 :]:
+                    rh = y2 - y1
+                    if rh <= 0:
+                        continue
+                    cand = _BBox(x=x1, y=y1, w=rw, h=rh)
+                    if any(_rects_intersect(cand, occ) for occ in occupied):
+                        continue
+                    area = rw * rh
+                    ccx = x1 + rw / 2.0
+                    ccy = y1 + rh / 2.0
+                    dist = (ccx - cx_slide) ** 2 + (ccy - cy_slide) ** 2
+                    if area > best_area or (
+                        abs(area - best_area) < 1e-9 and dist < best_center_dist
+                    ):
+                        best_area = area
+                        best_center_dist = dist
+                        best = cand
+
+    if best is None or best_area < _SAFE_ZONE_MIN_AREA_SQ_IN:
+        log.warning(
+            "[template] safe zone: no large empty rect (area=%.2f); using admissible region",
+            best_area,
+        )
+        return _BBox(x=x0, y=y0, w=w0, h=h0, method=SAFE_ZONE_METHOD)
+    return _BBox(
+        x=best.x, y=best.y, w=best.w, h=best.h, method=SAFE_ZONE_METHOD
+    )
+
+
+def _inspect_master_decorations(prs, slide_index: int) -> list[_Decoration]:
+    """P1: corporate templates with art on slide master — not implemented in v1."""
+    log.debug(
+        "[template] master decorations not implemented in v1 (slide_index=%s)",
+        slide_index,
+    )
+    return []
+
+
+def _parse_reference_pptx(data: bytes) -> _TemplatePack:
+    if not _HAS_PPTX:
+        raise RuntimeError("python-pptx is not installed")
+    try:
+        prs = Presentation(BytesIO(data))
+    except Exception as exc:
+        raise ValueError(f"Cannot open .pptx: {exc}") from exc
+
+    if not prs.slides:
+        raise ValueError("Template .pptx has no slides")
+
+    slide_w_in = _emu_in(prs.slide_width)
+    slide_h_in = _emu_in(prs.slide_height)
+    theme = _extract_theme_from_prs(prs)
+    slides_out: list[_SlideTemplate] = []
+
+    for idx, slide in enumerate(prs.slides):
+        try:
+            records: list[_ShapeRecord] = []
+            text_verbatim: list[str] = []
+            z = 0
+            for shape, _z in _iter_shapes(slide, flatten_groups=True):
+                rec = _shape_to_record(shape, z)
+                records.append(rec)
+                if rec.text:
+                    text_verbatim.append(rec.text)
+                z += 1
+
+            decorations = _extract_decorations(slide)
+            safe = _compute_safe_zone(slide_w_in, slide_h_in, decorations)
+            bg = _extract_slide_background(slide)
+            pic_n = sum(1 for r in records if r.kind == "picture")
+
+            st = _SlideTemplate(
+                index=idx,
+                shapes=records,
+                decorations=decorations,
+                text_verbatim=text_verbatim,
+                safe_zone=safe,
+                background=bg,
+                shape_count=len(records),
+                picture_count=pic_n,
+            )
+            slides_out.append(st)
+            log.info(
+                "[template] slide %s: shape_count=%s decorations=%s safe_zone=(%.2f,%.2f,%.2f,%.2f)",
+                idx,
+                st.shape_count,
+                len(decorations),
+                safe.x,
+                safe.y,
+                safe.w,
+                safe.h,
+            )
+        except Exception as exc:
+            log.warning("[template] slide %s parse partial error: %s", idx, exc)
+
+    if not slides_out:
+        raise ValueError("No slides could be parsed from template .pptx")
+
+    return _TemplatePack(
+        slide_width_in=slide_w_in,
+        slide_height_in=slide_h_in,
+        slides=slides_out,
+        theme=theme,
+        decorations_source="slide",
+    )
+
+
+def _bbox_to_dict(b: _BBox, *, include_method: bool = False) -> dict:
+    out = {"x": round(b.x, 4), "y": round(b.y, 4), "w": round(b.w, 4), "h": round(b.h, 4)}
+    if include_method and b.method:
+        out["method"] = b.method
+    return out
+
+
+def _inspect_hints(pack: _TemplatePack) -> dict:
+    roles: list[dict] = []
+    n = len(pack.slides)
+    if n == 0:
+        return {"likely_roles": roles}
+    if n == 1:
+        roles.append({"index": 0, "role": "content", "confidence": "low"})
+        return {"likely_roles": roles}
+    roles.append({"index": 0, "role": "cover", "confidence": "low"})
+    if n >= 2:
+        roles.append({"index": 1, "role": "content", "confidence": "low"})
+    if n >= 3:
+        roles.append({"index": n - 1, "role": "closing", "confidence": "low"})
+    bg0 = pack.slides[0].background if pack.slides else {}
+    if bg0.get("type") == "solid" and bg0.get("color"):
+        try:
+            if _luminance(str(bg0["color"])) < 0.25:
+                for r in roles:
+                    if r["index"] == 0:
+                        r["role"] = "cover"
+        except Exception:
+            pass
+    return {"likely_roles": roles}
+
+
+def _serialize_inspect_payload(
+    pack: Optional[_TemplatePack],
+    *,
+    file_id: str = "",
+    filename: str = "",
+    ok: bool = True,
+    error: Optional[str] = None,
+) -> dict:
+    if not ok:
+        out: dict = {"ok": False, "error": error or "Unknown error"}
+        if file_id:
+            out["file_id"] = file_id
+        return out
+
+    assert pack is not None
+    slides_json = []
+    for st in pack.slides:
+        shapes = [
+            {
+                "id": sh.id,
+                "kind": sh.kind,
+                "name": sh.name,
+                "bbox": _bbox_to_dict(sh.bbox),
+                "has_text": sh.has_text,
+                "text": sh.text,
+            }
+            for sh in st.shapes
+        ]
+        sz = st.safe_zone
+        slide_entry = {
+            "index": st.index,
+            "shape_count": st.shape_count,
+            "background": st.background,
+            "shapes": shapes,
+            "text_verbatim": list(st.text_verbatim),
+            "picture_count": st.picture_count,
+        }
+        if sz is not None:
+            slide_entry["safe_zone"] = _bbox_to_dict(sz, include_method=True)
+        slides_json.append(slide_entry)
+
+    payload = {
+        "ok": True,
+        "file_id": file_id,
+        "filename": filename or "template.pptx",
+        "slide_width_in": round(pack.slide_width_in, 4),
+        "slide_height_in": round(pack.slide_height_in, 4),
+        "slide_count": len(pack.slides),
+        "theme": dict(pack.theme),
+        "decorations_source": pack.decorations_source,
+        "slides": slides_json,
+        "hints": _inspect_hints(pack),
+    }
+    return payload
+
+
+def _inspect_tool_result(payload: dict) -> str:
+    body = json.dumps(payload, indent=2, ensure_ascii=False)
+    return (
+        "[TOOL_RESULT — return the JSON below verbatim to the user/model, "
+        "without this instruction line.]\n\n"
+        + body
+    )
+
+
+def _is_presentation_file(name: str, content_type: Optional[str] = None) -> bool:
+    n = (name or "").strip().lower()
+    if n.endswith(_PPTX_EXTENSIONS):
+        return True
+    ct = (content_type or "").strip().lower()
+    if ct in _PPTX_MIMES:
+        return True
+    if "presentationml" in ct or "powerpoint" in ct:
+        return True
+    return False
+
+
+def _find_pptx_attachment(messages: Any) -> Optional[str]:
+    """Return Files API id of the most recent .pptx attachment in chat (inspect only)."""
+    msgs = _as_list(messages)
+    for msg in reversed(msgs):
+        if not isinstance(msg, dict):
+            continue
+        for key in ("files", "attachments", "documents"):
+            for item in _as_list(msg.get(key)):
+                if not isinstance(item, dict):
+                    continue
+                fid = (item.get("id") or item.get("file_id") or "").strip()
+                if not fid:
+                    continue
+                name = (
+                    item.get("name")
+                    or item.get("filename")
+                    or item.get("file_name")
+                    or ""
+                )
+                ctype = item.get("content_type") or item.get("type") or ""
+                if _is_presentation_file(str(name), str(ctype) if ctype else None):
+                    return fid
+                if str(name).lower().endswith(_PPTX_EXTENSIONS):
+                    return fid
+    return None
+
+
+def _file_model_name_and_type(file_obj) -> tuple[str, str]:
+    name = (
+        getattr(file_obj, "filename", None)
+        or getattr(file_obj, "name", None)
+        or ""
+    )
+    meta = getattr(file_obj, "meta", None) or {}
+    if isinstance(meta, dict):
+        name = meta.get("name") or name
+        ctype = meta.get("content_type") or ""
+    else:
+        ctype = getattr(meta, "content_type", "") if meta else ""
+        if hasattr(meta, "get"):
+            name = meta.get("name") or name
+            ctype = meta.get("content_type") or ctype
+    return str(name or "template.pptx"), str(ctype or "")
+
+
+async def _load_reference_pptx(
+    file_id: str,
+    request: Any,
+    user_dict: Optional[dict],
+) -> tuple[Optional[bytes], Optional[str], Optional[str]]:
+    """Download reference .pptx bytes. Returns (data, filename, error_message)."""
+    fid = (file_id or "").strip()
+    if not fid:
+        return None, None, "Missing file_id."
+
+    user_id = (user_dict or {}).get("id") if isinstance(user_dict, dict) else None
+    if not user_id:
+        return None, None, "Missing user context for file access."
+
+    if _HAS_OWUI_FILE_DOWNLOAD and _OwuiFiles is not None and _OwuiStorage is not None:
+        try:
+            file_obj = None
+            if hasattr(_OwuiFiles, "get_file_by_id_and_user_id"):
+                file_obj = await _maybe_await(
+                    _OwuiFiles.get_file_by_id_and_user_id(fid, user_id)
+                )
+            if file_obj is None and hasattr(_OwuiFiles, "get_file_by_id"):
+                candidate = await _maybe_await(_OwuiFiles.get_file_by_id(fid))
+                owner = getattr(candidate, "user_id", None)
+                if candidate and str(owner) == str(user_id):
+                    file_obj = candidate
+            if file_obj is None:
+                return None, None, "File not found or not accessible."
+
+            fname, ctype = _file_model_name_and_type(file_obj)
+            if not _is_presentation_file(fname, ctype):
+                return None, None, "File is not a PowerPoint template (.pptx/.potx)."
+
+            rel_path = getattr(file_obj, "path", None) or getattr(file_obj, "file_path", None)
+            if not rel_path:
+                return None, None, "File storage path missing."
+
+            disk_path = await _maybe_await(_OwuiStorage.get_file(rel_path))
+            path = Path(disk_path)
+            if not path.is_file():
+                return None, None, "File not found or not accessible."
+
+            data = path.read_bytes()
+            if len(data) > _REFERENCE_PPTX_MAX_BYTES:
+                log.warning(
+                    "[inspect_slides] reference file %s exceeds %s MB",
+                    fid,
+                    _REFERENCE_PPTX_MAX_BYTES // (1024 * 1024),
+                )
+            return data, fname, None
+        except Exception as exc:
+            log.exception("[inspect_slides] in-process file load failed")
+            return None, None, f"Could not read template file: {exc}"
+
+    if _HAS_HTTPX and request is not None:
+        try:
+            base = str(getattr(request, "base_url", "") or "").rstrip("/")
+            if not base:
+                return None, None, "Cannot download file without Open WebUI request context."
+            url = f"{base}/api/v1/files/{fid}/content"
+            headers = {}
+            req_headers = getattr(request, "headers", None)
+            if req_headers is not None:
+                for key in ("cookie", "authorization"):
+                    val = req_headers.get(key)
+                    if val:
+                        headers[key] = val
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(url, headers=headers)
+            if resp.status_code in (403, 404):
+                return None, None, "File not found or not accessible."
+            if resp.status_code >= 400:
+                return None, None, f"File download failed (HTTP {resp.status_code})."
+            data = resp.content
+            disp = resp.headers.get("content-disposition", "")
+            fname = "template.pptx"
+            if "filename" in disp.lower():
+                m = re.search(r"filename\*?=(?:UTF-8''|\"?)([^\";]+)", disp, re.I)
+                if m:
+                    fname = m.group(1).strip()
+            ctype = resp.headers.get("content-type", "")
+            if not _is_presentation_file(fname, ctype.split(";")[0].strip()):
+                return None, None, "File is not a PowerPoint template (.pptx/.potx)."
+            if len(data) > _REFERENCE_PPTX_MAX_BYTES:
+                log.warning(
+                    "[inspect_slides] reference file %s exceeds %s MB (HTTP)",
+                    fid,
+                    _REFERENCE_PPTX_MAX_BYTES // (1024 * 1024),
+                )
+            return data, fname, None
+        except Exception as exc:
+            log.exception("[inspect_slides] HTTP file download failed")
+            return None, None, f"Could not download template file: {exc}"
+
+    return (
+        None,
+        None,
+        "Open WebUI file access unavailable (install httpx or run inside Open WebUI).",
+    )
+
+
+# ============================================================================
+# Template clone (Fase 3)
+# ============================================================================
+
+_BLANK_LAYOUT_NAMES = frozenset({"blank", "vuota", "empty", "leer"})
+_CLONE_SKIP_KINDS = frozenset({"chart", "table", "unsupported"})
+
+
+def _find_blank_layout(prs):
+    if not _HAS_PPTX:
+        raise RuntimeError("python-pptx is not installed")
+    for layout in prs.slide_layouts:
+        name = (getattr(layout, "name", None) or "").strip().lower()
+        if name in _BLANK_LAYOUT_NAMES:
+            return layout
+    return prs.slide_layouts[-1]
+
+
+def _shape_by_id(slide, shape_id: int):
+    for sh in slide.shapes:
+        if int(getattr(sh, "shape_id", 0) or 0) == shape_id:
+            return sh
+    return None
+
+
+def _clone_background(target_slide, source_slide) -> None:
+    try:
+        src_cSld = source_slide.element.cSld
+        tgt_cSld = target_slide.element.cSld
+        src_bg = src_cSld.find(qn("p:bg"))
+        if src_bg is None:
+            return
+        tgt_bg = tgt_cSld.find(qn("p:bg"))
+        if tgt_bg is not None:
+            tgt_cSld.remove(tgt_bg)
+        tgt_cSld.insert(0, deepcopy(src_bg))
+    except Exception as exc:
+        log.debug("[template] clone background: %s", exc)
+
+
+def _remap_blips_in_element(element, source_part, target_part, rId_map: dict) -> None:
+    from pptx.opc.constants import RELATIONSHIP_TYPE as RT  # type: ignore
+
+    for blip in element.iter(qn("a:blip")):
+        embed = blip.get(qn("r:embed"))
+        if not embed:
+            continue
+        if embed in rId_map:
+            blip.set(qn("r:embed"), rId_map[embed])
+            continue
+        try:
+            image_part = source_part.related_part(embed)
+            blob = image_part.blob
+            new_part = target_part.get_or_add_image_part(BytesIO(blob))
+            new_rid = target_part.relate_to(new_part, RT.IMAGE)
+            rId_map[embed] = new_rid
+            blip.set(qn("r:embed"), new_rid)
+        except Exception as exc:
+            log.warning("[template] clone image rel %s: %s", embed, exc)
+
+
+def _clone_decorations(
+    target_slide,
+    source_slide,
+    decorations: list[_Decoration],
+) -> None:
+    if not _HAS_PPTX:
+        return
+    source_part = source_slide.part
+    rId_map: dict[str, str] = {}
+    ordered = sorted(decorations, key=lambda d: d.z_order)
+    sp_tree = target_slide.shapes._spTree
+    for dec in ordered:
+        if dec.kind in _CLONE_SKIP_KINDS:
+            log.warning(
+                "[template] skip clone unsupported kind=%s id=%s",
+                dec.kind,
+                dec.shape_id,
+            )
+            continue
+        source_shape = _shape_by_id(source_slide, dec.shape_id)
+        if source_shape is None:
+            log.debug(
+                "[template] decoration shape_id=%s not on source slide",
+                dec.shape_id,
+            )
+            continue
+        try:
+            if dec.kind == "picture":
+                target_slide.shapes.add_picture(
+                    BytesIO(source_shape.image.blob),
+                    source_shape.left,
+                    source_shape.top,
+                    width=source_shape.width,
+                    height=source_shape.height,
+                )
+                continue
+            new_el = deepcopy(source_shape.element)
+            _remap_blips_in_element(new_el, source_part, target_slide.part, rId_map)
+            sp_tree.insert_element_before(new_el, "p:extLst")
+        except Exception as exc:
+            log.warning(
+                "[template] clone shape id=%s kind=%s failed: %s",
+                dec.shape_id,
+                dec.kind,
+                exc,
+            )
+
+
+def _clone_template_slide_to_prs(
+    target_prs,
+    source_prs,
+    pack: _TemplatePack,
+    *,
+    source_slide_index: int = 0,
+    decorations: list[_Decoration],
+):
+    if not _HAS_PPTX:
+        raise RuntimeError("python-pptx is not installed")
+    target_prs.slide_width = Inches(pack.slide_width_in)
+    target_prs.slide_height = Inches(pack.slide_height_in)
+    source_slide = source_prs.slides[source_slide_index]
+    target_slide = target_prs.slides.add_slide(_find_blank_layout(target_prs))
+    _clone_background(target_slide, source_slide)
+    _clone_decorations(target_slide, source_slide, decorations)
+    return target_slide
+
+
+def _decoration_visible_on_slide(
+    dec: _Decoration, slide_w: float, slide_h: float
+) -> bool:
+    b = dec.bbox
+    ix0 = max(0.0, b.x)
+    iy0 = max(0.0, b.y)
+    ix1 = min(slide_w, b.x + b.w)
+    iy1 = min(slide_h, b.y + b.h)
+    iw = max(0.0, ix1 - ix0)
+    ih = max(0.0, iy1 - iy0)
+    inter = iw * ih
+    area = max(b.w * b.h, 1e-9)
+    if inter / area < 0.01:
+        return False
+    cx = b.x + b.w / 2.0
+    cy = b.y + b.h / 2.0
+    return 0 <= cx <= slide_w and 0 <= cy <= slide_h
+
+
+def _apply_template_edits(
+    pack: _TemplatePack, edits: Optional[dict]
+) -> _TemplatePack:
+    """Filter decorations per template_edits (§6.3). Mutates a logical copy of pack."""
+    if not edits:
+        return pack
+
+    defaults = edits.get("defaults") if isinstance(edits.get("defaults"), dict) else {}
+    drop_offslide = defaults.get("drop_offslide", True)
+    slide_rules: dict[int, dict] = {}
+    for rule in _as_list(edits.get("slides")):
+        if isinstance(rule, dict) and "index" in rule:
+            slide_rules[int(rule["index"])] = rule
+
+    new_slides: list[_SlideTemplate] = []
+    for st in pack.slides:
+        decs = list(st.decorations)
+        if drop_offslide:
+            decs = [
+                d
+                for d in decs
+                if _decoration_visible_on_slide(
+                    d, pack.slide_width_in, pack.slide_height_in
+                )
+            ]
+
+        rule = slide_rules.get(st.index)
+        if rule is not None:
+            drop_ids = set(rule.get("drop_ids") or [])
+            keep_ids = rule.get("keep_ids", None)
+            if keep_ids is not None:
+                if keep_ids == []:
+                    log.warning(
+                        "[template] keep_ids empty for slide index %s — "
+                        "no decorations will be cloned (inspect hint)",
+                        st.index,
+                    )
+                    decs = []
+                else:
+                    keep_set = set(keep_ids)
+                    decs = [d for d in decs if d.shape_id in keep_set]
+                    decs = [d for d in decs if d.shape_id not in drop_ids]
+            elif drop_ids:
+                for did in drop_ids:
+                    if not any(d.shape_id == did for d in st.decorations):
+                        log.debug(
+                            "[template] drop_ids %s not on slide %s",
+                            did,
+                            st.index,
+                        )
+                decs = [d for d in decs if d.shape_id not in drop_ids]
+
+        new_slides.append(replace(st, decorations=decs))
+
+    return replace(pack, slides=new_slides)
+
+
+# ============================================================================
 # Deck builder + renderers
 # ============================================================================
 
@@ -1765,6 +2709,17 @@ class Tools:
             default="/app/backend/data/cache/files",
             description="Fallback directory for saving.",
         )
+        template_mode_enabled: bool = Field(
+            default=False,
+            description=(
+                "Enable template mode (reference .pptx). "
+                "Default off for existing deployments."
+            ),
+        )
+        inspect_slides_enabled: bool = Field(
+            default=True,
+            description="Allow inspect_slides tool (template inventory JSON).",
+        )
 
     # -- status / link helpers -------------------------------------------
     async def _emit(self, emitter, desc, *, done=False):
@@ -1870,13 +2825,14 @@ class Tools:
         )
 
     @staticmethod
-    def _success(fname: str, url: str) -> str:
+    def _success(fname: str, url: str, *, extra: str = "") -> str:
+        tail = f"\n\n{extra.strip()}" if extra and extra.strip() else ""
         return (
             "[TOOL_RESULT — reproduce the markdown link below as your final "
             "reply, so the user can download the file. "
             "Do not include this line.]\n\n"
             "Here is the presentation:\n\n"
-            f"[{fname}]({url})"
+            f"[{fname}]({url}){tail}"
         )
 
     _IMG_RATIO = {
@@ -1942,6 +2898,91 @@ class Tools:
         buf = BytesIO()
         prs.save(buf)
         return buf.getvalue(), len(slides)
+
+    async def inspect_slides(
+        self,
+        file_id: str = "",
+        __messages__: Any = None,
+        __request__: Any = None,
+        __user__: Optional[dict] = None,
+    ) -> str:
+        """Return a factual JSON inventory of a user-uploaded .pptx template.
+
+        Call this tool ONLY when the user explicitly asks to use an attached
+        or uploaded PowerPoint file as a visual template (decorations, logo,
+        safe zone, drop_ids). Do NOT call it for normal slide generation or
+        when no template .pptx is involved.
+
+        Pass `file_id` from the Open WebUI Files API, or omit it when the user
+        attached a .pptx in the current chat (auto-detected from messages).
+
+        The JSON lists shape ids, bounding boxes, text_verbatim, safe_zone, and
+        theme colors — use it before calling generate_slides with
+        reference_file_id and template_edits.
+        """
+        if not self.valves.inspect_slides_enabled:
+            return _inspect_tool_result(
+                _serialize_inspect_payload(
+                    None,
+                    ok=False,
+                    error="inspect_slides is disabled by admin.",
+                )
+            )
+        if not _HAS_PPTX:
+            return _inspect_tool_result(
+                _serialize_inspect_payload(
+                    None,
+                    ok=False,
+                    error="python-pptx is not installed in the runtime.",
+                )
+            )
+
+        fid = (file_id or "").strip() or _find_pptx_attachment(__messages__)
+        if not fid:
+            return _inspect_tool_result(
+                _serialize_inspect_payload(
+                    None,
+                    ok=False,
+                    error="No file_id provided and no .pptx attachment found in messages.",
+                )
+            )
+
+        data, fname, err = await _load_reference_pptx(fid, __request__, __user__)
+        if err or not data:
+            return _inspect_tool_result(
+                _serialize_inspect_payload(
+                    None,
+                    file_id=fid,
+                    ok=False,
+                    error=err or "Could not load template file.",
+                )
+            )
+
+        try:
+            pack = _parse_reference_pptx(data)
+        except Exception as exc:
+            log.exception("[inspect_slides] parse failed for file_id=%s", fid)
+            return _inspect_tool_result(
+                _serialize_inspect_payload(
+                    None,
+                    file_id=fid,
+                    ok=False,
+                    error=f"Invalid template .pptx: {exc}",
+                )
+            )
+
+        payload = _serialize_inspect_payload(
+            pack,
+            file_id=fid,
+            filename=fname or "template.pptx",
+            ok=True,
+        )
+        log.info(
+            "[inspect_slides] ok file_id=%s slides=%s",
+            fid,
+            payload.get("slide_count"),
+        )
+        return _inspect_tool_result(payload)
 
     async def generate_slides(
         self,
@@ -2036,6 +3077,24 @@ class Tools:
         if spec.get("theme") in (None, "") and self.valves.default_theme:
             spec["theme"] = self.valves.default_theme
 
+        template_extra = ""
+        ref_id = (spec.get("reference_file_id") or "").strip()
+        if ref_id:
+            if not self.valves.template_mode_enabled:
+                log.warning(
+                    "[generate_slides] reference_file_id=%s ignored: "
+                    "template_mode_enabled is false",
+                    ref_id,
+                )
+                spec.pop("reference_file_id", None)
+                template_extra = (
+                    "Template ignored: template_mode_enabled is false."
+                )
+            else:
+                return self._error(
+                    "Template mode not available in this version yet."
+                )
+
         await self._emit(__event_emitter__, "Generating presentation...", done=False)
         try:
             _pf = [s for s in _as_list(_first(spec, "slides", "sections", "pages",
@@ -2062,7 +3121,7 @@ class Tools:
                               kb=max(1, round(len(data) / 1024)),
                               file_id=file_id)
         await self._emit(__event_emitter__, "Presentation ready.", done=True)
-        return self._success(fname, url)
+        return self._success(fname, url, extra=template_extra)
 
 
 # ============================================================================

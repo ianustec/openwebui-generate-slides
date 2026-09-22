@@ -128,9 +128,22 @@ You can force the accent with `"accent": "#C99A3B"`.
 Requires `python-pptx` and (optionally) `pillow`/`httpx`:
 
 ```bash
-pip install python-pptx pillow httpx
-python examples/build.py   # → examples/demo_tech_deck.pptx
+pip install -r examples/requirements-dev.txt httpx
+python examples/build.py              # → examples/demo_tech_deck.pptx
+python examples/check_baseline.py     # NF5 golden regression smoke
+python examples/fixtures/build_fixtures.py   # template-mode dev fixtures
+python examples/parse_template_fixtures.py   # Fase 1 template parse smoke
+python examples/inspect_template_fixtures.py # Fase 2 inspect JSON (offline)
+python examples/inspect_online_templates.py  # real Slidesgo decks in doc/online_templates/
+python examples/clone_template_fixture.py    # Fase 3 clone smoke → examples/output/
 ```
+
+Optional: open `examples/output/clone_corners.pptx` in LibreOffice for a visual check.
+
+`inspect_slides` in Open WebUI needs the Files API runtime; the scripts above test parse/JSON locally.
+
+See [`examples/fixtures/README.md`](examples/fixtures/README.md) for fixture types.
+Local dev was verified with **Python 3.11** (Docker `python:3.11-slim`) and pinned deps in `examples/requirements-dev.txt`. Record the Open WebUI Neura container Python version on deploy (≥3.10).
 
 The file is designed to run inside Open WebUI: the `open_webui.*` imports are optional
 and the tool degrades gracefully when they're missing (handy for isolated render tests).
