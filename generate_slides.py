@@ -26,12 +26,14 @@ license: MIT
 
 import inspect
 import logging
+import mimetypes
 import os
 import re
 import json
 import uuid
 import base64
 import unicodedata
+from zipfile import ZipFile
 from datetime import datetime, timezone
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -97,6 +99,8 @@ except Exception:
     pass
 
 _REFERENCE_PPTX_MAX_BYTES = 25 * 1024 * 1024
+_INSPECT_MEDIA_WARN_BYTES = 50 * 1024 * 1024
+_INSPECT_MEDIA_WARN_COUNT = 200
 _PPTX_EXTENSIONS = (".pptx", ".potx")
 _PPTX_MIMES = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -133,6 +137,69 @@ def _extract_file_id(item) -> Optional[str]:
         fid = item.get("id")
         return str(fid) if fid else None
     return None
+
+
+async def _upload_bytes_to_files_api(
+    data: bytes,
+    *,
+    filename: str,
+    content_type: str,
+    request,
+    user_dict,
+    export_dir: str,
+    log_prefix: str = "generate_slides",
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Upload bytes via OWUI Files API or cache fallback. Returns (url, error, file_id)."""
+    user_id = (user_dict or {}).get("id") if isinstance(user_dict, dict) else None
+    if _HAS_OWUI_FILES and request is not None and user_id:
+        try:
+            user_model = await _maybe_await(Users.get_user_by_id(user_id))
+            if user_model:
+                buf = BytesIO(data)
+                buf.seek(0)
+                upload = UploadFile(
+                    file=buf,
+                    filename=filename,
+                    headers=Headers({"content-type": content_type}),
+                )
+                item = await _maybe_await(
+                    upload_file_handler(
+                        request=request,
+                        file=upload,
+                        metadata={},
+                        process=False,
+                        user=user_model,
+                    )
+                )
+                fid = _extract_file_id(item)
+                if fid:
+                    return f"/api/v1/files/{fid}/content", None, fid
+                log.warning(
+                    "[%s] Files API returned no file id (type=%s)",
+                    log_prefix,
+                    type(item).__name__,
+                )
+            else:
+                log.warning("[%s] user not found for Files API: %s", log_prefix, user_id)
+        except Exception:
+            log.exception("[%s] Files API upload failed", log_prefix)
+    elif not _HAS_OWUI_FILES:
+        log.debug("[%s] Open WebUI Files API unavailable", log_prefix)
+    elif request is None or not user_id:
+        log.debug("[%s] missing request or user id for Files API", log_prefix)
+
+    export_dir = (export_dir or "").strip() or "/app/backend/data/cache/files"
+    try:
+        os.makedirs(export_dir, mode=0o775, exist_ok=True)
+        path = os.path.join(export_dir, filename)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            log.warning("[%s] saved via cache fallback: %s", log_prefix, filename)
+            return f"/cache/files/{filename}", None, None
+    except Exception as exc:
+        return None, str(exc), None
+    return None, "impossibile salvare", None
 
 
 # ============================================================================
@@ -505,6 +572,11 @@ def _set_bg(slide, color: str) -> None:
     slide.background.fill.fore_color.rgb = _rgb(color)
 
 
+def _maybe_set_bg(deck, slide, color: str) -> None:
+    if not deck.template_mode:
+        _set_bg(slide, color)
+
+
 def _no_line(shape) -> None:
     shape.line.fill.background()
 
@@ -745,17 +817,18 @@ def _title(slide, theme, text, *, x=MARGIN, y=0.98, w=None, size=30, dark=False,
     return tb
 
 
-def _footer(slide, theme, *, page=None, label="", dark=False):
+def _footer(slide, theme, *, page=None, label="", dark=False, y=None, x=None, w=None):
     color = theme["on_dark_faint"] if dark else theme["faint"]
+    fx = MARGIN if x is None else x
+    fy = FOOTER_Y if y is None else y
+    fw = (SLIDE_W_IN - 2 * MARGIN) if w is None else w
     # left label
-    tb, tf = _textbox(slide, MARGIN, FOOTER_Y, SLIDE_W_IN - 2 * MARGIN - 0.6, 0.3,
-                      anchor="middle")
+    tb, tf = _textbox(slide, fx, fy, fw - 0.6, 0.3, anchor="middle")
     _add_para(tf, _strip_md(label).upper() if label else "", first=True, size=8,
               color=color, bold=False, font=theme["body_font"], align="left",
               tracking=1.2, space_after=0)
     if page is not None:
-        tb2, tf2 = _textbox(slide, SLIDE_W_IN - MARGIN - 0.8, FOOTER_Y, 0.8, 0.3,
-                            anchor="middle")
+        tb2, tf2 = _textbox(slide, fx + fw - 0.8, fy, 0.8, 0.3, anchor="middle")
         _add_para(tf2, str(page), first=True, size=9, color=color,
                   font=theme["body_font"], align="right", space_after=0)
 
@@ -1082,10 +1155,28 @@ async def _resolve_one_image(item, valves, request, user_dict, ratio=1.4):
 
 TEMPLATE_MARGIN_IN = 0.15
 TEMPLATE_FOOTER_RESERVE_IN = 0.35
+TEMPLATE_EDIT_DEFAULT_DROP_TEXT = False
+TEMPLATE_EDIT_DEFAULT_DROP_PLACEHOLDERS = False
+TEMPLATE_EDIT_DEFAULT_DROP_OFFSLIDE = True
 SAFE_ZONE_METHOD = "max_empty_rect"
+SAFE_ZONE_QUALITY_COMPUTED = "computed"
+SAFE_ZONE_QUALITY_GRID_CAPPED = "grid_capped"
+SAFE_ZONE_QUALITY_ADMISSIBLE_FALLBACK = "admissible_fallback"
 _SAFE_ZONE_MIN_AREA_SQ_IN = 1.0
 # Edge-grid is O(n^4) in decoration count; Slidesgo decks can have 100+ shapes/slide.
 _MAX_SAFE_ZONE_GRID_CELLS = 2_000_000
+# Grid edge simplification: ignore tiny slivers; cap count for xs/ys only (§6.1.2 Fase 3.3).
+_SAFE_ZONE_MIN_DECO_AREA_SQ_IN = 0.08
+_SAFE_ZONE_MAX_DECO_FOR_GRID = 48
+
+# Kinds skipped by _clone_decorations (inspect: cloneable=false)
+_CLONE_SKIP_KINDS = frozenset(
+    {"chart", "table", "unsupported", "media", "ole", "smartart"}
+)
+
+
+def _shape_cloneable(kind: str) -> bool:
+    return kind not in _CLONE_SKIP_KINDS
 
 
 @dataclass
@@ -1095,6 +1186,7 @@ class _BBox:
     w: float
     h: float
     method: Optional[str] = None
+    quality: Optional[str] = None
 
 
 @dataclass
@@ -1106,6 +1198,8 @@ class _ShapeRecord:
     has_text: bool
     text: Optional[str]
     z_order: int
+    cloneable: bool = True
+    is_placeholder: bool = False
 
 
 @dataclass
@@ -1138,6 +1232,250 @@ class _TemplatePack:
     decorations_source: str = "slide"
 
 
+@dataclass
+class _MediaUsage:
+    slide_index: int
+    source: str  # "shape" | "background"
+    shape_id: Optional[int] = None
+    name: Optional[str] = None
+
+
+@dataclass
+class _InspectImage:
+    internal_path: str
+    mime: str
+    w_px: int
+    h_px: int
+    usages: list[_MediaUsage] = field(default_factory=list)
+    blob: bytes = b""
+    cache_file_id: Optional[str] = None
+    url: Optional[str] = None
+    upload_skipped: bool = False
+
+
+def _normalize_media_path(partname: str) -> str:
+    p = (partname or "").lstrip("/").replace("\\", "/")
+    if p.startswith("ppt/"):
+        return p
+    if "/ppt/" in p:
+        return p[p.index("/ppt/") + 1 :]
+    return p
+
+
+def _mime_for_media_path(path: str, blob: bytes) -> str:
+    ext = Path(path).suffix.lower()
+    guessed, _ = mimetypes.guess_type(path)
+    if guessed:
+        return guessed
+    if blob[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if blob[:2] == b"\xff\xd8":
+        return "image/jpeg"
+    if ext in (".png",):
+        return "image/png"
+    if ext in (".jpg", ".jpeg"):
+        return "image/jpeg"
+    if ext in (".gif",):
+        return "image/gif"
+    if ext in (".svg",):
+        return "image/svg+xml"
+    return "application/octet-stream"
+
+
+def _image_dimensions_px(blob: bytes) -> tuple[int, int]:
+    if not blob or not _HAS_PIL:
+        return 0, 0
+    try:
+        with Image.open(BytesIO(blob)) as im:
+            return int(im.width or 0), int(im.height or 0)
+    except Exception:
+        return 0, 0
+
+
+def _blob_from_zip(zip_data: dict[str, bytes], internal_path: str) -> bytes:
+    if internal_path in zip_data:
+        return zip_data[internal_path]
+    alt = internal_path.lstrip("/")
+    return zip_data.get(alt, b"")
+
+
+def _internal_path_from_part(part) -> Optional[str]:
+    if part is None:
+        return None
+    try:
+        name = part.partname
+        if name:
+            return _normalize_media_path(str(name))
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_rId_to_path(slide_part, r_id: str) -> Optional[str]:
+    if not r_id or slide_part is None:
+        return None
+    try:
+        rel = slide_part.related_part(r_id)
+        return _internal_path_from_part(rel)
+    except Exception:
+        return None
+
+
+def _collect_blips_from_element(
+    element,
+    slide_part,
+    slide_index: int,
+    source: str,
+    shape_id: Optional[int],
+    shape_name: Optional[str],
+    out: dict[str, list[_MediaUsage]],
+) -> None:
+    if element is None:
+        return
+    for blip in element.iter(qn("a:blip")):
+        embed = blip.get(qn("r:embed"))
+        if not embed:
+            continue
+        path = _resolve_rId_to_path(slide_part, embed)
+        if not path or not path.startswith("ppt/media/"):
+            continue
+        usage = _MediaUsage(
+            slide_index=slide_index,
+            source=source,
+            shape_id=shape_id,
+            name=shape_name,
+        )
+        out.setdefault(path, []).append(usage)
+
+
+def _extract_referenced_media(data: bytes, pack: _TemplatePack) -> list[_InspectImage]:
+    """Referenced ppt/media parts from slide shapes (flatten) + slide background blips.
+
+    Inspect-only: generate_slides still clones graphics from reference_file_id (§1).
+    """
+    if not _HAS_PPTX or not data:
+        return []
+
+    zip_data: dict[str, bytes] = {}
+    try:
+        with ZipFile(BytesIO(data)) as zf:
+            for name in zf.namelist():
+                if name.startswith("ppt/media/"):
+                    zip_data[name] = zf.read(name)
+    except Exception as exc:
+        log.warning("[inspect_slides] media zip read failed: %s", exc)
+        return []
+
+    usages_by_path: dict[str, list[_MediaUsage]] = {}
+
+    try:
+        prs = Presentation(BytesIO(data))
+    except Exception as exc:
+        log.warning("[inspect_slides] media parse failed: %s", exc)
+        return []
+
+    for idx, slide in enumerate(prs.slides):
+        slide_index = idx
+        if idx < len(pack.slides):
+            slide_index = pack.slides[idx].index
+
+        bg_el = slide.element.find(qn("p:bg"))
+        if bg_el is not None:
+            _collect_blips_from_element(
+                bg_el,
+                slide.part,
+                slide_index,
+                "background",
+                None,
+                None,
+                usages_by_path,
+            )
+
+        for shape, _z in _iter_shapes(slide, flatten_groups=True):
+            sid = int(getattr(shape, "shape_id", 0) or 0)
+            sname = str(getattr(shape, "name", "") or "") or None
+            try:
+                _collect_blips_from_element(
+                    shape.element,
+                    slide.part,
+                    slide_index,
+                    "shape",
+                    sid,
+                    sname,
+                    usages_by_path,
+                )
+            except Exception as exc:
+                log.debug(
+                    "[inspect_slides] media shape id=%s slide=%s: %s",
+                    sid,
+                    slide_index,
+                    exc,
+                )
+
+    images: list[_InspectImage] = []
+    total_bytes = 0
+    for path, usages in sorted(usages_by_path.items()):
+        blob = _blob_from_zip(zip_data, path)
+        if not blob:
+            log.debug("[inspect_slides] media missing in zip: %s", path)
+            continue
+        w_px, h_px = _image_dimensions_px(blob)
+        mime = _mime_for_media_path(path, blob)
+        total_bytes += len(blob)
+        images.append(
+            _InspectImage(
+                internal_path=path,
+                mime=mime,
+                w_px=w_px,
+                h_px=h_px,
+                usages=usages,
+                blob=blob,
+            )
+        )
+
+    log.info(
+        "[inspect_slides] media: %s unique parts, %s usages, %s bytes",
+        len(images),
+        sum(len(im.usages) for im in images),
+        total_bytes,
+    )
+    if total_bytes > _INSPECT_MEDIA_WARN_BYTES or len(images) > _INSPECT_MEDIA_WARN_COUNT:
+        log.warning(
+            "[inspect_slides] large media inventory: %s parts, %s MB",
+            len(images),
+            round(total_bytes / (1024 * 1024), 2),
+        )
+    return images
+
+
+def _inspect_images_to_json(images: list[_InspectImage]) -> list[dict]:
+    out: list[dict] = []
+    for im in images:
+        entry: dict = {
+            "internal_path": im.internal_path,
+            "mime": im.mime,
+            "w_px": im.w_px,
+            "h_px": im.h_px,
+            "usages": [
+                {
+                    "slide_index": u.slide_index,
+                    "source": u.source,
+                    **({"shape_id": u.shape_id} if u.shape_id is not None else {}),
+                    **({"name": u.name} if u.name else {}),
+                }
+                for u in im.usages
+            ],
+        }
+        if im.cache_file_id:
+            entry["cache_file_id"] = im.cache_file_id
+        if im.url:
+            entry["url"] = im.url
+        if im.upload_skipped:
+            entry["upload_skipped"] = True
+        out.append(entry)
+    return out
+
+
 def _emu_in(emu: int) -> float:
     return float(emu) / EMU_IN
 
@@ -1151,25 +1489,109 @@ def _shape_bbox(shape) -> _BBox:
     )
 
 
-def _shape_kind(shape) -> str:
+def _shape_kind_from_element(shape) -> Optional[str]:
+    """XML fallback when MSO_SHAPE_TYPE is ambiguous (e.g. MEDIA + p:pic)."""
     if not _HAS_PPTX:
+        return None
+    try:
+        el = shape.element
+    except Exception:
+        return None
+    tag = el.tag.split("}")[-1] if "}" in el.tag else el.tag
+    if tag == "pic":
+        return "picture"
+    if tag == "cxnSp":
+        return "connector"
+    if tag == "grpSp":
+        return "group"
+    if tag == "graphicFrame":
+        for node in el.iter():
+            if node.tag == qn("c:chart"):
+                return "chart"
+        for gd in el.iter(qn("a:graphicData")):
+            uri = gd.get("uri") or ""
+            if "diagram" in uri.lower():
+                return "smartart"
         return "unsupported"
+    return None
+
+
+def _placeholder_kind(shape) -> str:
+    try:
+        from pptx.enum.shapes import PP_PLACEHOLDER  # type: ignore
+
+        ph = shape.placeholder_format
+        ph_type = ph.type
+        if ph_type in (
+            PP_PLACEHOLDER.PICTURE,
+            PP_PLACEHOLDER.OBJECT,
+            PP_PLACEHOLDER.MEDIA,
+        ):
+            return "picture"
+    except Exception:
+        pass
+    return "textbox"
+
+
+def _shape_kind_enum(shape) -> str:
     try:
         st = shape.shape_type
     except Exception:
         return "unsupported"
-    mapping = {
-        MSO_SHAPE_TYPE.PICTURE: "picture",
-        MSO_SHAPE_TYPE.TEXT_BOX: "textbox",
-        MSO_SHAPE_TYPE.AUTO_SHAPE: "autoshape",
-        MSO_SHAPE_TYPE.GROUP: "group",
-        MSO_SHAPE_TYPE.CHART: "chart",
-        MSO_SHAPE_TYPE.TABLE: "table",
-        MSO_SHAPE_TYPE.LINE: "connector",
-        MSO_SHAPE_TYPE.FREEFORM: "autoshape",
-        MSO_SHAPE_TYPE.PLACEHOLDER: "textbox",
-    }
-    return mapping.get(st, "unsupported")
+    if st == MSO_SHAPE_TYPE.PICTURE or st == MSO_SHAPE_TYPE.LINKED_PICTURE:
+        return "picture"
+    if st == MSO_SHAPE_TYPE.MEDIA:
+        xml_kind = _shape_kind_from_element(shape)
+        return xml_kind if xml_kind else "media"
+    if st == MSO_SHAPE_TYPE.WEB_VIDEO:
+        return "media"
+    if st == MSO_SHAPE_TYPE.CHART:
+        return "chart"
+    if st == MSO_SHAPE_TYPE.TABLE:
+        return "table"
+    if st == MSO_SHAPE_TYPE.LINE:
+        return "connector"
+    if st == MSO_SHAPE_TYPE.GROUP:
+        return "group"
+    if st in (MSO_SHAPE_TYPE.TEXT_BOX, MSO_SHAPE_TYPE.TEXT_EFFECT):
+        return "textbox"
+    if st == MSO_SHAPE_TYPE.AUTO_SHAPE:
+        return "autoshape"
+    if st == MSO_SHAPE_TYPE.FREEFORM:
+        return "autoshape"
+    if st == MSO_SHAPE_TYPE.PLACEHOLDER:
+        return _placeholder_kind(shape)
+    if st in (
+        MSO_SHAPE_TYPE.DIAGRAM,
+        MSO_SHAPE_TYPE.IGX_GRAPHIC,
+    ):
+        return "smartart"
+    if st in (
+        MSO_SHAPE_TYPE.EMBEDDED_OLE_OBJECT,
+        MSO_SHAPE_TYPE.LINKED_OLE_OBJECT,
+        MSO_SHAPE_TYPE.OLE_CONTROL_OBJECT,
+        MSO_SHAPE_TYPE.FORM_CONTROL,
+    ):
+        return "ole"
+    return "unsupported"
+
+
+def _shape_kind(shape) -> str:
+    if not _HAS_PPTX:
+        return "unsupported"
+    enum_kind = _shape_kind_enum(shape)
+    if enum_kind != "unsupported":
+        return enum_kind
+    xml_kind = _shape_kind_from_element(shape)
+    if xml_kind:
+        sid = int(getattr(shape, "shape_id", 0) or 0)
+        log.debug(
+            "[template] shape id=%s reclassified unsupported -> %s",
+            sid,
+            xml_kind,
+        )
+        return xml_kind
+    return "unsupported"
 
 
 def _shape_text(shape) -> Optional[str]:
@@ -1197,6 +1619,22 @@ def _group_child_shapes(shape) -> list:
     except Exception:
         pass
     return []
+
+
+def _shape_is_placeholder(shape) -> bool:
+    if not _HAS_PPTX:
+        return False
+    try:
+        if getattr(shape, "is_placeholder", False):
+            return True
+    except Exception:
+        pass
+    try:
+        if shape.shape_type == MSO_SHAPE_TYPE.PLACEHOLDER:
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _is_text_shape(shape) -> bool:
@@ -1255,6 +1693,8 @@ def _shape_to_record(shape, z_order: int) -> _ShapeRecord:
         has_text=has_text,
         text=txt,
         z_order=z_order,
+        cloneable=_shape_cloneable(kind),
+        is_placeholder=_shape_is_placeholder(shape),
     )
 
 
@@ -1373,6 +1813,49 @@ def _clip_bbox_to_slide(bbox: _BBox, slide_w: float, slide_h: float) -> _BBox:
     return _BBox(x=x, y=y, w=w, h=h)
 
 
+def _safe_zone_admissible_region(
+    x0: float,
+    y0: float,
+    w0: float,
+    h0: float,
+    *,
+    quality: str,
+    clamp_tiny: bool = False,
+) -> _BBox:
+    w = max(w0, 0.1) if clamp_tiny else w0
+    h = max(h0, 0.1) if clamp_tiny else h0
+    return _BBox(
+        x=x0,
+        y=y0,
+        w=w,
+        h=h,
+        method=SAFE_ZONE_METHOD,
+        quality=quality,
+    )
+
+
+def _occupied_for_safe_zone_grid(occupied_full: list[_BBox]) -> list[_BBox]:
+    """Subset for edge-grid xs/ys only; intersection checks use occupied_full."""
+    filtered = [
+        o
+        for o in occupied_full
+        if o.w * o.h >= _SAFE_ZONE_MIN_DECO_AREA_SQ_IN
+    ]
+    if len(filtered) <= _SAFE_ZONE_MAX_DECO_FOR_GRID:
+        return filtered
+    ranked = sorted(
+        filtered,
+        key=lambda o: (-(o.w * o.h), o.x, o.y, o.w, o.h),
+    )
+    return ranked[:_SAFE_ZONE_MAX_DECO_FOR_GRID]
+
+
+def _safe_zone_grid_cell_count(xs: list[float], ys: list[float]) -> int:
+    nx = len(xs) * (len(xs) - 1) // 2
+    ny = len(ys) * (len(ys) - 1) // 2
+    return nx * ny
+
+
 def _compute_safe_zone(
     slide_w: float, slide_h: float, decorations: list[_Decoration]
 ) -> _BBox:
@@ -1382,36 +1865,49 @@ def _compute_safe_zone(
     h0 = slide_h - TEMPLATE_MARGIN_IN - TEMPLATE_FOOTER_RESERVE_IN
     if w0 <= 0 or h0 <= 0:
         log.warning("[template] safe zone: slide too small for margins")
-        return _BBox(x=x0, y=y0, w=max(w0, 0.1), h=max(h0, 0.1), method=SAFE_ZONE_METHOD)
+        return _safe_zone_admissible_region(
+            x0,
+            y0,
+            w0,
+            h0,
+            quality=SAFE_ZONE_QUALITY_ADMISSIBLE_FALLBACK,
+            clamp_tiny=True,
+        )
 
     if not decorations:
-        return _BBox(x=x0, y=y0, w=w0, h=h0, method=SAFE_ZONE_METHOD)
+        return _safe_zone_admissible_region(
+            x0, y0, w0, h0, quality=SAFE_ZONE_QUALITY_COMPUTED
+        )
 
-    occupied = [
+    occupied_full = [
         _clip_bbox_to_slide(d.bbox, slide_w, slide_h)
         for d in decorations
         if d.bbox.w > 0 and d.bbox.h > 0
     ]
+    occupied_edges = _occupied_for_safe_zone_grid(occupied_full)
 
     xs_set = {x0, x0 + w0}
     ys_set = {y0, y0 + h0}
-    for occ in occupied:
+    for occ in occupied_edges:
         xs_set.add(max(x0, min(x0 + w0, occ.x)))
         xs_set.add(max(x0, min(x0 + w0, occ.x + occ.w)))
         ys_set.add(max(y0, min(y0 + h0, occ.y)))
         ys_set.add(max(y0, min(y0 + h0, occ.y + occ.h)))
     xs = sorted(xs_set)
     ys = sorted(ys_set)
-    nx = len(xs) * (len(xs) - 1) // 2
-    ny = len(ys) * (len(ys) - 1) // 2
-    if nx * ny > _MAX_SAFE_ZONE_GRID_CELLS:
+    grid_cells = _safe_zone_grid_cell_count(xs, ys)
+    if grid_cells > _MAX_SAFE_ZONE_GRID_CELLS:
         log.warning(
-            "[template] safe zone: grid too large (%s cells, %s decorations); "
-            "using admissible region",
-            nx * ny,
-            len(occupied),
+            "[template] safe zone: grid too large (%s cells, %s full / %s edge decorations); "
+            "quality=%s",
+            grid_cells,
+            len(occupied_full),
+            len(occupied_edges),
+            SAFE_ZONE_QUALITY_GRID_CAPPED,
         )
-        return _BBox(x=x0, y=y0, w=w0, h=h0, method=SAFE_ZONE_METHOD)
+        return _safe_zone_admissible_region(
+            x0, y0, w0, h0, quality=SAFE_ZONE_QUALITY_GRID_CAPPED
+        )
 
     cx_slide = slide_w / 2.0
     cy_slide = slide_h / 2.0
@@ -1430,7 +1926,7 @@ def _compute_safe_zone(
                     if rh <= 0:
                         continue
                     cand = _BBox(x=x1, y=y1, w=rw, h=rh)
-                    if any(_rects_intersect(cand, occ) for occ in occupied):
+                    if any(_rects_intersect(cand, occ) for occ in occupied_full):
                         continue
                     area = rw * rh
                     ccx = x1 + rw / 2.0
@@ -1445,12 +1941,20 @@ def _compute_safe_zone(
 
     if best is None or best_area < _SAFE_ZONE_MIN_AREA_SQ_IN:
         log.warning(
-            "[template] safe zone: no large empty rect (area=%.2f); using admissible region",
+            "[template] safe zone: no large empty rect (area=%.2f); quality=%s",
             best_area,
+            SAFE_ZONE_QUALITY_ADMISSIBLE_FALLBACK,
         )
-        return _BBox(x=x0, y=y0, w=w0, h=h0, method=SAFE_ZONE_METHOD)
+        return _safe_zone_admissible_region(
+            x0, y0, w0, h0, quality=SAFE_ZONE_QUALITY_ADMISSIBLE_FALLBACK
+        )
     return _BBox(
-        x=best.x, y=best.y, w=best.w, h=best.h, method=SAFE_ZONE_METHOD
+        x=best.x,
+        y=best.y,
+        w=best.w,
+        h=best.h,
+        method=SAFE_ZONE_METHOD,
+        quality=SAFE_ZONE_QUALITY_COMPUTED,
     )
 
 
@@ -1482,6 +1986,7 @@ def _parse_reference_pptx(data: bytes) -> _TemplatePack:
     for idx, slide in enumerate(prs.slides):
         try:
             records: list[_ShapeRecord] = []
+            # R8: inspect text is verbatim from the file — no placeholder/boilerplate filtering.
             text_verbatim: list[str] = []
             z = 0
             for shape, _z in _iter_shapes(slide, flatten_groups=True):
@@ -1536,6 +2041,47 @@ def _bbox_to_dict(b: _BBox, *, include_method: bool = False) -> dict:
     out = {"x": round(b.x, 4), "y": round(b.y, 4), "w": round(b.w, 4), "h": round(b.h, 4)}
     if include_method and b.method:
         out["method"] = b.method
+    if include_method and b.quality:
+        out["quality"] = b.quality
+    return out
+
+
+def _inspect_uncloneable_summary(pack: _TemplatePack) -> list[dict]:
+    out: list[dict] = []
+    for st in pack.slides:
+        kinds: dict[str, int] = {}
+        for sh in st.shapes:
+            if sh.cloneable:
+                continue
+            kinds[sh.kind] = kinds.get(sh.kind, 0) + 1
+        if kinds:
+            out.append(
+                {
+                    "slide_index": st.index,
+                    "count": sum(kinds.values()),
+                    "kinds": kinds,
+                }
+            )
+    return out
+
+
+def _inspect_safe_zone_caution(
+    pack: _TemplatePack, role_by_index: dict[int, str]
+) -> list[dict]:
+    out: list[dict] = []
+    for st in pack.slides:
+        if role_by_index.get(st.index) != "content":
+            continue
+        sz = st.safe_zone
+        if sz is None or sz.quality == SAFE_ZONE_QUALITY_COMPUTED:
+            continue
+        out.append(
+            {
+                "slide_index": st.index,
+                "role": "content",
+                "quality": sz.quality,
+            }
+        )
     return out
 
 
@@ -1543,15 +2089,15 @@ def _inspect_hints(pack: _TemplatePack) -> dict:
     roles: list[dict] = []
     n = len(pack.slides)
     if n == 0:
-        return {"likely_roles": roles}
+        return {"likely_roles": roles, "uncloneable": []}
     if n == 1:
         roles.append({"index": 0, "role": "content", "confidence": "low"})
-        return {"likely_roles": roles}
-    roles.append({"index": 0, "role": "cover", "confidence": "low"})
-    if n >= 2:
-        roles.append({"index": 1, "role": "content", "confidence": "low"})
-    if n >= 3:
-        roles.append({"index": n - 1, "role": "closing", "confidence": "low"})
+    else:
+        roles.append({"index": 0, "role": "cover", "confidence": "low"})
+        if n >= 2:
+            roles.append({"index": 1, "role": "content", "confidence": "low"})
+        if n >= 3:
+            roles.append({"index": n - 1, "role": "closing", "confidence": "low"})
     bg0 = pack.slides[0].background if pack.slides else {}
     if bg0.get("type") == "solid" and bg0.get("color"):
         try:
@@ -1561,7 +2107,15 @@ def _inspect_hints(pack: _TemplatePack) -> dict:
                         r["role"] = "cover"
         except Exception:
             pass
-    return {"likely_roles": roles}
+    role_by_index = {r["index"]: r["role"] for r in roles}
+    hints: dict = {
+        "likely_roles": roles,
+        "uncloneable": _inspect_uncloneable_summary(pack),
+    }
+    caution = _inspect_safe_zone_caution(pack, role_by_index)
+    if caution:
+        hints["safe_zone_caution"] = caution
+    return hints
 
 
 def _serialize_inspect_payload(
@@ -1571,6 +2125,7 @@ def _serialize_inspect_payload(
     filename: str = "",
     ok: bool = True,
     error: Optional[str] = None,
+    images: Optional[list[dict]] = None,
 ) -> dict:
     if not ok:
         out: dict = {"ok": False, "error": error or "Unknown error"}
@@ -1589,6 +2144,7 @@ def _serialize_inspect_payload(
                 "bbox": _bbox_to_dict(sh.bbox),
                 "has_text": sh.has_text,
                 "text": sh.text,
+                "cloneable": sh.cloneable,
             }
             for sh in st.shapes
         ]
@@ -1615,6 +2171,7 @@ def _serialize_inspect_payload(
         "theme": dict(pack.theme),
         "decorations_source": pack.decorations_source,
         "slides": slides_json,
+        "images": list(images) if images is not None else [],
         "hints": _inspect_hints(pack),
     }
     return payload
@@ -1792,7 +2349,6 @@ async def _load_reference_pptx(
 # ============================================================================
 
 _BLANK_LAYOUT_NAMES = frozenset({"blank", "vuota", "empty", "leer"})
-_CLONE_SKIP_KINDS = frozenset({"chart", "table", "unsupported"})
 
 
 def _find_blank_layout(prs):
@@ -1876,14 +2432,24 @@ def _clone_decorations(
             continue
         try:
             if dec.kind == "picture":
-                target_slide.shapes.add_picture(
-                    BytesIO(source_shape.image.blob),
-                    source_shape.left,
-                    source_shape.top,
-                    width=source_shape.width,
-                    height=source_shape.height,
+                used_add_picture = False
+                try:
+                    target_slide.shapes.add_picture(
+                        BytesIO(source_shape.image.blob),
+                        source_shape.left,
+                        source_shape.top,
+                        width=source_shape.width,
+                        height=source_shape.height,
+                    )
+                    used_add_picture = True
+                except Exception:
+                    pass
+                if used_add_picture:
+                    continue
+                log.debug(
+                    "[template] clone picture id=%s via deepcopy (no .image blob)",
+                    dec.shape_id,
                 )
-                continue
             new_el = deepcopy(source_shape.element)
             _remap_blips_in_element(new_el, source_part, target_slide.part, rId_map)
             sp_tree.insert_element_before(new_el, "p:extLst")
@@ -1934,23 +2500,66 @@ def _decoration_visible_on_slide(
     return 0 <= cx <= slide_w and 0 <= cy <= slide_h
 
 
+def _template_edit_defaults(edits: Optional[dict]) -> dict:
+    raw: dict = {}
+    if isinstance(edits, dict) and isinstance(edits.get("defaults"), dict):
+        raw = edits["defaults"]
+    return {
+        "drop_text": raw.get("drop_text") is True,
+        "drop_placeholders": raw.get("drop_placeholders") is True,
+        "drop_offslide": raw.get("drop_offslide", TEMPLATE_EDIT_DEFAULT_DROP_OFFSLIDE),
+    }
+
+
+def _text_decorations_for_slide(st: _SlideTemplate) -> list[_Decoration]:
+    out: list[_Decoration] = []
+    for sh in st.shapes:
+        if not sh.has_text and sh.kind not in ("textbox",):
+            continue
+        if not sh.cloneable:
+            continue
+        out.append(
+            _Decoration(
+                shape_id=sh.id,
+                kind=sh.kind,
+                name=sh.name,
+                bbox=sh.bbox,
+                z_order=sh.z_order,
+            )
+        )
+    return out
+
+
 def _apply_template_edits(
     pack: _TemplatePack, edits: Optional[dict]
 ) -> _TemplatePack:
     """Filter decorations per template_edits (§6.3). Mutates a logical copy of pack."""
-    if not edits:
-        return pack
-
-    defaults = edits.get("defaults") if isinstance(edits.get("defaults"), dict) else {}
-    drop_offslide = defaults.get("drop_offslide", True)
+    defaults = _template_edit_defaults(edits)
+    drop_text = defaults["drop_text"]
+    drop_placeholders = defaults["drop_placeholders"]
+    drop_offslide = defaults["drop_offslide"]
     slide_rules: dict[int, dict] = {}
-    for rule in _as_list(edits.get("slides")):
-        if isinstance(rule, dict) and "index" in rule:
-            slide_rules[int(rule["index"])] = rule
+    if isinstance(edits, dict):
+        for rule in _as_list(edits.get("slides")):
+            if isinstance(rule, dict) and "index" in rule:
+                slide_rules[int(rule["index"])] = rule
+
+    placeholder_ids: dict[int, set[int]] = {}
+    for st in pack.slides:
+        placeholder_ids[st.index] = {sh.id for sh in st.shapes if sh.is_placeholder}
 
     new_slides: list[_SlideTemplate] = []
     for st in pack.slides:
         decs = list(st.decorations)
+        if not drop_text:
+            seen = {d.shape_id for d in decs}
+            for td in _text_decorations_for_slide(st):
+                if td.shape_id not in seen:
+                    decs.append(td)
+                    seen.add(td.shape_id)
+        if drop_placeholders:
+            ph = placeholder_ids.get(st.index) or set()
+            decs = [d for d in decs if d.shape_id not in ph]
         if drop_offslide:
             decs = [
                 d
@@ -1991,25 +2600,308 @@ def _apply_template_edits(
     return replace(pack, slides=new_slides)
 
 
+# --- Template mode: deck frame + mapping (§5.1 dual path) --------------------
+
+def _default_frame() -> _BBox:
+    return _BBox(
+        x=MARGIN,
+        y=CONTENT_TOP,
+        w=SLIDE_W_IN - 2 * MARGIN,
+        h=FOOTER_Y - CONTENT_TOP - 0.35,
+    )
+
+
+def _layout_mapping_role(layout: str) -> str:
+    if layout == "cover":
+        return "cover"
+    if layout == "section":
+        return "section"
+    if layout == "closing":
+        return "closing"
+    return "content"
+
+
+def _pick_template_slide(
+    pack: _TemplatePack, layout: str, mapping: Optional[dict]
+) -> int:
+    mapping = mapping if isinstance(mapping, dict) else {}
+    if layout == "default":
+        for key in ("default", "content"):
+            if key in mapping:
+                return int(mapping[key])
+        return 0
+    role = _layout_mapping_role(layout)
+    if role in mapping:
+        return int(mapping[role])
+    if "default" in mapping:
+        return int(mapping["default"])
+    if "content" in mapping:
+        return int(mapping["content"])
+    return 0
+
+
+def _validate_template_mapping(pack: _TemplatePack, mapping: Optional[dict]) -> None:
+    if not isinstance(mapping, dict):
+        return
+    n = len(pack.slides)
+    for key, val in mapping.items():
+        try:
+            idx = int(val)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid template_mapping index for {key!r}: {val!r}"
+            ) from exc
+        if idx < 0 or idx >= n:
+            raise ValueError(
+                f"Invalid template_mapping index {idx} for {key!r} "
+                f"(template has {n} slide(s))"
+            )
+
+
+def _content_bounds(deck, top_y: float) -> tuple[float, float, float, float]:
+    if deck.template_mode:
+        f = deck.frame
+        return (f.x, top_y, f.w, f.y + f.h - top_y)
+    return (
+        MARGIN,
+        top_y,
+        SLIDE_W_IN - 2 * MARGIN,
+        FOOTER_Y - top_y - 0.35,
+    )
+
+
+def _frame_x_w(deck) -> tuple[float, float]:
+    if deck.template_mode:
+        return deck.frame.x, deck.frame.w
+    return MARGIN, SLIDE_W_IN - 2 * MARGIN
+
+
+def _frame_bottom_y(deck, margin: float) -> float:
+    if deck.template_mode:
+        return deck.frame.y + deck.frame.h - margin
+    return FOOTER_Y - margin
+
+
+def _slide_ref_bg_hex(deck, layout_role: str) -> str:
+    if not deck.template_mode or deck.template_pack is None:
+        return _hex("FFFFFF")
+    idx = _pick_template_slide(deck.template_pack, layout_role, deck.template_mapping)
+    st = deck.template_pack.slides[idx]
+    bg = st.background or {}
+    if bg.get("type") == "solid" and bg.get("color"):
+        return _hex(bg["color"])
+    return _hex(deck.template_pack.theme.get("lt1") or "FFFFFF")
+
+
+def _template_chrome_dark(deck, *, legacy_dark: bool) -> bool:
+    if deck.template_mode:
+        return False
+    return legacy_dark
+
+
+def _template_text_colors(deck) -> dict:
+    bg = getattr(deck, "frame_bg_hex", None) or _slide_ref_bg_hex(
+        deck, getattr(deck, "frame_role", "content")
+    )
+    return _derive_readable_colors(bg)
+
+
+def _footer_y_template(deck) -> float:
+    f = deck.frame
+    foot_y = f.y + f.h - 0.35
+    pack = deck.template_pack
+    idx = getattr(deck, "frame_slide_index", None)
+    if pack is None or idx is None:
+        return foot_y
+    st = pack.slides[idx]
+    band = _BBox(x=f.x, y=foot_y, w=f.w, h=0.35)
+    for dec in st.decorations:
+        if _rects_intersect(band, dec.bbox):
+            foot_y = max(f.y + 0.05, foot_y - 0.2)
+            log.debug("[template] footer band lifted for decoration overlap")
+            break
+    return foot_y
+
+
+def _content_layout_band(
+    deck,
+    top: float,
+    *,
+    y_floor_legacy: float = 1.95,
+    bottom_margin: float = 0.25,
+) -> tuple[float, float, float, float]:
+    """Return fx, total_w, y0, avail_h for rows below slide chrome."""
+    if deck.template_mode:
+        fx, total_w = _frame_x_w(deck)
+        y0 = max(top + 0.25, deck.frame.y + 0.15)
+        avail = _frame_bottom_y(deck, bottom_margin) - y0
+        return fx, total_w, y0, avail
+    total_w = SLIDE_W_IN - 2 * MARGIN
+    y0 = max(top + 0.25, y_floor_legacy)
+    avail = FOOTER_Y - y0 - bottom_margin
+    return MARGIN, total_w, y0, avail
+
+
+def _diagram_region(deck, top: float) -> tuple[float, float, float, float]:
+    """Bounding box x, y, w, h for native diagram renderers."""
+    if deck.template_mode:
+        y = top + 0.25
+        x, yb, w, h = _content_bounds(deck, y)
+        return x, yb, w, h
+    y = max(top + 0.3, 2.1)
+    avail = FOOTER_Y - y - 0.3
+    return MARGIN, y, SLIDE_W_IN - 2 * MARGIN, avail
+
+
+def _derive_readable_colors(bg_hex: str) -> dict:
+    bg = _hex(bg_hex)
+    ink = _on(bg)
+    muted = _mix(ink, bg, 0.45)
+    on_dark = _on(_hex("1A1A1A") if _luminance(bg) > 0.42 else bg)
+    return {
+        "ink": ink,
+        "muted": muted,
+        "on_dark": on_dark,
+        "on_dark_soft": _mix(on_dark, bg if _luminance(bg) > 0.42 else "000000", 0.72),
+        "on_dark_faint": _mix(on_dark, bg if _luminance(bg) > 0.42 else "000000", 0.50),
+    }
+
+
+def _content_slide_bg_hex(pack: _TemplatePack, mapping: Optional[dict]) -> str:
+    idx = _pick_template_slide(pack, "content", mapping)
+    st = pack.slides[idx]
+    bg = st.background or {}
+    if bg.get("type") == "solid" and bg.get("color"):
+        return _hex(bg["color"])
+    return _hex(pack.theme.get("lt1") or "FFFFFF")
+
+
+def _merge_theme_from_template(
+    resolved: dict,
+    pack: _TemplatePack,
+    *,
+    content_bg_hex: Optional[str] = None,
+    palette_override: Optional[dict] = None,
+) -> dict:
+    theme = dict(resolved)
+    txml = pack.theme or {}
+    if txml.get("major_font"):
+        theme["head_font"] = txml["major_font"]
+    if txml.get("minor_font"):
+        theme["body_font"] = txml["minor_font"]
+    if txml.get("accent1"):
+        theme["accent"] = _hex(txml["accent1"])
+        theme["primary"] = _hex(txml["accent1"])
+    bg = content_bg_hex or _hex(txml.get("lt1") or "FFFFFF")
+    readable = _derive_readable_colors(bg)
+    theme["ink"] = readable["ink"]
+    theme["muted"] = readable["muted"]
+    if isinstance(palette_override, dict):
+        for k in ("ink", "muted", "primary", "accent"):
+            if palette_override.get(k):
+                theme[k] = _hex(palette_override[k])
+    return theme
+
+
 # ============================================================================
 # Deck builder + renderers
 # ============================================================================
 
 class _Deck:
-    def __init__(self, prs, theme, footer_label, image_resolver=None):
+    def __init__(
+        self,
+        prs,
+        theme,
+        footer_label,
+        image_resolver=None,
+        *,
+        template_pack: Optional[_TemplatePack] = None,
+        source_prs=None,
+        template_mapping: Optional[dict] = None,
+    ):
         self.prs = prs
         self.theme = theme
         self.footer_label = footer_label
         self.image_resolver = image_resolver
         self.total = 0
+        self.template_pack = template_pack
+        self.template_mode = template_pack is not None
+        self.source_prs = source_prs
+        self.template_mapping = template_mapping if isinstance(template_mapping, dict) else {}
+        self.frame = _default_frame()
+        self.frame_role = "default"
+        self.frame_bg_hex: Optional[str] = None
+        self.frame_slide_index: Optional[int] = None
 
-    def blank(self):
-        return self.prs.slides.add_slide(self.prs.slide_layouts[6])
+    def blank(self, layout: str = "default"):
+        if not self.template_mode:
+            return self.prs.slides.add_slide(self.prs.slide_layouts[6])
+        if self.template_pack is None or self.source_prs is None:
+            raise RuntimeError("template_mode requires template_pack and source_prs")
+        idx = _pick_template_slide(self.template_pack, layout, self.template_mapping)
+        st = self.template_pack.slides[idx]
+        slide = _clone_template_slide_to_prs(
+            self.prs,
+            self.source_prs,
+            self.template_pack,
+            source_slide_index=idx,
+            decorations=st.decorations,
+        )
+        self.frame_role = layout
+        self.frame_slide_index = idx
+        bg = st.background or {}
+        if bg.get("type") == "solid" and bg.get("color"):
+            self.frame_bg_hex = _hex(bg["color"])
+        else:
+            self.frame_bg_hex = _hex(self.template_pack.theme.get("lt1") or "FFFFFF")
+        if st.safe_zone:
+            self.frame = st.safe_zone
+        else:
+            log.warning(
+                "[template] slide reference %s has no safe_zone; using default frame",
+                idx,
+            )
+            self.frame = _default_frame()
+        return slide
 
     # -- chrome helpers --------------------------------------------------
     def _content_head(self, slide, slide_dict, page, *, dark=False):
         eb = _first(slide_dict, "eyebrow", "kicker", "category", "section")
         title = _first(slide_dict, "title", "heading", default="")
+        if self.template_mode:
+            tc = _template_text_colors(self)
+            chrome_dark = _template_chrome_dark(self, legacy_dark=dark)
+            fx, fw = self.frame.x, self.frame.w
+            fy = self.frame.y
+            y_title = max(fy + 0.08, fy + (0.1 if eb else 0.05))
+            if eb:
+                _eyebrow(
+                    slide, self.theme, eb, x=fx, y=fy, w=fw, dark=chrome_dark
+                )
+            if title:
+                _title(
+                    slide,
+                    self.theme,
+                    title,
+                    x=fx,
+                    y=y_title,
+                    w=fw,
+                    dark=chrome_dark,
+                    color=tc["ink"],
+                )
+            foot_y = _footer_y_template(self)
+            _footer(
+                slide,
+                self.theme,
+                page=page,
+                label=self.footer_label,
+                dark=chrome_dark,
+                y=foot_y,
+                x=fx,
+                w=fw,
+            )
+            bottom = y_title + (0.95 if len(_strip_md(str(title))) < 46 else 1.35)
+            return max(bottom, self.frame.y + 0.05) if title else max(fy, self.frame.y + 0.05)
         y_title = 0.98 if eb else 0.8
         if eb:
             _eyebrow(slide, self.theme, eb, dark=dark)
@@ -2023,8 +2915,117 @@ class _Deck:
 
 def _r_cover(deck, slide_dict, page):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_dark"])
+    slide = deck.blank("cover")
+    _maybe_set_bg(deck, slide, t["bg_dark"])
+    if deck.template_mode:
+        tc = _template_text_colors(deck)
+        fx, fw = _frame_x_w(deck)
+        fy, fh = deck.frame.y, deck.frame.h
+        tw = fw * 0.92
+        _draw_icon(
+            slide,
+            t,
+            _first(slide_dict, "icon", default="sparkles") or "sparkles",
+            fx,
+            fy + fh * 0.02,
+            min(0.85, fh * 0.12),
+            circle_fill=t["accent_soft"],
+            glyph_color=t["accent"],
+        )
+        eb = _first(slide_dict, "eyebrow", "kicker", "category", default="")
+        y_cur = fy + fh * 0.14
+        if eb:
+            _eyebrow(slide, t, eb, x=fx, y=y_cur, w=tw, dark=False)
+            y_cur += 0.38
+        title = _first(slide_dict, "title", "heading", default="")
+        if title:
+            tb, tf = _textbox(slide, fx, y_cur, tw, fh * 0.28, anchor="top")
+            _add_para(
+                tf,
+                _strip_md(str(title)),
+                first=True,
+                size=min(42, max(28, int(36 * fh / 5.5))),
+                color=tc["ink"],
+                bold=True,
+                font=t["head_font"],
+                align="left",
+                line=1.02,
+                space_after=0,
+            )
+            y_cur += fh * 0.28
+        sub = _first(slide_dict, "subtitle", "lead", "description", "summary", default="")
+        if sub:
+            tb2, tf2 = _textbox(slide, fx, y_cur, tw, fh * 0.14, anchor="top")
+            _add_para(
+                tf2,
+                _strip_md(str(sub)),
+                first=True,
+                size=15,
+                color=tc["muted"],
+                font=t["body_font"],
+                align="left",
+                line=1.3,
+                space_after=0,
+            )
+        chips = _as_list(_first(slide_dict, "chips", "tags", "authors", default=[]))
+        author = _first(slide_dict, "author", default="")
+        if author and not chips:
+            chips = [c.strip() for c in re.split(r"[,/|]", str(author)) if c.strip()]
+        chip_y = _footer_y_template(deck) - 0.55
+        cx = fx
+        for chip in chips[:4]:
+            txt = _strip_md(str(chip))
+            cw = min(3.2, 0.62 + len(txt) * 0.085)
+            if cx + cw > fx + fw:
+                break
+            _card(
+                slide,
+                cx,
+                chip_y,
+                cw,
+                0.5,
+                fill=t["card_soft"],
+                radius=0.5,
+                shadow=False,
+                line=t["card_border"],
+                line_w=1.0,
+            )
+            tbc, tfc = _textbox(slide, cx, chip_y, cw, 0.5, anchor="middle")
+            _add_para(
+                tfc,
+                txt,
+                first=True,
+                size=11,
+                color=tc["muted"],
+                font=t["body_font"],
+                align="center",
+                space_after=0,
+            )
+            cx += cw + 0.18
+        date = _first(slide_dict, "date", "footer", default=deck.footer_label)
+        if date:
+            tbd, tfd = _textbox(slide, fx, chip_y + 0.55, tw, 0.35, anchor="middle")
+            _add_para(
+                tfd,
+                _strip_md(str(date)),
+                first=True,
+                size=9.5,
+                color=tc["on_dark_faint"],
+                font=t["body_font"],
+                align="left",
+                space_after=0,
+            )
+        _footer(
+            slide,
+            t,
+            page=page,
+            label=deck.footer_label,
+            dark=False,
+            y=_footer_y_template(deck),
+            x=fx,
+            w=fw,
+        )
+        return
     # layered decorative circles (right side)
     _oval(slide, SLIDE_W_IN - 3.2, -2.0, 5.6, fill=_lighten(t["bg_dark"], 0.08))
     _oval(slide, SLIDE_W_IN - 1.1, 4.2, 3.4, fill=_lighten(t["bg_dark"], 0.05))
@@ -2073,8 +3074,73 @@ def _r_cover(deck, slide_dict, page):
 
 def _r_section(deck, slide_dict, page):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_dark"])
+    slide = deck.blank("section")
+    _maybe_set_bg(deck, slide, t["bg_dark"])
+    if deck.template_mode:
+        tc = _template_text_colors(deck)
+        fx, fw = _frame_x_w(deck)
+        fy, fh = deck.frame.y, deck.frame.h
+        num = _first(slide_dict, "number", "chapter", "index", default="")
+        y_cur = fy + fh * 0.08
+        num_size = 68 if fh >= 4.5 else 58
+        if num:
+            tbn, tfn = _textbox(slide, fx, y_cur, fw * 0.4, 1.2, anchor="top")
+            _add_para(
+                tfn,
+                str(num),
+                first=True,
+                size=num_size,
+                color=t["accent"],
+                bold=True,
+                font=t["head_font"],
+                align="left",
+                space_after=0,
+            )
+            y_cur += 1.25
+        eb = _first(slide_dict, "eyebrow", "kicker", "category", default="")
+        if eb:
+            _eyebrow(slide, t, eb, x=fx, y=y_cur, w=fw, dark=False)
+            y_cur += 0.38
+        title = _first(slide_dict, "title", "heading", default="")
+        if title:
+            tb, tf = _textbox(slide, fx, y_cur, fw, min(1.6, fh * 0.22), anchor="top")
+            _add_para(
+                tf,
+                _strip_md(str(title)),
+                first=True,
+                size=min(38, max(28, int(34 * fh / 5.5))),
+                color=tc["ink"],
+                bold=True,
+                font=t["head_font"],
+                align="left",
+                line=1.03,
+                space_after=0,
+            )
+            y_cur += min(1.6, fh * 0.22)
+        lead = _first(slide_dict, "lead", "subtitle", "description", "summary", default="")
+        if lead:
+            tbl, tfl = _textbox(slide, fx, y_cur, fw, fh - (y_cur - fy) - 0.5, anchor="top")
+            _add_para(
+                tfl,
+                _strip_md(str(lead)),
+                first=True,
+                size=14,
+                color=tc["muted"],
+                font=t["body_font"],
+                line=1.3,
+                space_after=0,
+            )
+        _footer(
+            slide,
+            t,
+            page=page,
+            label=deck.footer_label,
+            dark=False,
+            y=_footer_y_template(deck),
+            x=fx,
+            w=fw,
+        )
+        return
     _oval(slide, SLIDE_W_IN - 2.6, -1.6, 4.6, fill=_lighten(t["bg_dark"], 0.07))
     num = _first(slide_dict, "number", "chapter", "index", default="")
     if num:
@@ -2098,28 +3164,34 @@ def _r_section(deck, slide_dict, page):
 
 # ---- Title only / title + body --------------------------------------------
 
-def _r_title_body(deck, slide_dict, page):
+def _r_title_body(deck, slide_dict, page, *, blank_layout: str = "content"):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank(blank_layout)
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     body = _first(slide_dict, "body", "content", "text", "description", "summary",
                   "paragraph", "lead", default="")
     bullets = _harvest_bullets(slide_dict)
     y = top + 0.15
+    if deck.template_mode:
+        x, yb, w, h = _content_bounds(deck, y)
+        body_h, bullet_h = h, h
+    else:
+        x, yb, w = MARGIN, y, SLIDE_W_IN - 2 * MARGIN
+        body_h, bullet_h = 4.4, 4.6
     if body and isinstance(body, str) and not bullets:
-        tb, tf = _textbox(slide, MARGIN, y, SLIDE_W_IN - 2 * MARGIN, 4.4)
+        tb, tf = _textbox(slide, x, yb, w, body_h)
         for i, para in enumerate([p for p in str(body).split("\n") if p.strip()]):
             _add_para(tf, _md_runs(para), first=(i == 0), size=15, color=t["muted"],
                       font=t["body_font"], line=1.36, space_after=10, align="left")
     elif bullets:
-        _bullet_block(slide, t, bullets, MARGIN, y, SLIDE_W_IN - 2 * MARGIN, 4.6)
+        _bullet_block(slide, t, bullets, x, yb, w, bullet_h)
 
 
 def _r_title_only(deck, slide_dict, page):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     eb = _first(slide_dict, "eyebrow", "kicker", default="")
     if eb:
         _eyebrow(slide, t, eb, y=2.6)
@@ -2161,8 +3233,8 @@ def _bullet_block(slide, theme, bullets, x, y, w, h, *, size=14, anchor="top",
 
 def _r_title_bullets(deck, slide_dict, page):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     bullets = _harvest_bullets(slide_dict)
     if not bullets:
@@ -2172,8 +3244,12 @@ def _r_title_bullets(deck, slide_dict, page):
     # sparse lists get larger type and breathe to fill the canvas
     size = 18 if n <= 4 else (16 if n <= 6 else 14)
     y = top + 0.3
-    h = FOOTER_Y - y - 0.35
-    _bullet_block(slide, t, bullets, MARGIN, y, SLIDE_W_IN - 2 * MARGIN, h,
+    if deck.template_mode:
+        x, yb, w, h = _content_bounds(deck, y)
+    else:
+        x, yb, w = MARGIN, y, SLIDE_W_IN - 2 * MARGIN
+        h = FOOTER_Y - y - 0.35
+    _bullet_block(slide, t, bullets, x, yb, w, h,
                   size=size, anchor=("middle" if n <= 6 else "top"), fill=(n <= 8))
 
 
@@ -2276,8 +3352,8 @@ def _split_cards(slide_dict):
 
 def _r_comparison(deck, slide_dict, page):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     cards = _split_cards(slide_dict)
     if not cards:
@@ -2285,22 +3361,30 @@ def _r_comparison(deck, slide_dict, page):
     n = min(len(cards), 3)
     cards = cards[:n]
     gap = 0.4
-    total_w = SLIDE_W_IN - 2 * MARGIN
-    cw = (total_w - gap * (n - 1)) / n
-    y = max(top + 0.25, 1.95)
-    # Adaptive height: description-only cards are shorter and vertically
-    # centred; cards with bullet lists (pricing tiers etc.) fill the slide.
     has_points = any(
         (c.get("points") or c.get("bullets") or c.get("items"))
         for c in cards if isinstance(c, dict)
     )
-    if has_points:
-        h = FOOTER_Y - y - 0.25
+    if deck.template_mode:
+        fx, total_w, y0, avail = _content_layout_band(deck, top)
+        cw = (total_w - gap * (n - 1)) / n
+        if has_points:
+            h, y = avail, y0
+        else:
+            h = min(avail, 3.0)
+            y = y0 + max(0.25, (avail - h) / 2)
     else:
-        h = min(FOOTER_Y - y - 0.25, 3.0)
-        y = top + max(0.25, (FOOTER_Y - top - h) / 2)  # centre vertically
+        fx = MARGIN
+        total_w = SLIDE_W_IN - 2 * MARGIN
+        cw = (total_w - gap * (n - 1)) / n
+        y = max(top + 0.25, 1.95)
+        if has_points:
+            h = FOOTER_Y - y - 0.25
+        else:
+            h = min(FOOTER_Y - y - 0.25, 3.0)
+            y = top + max(0.25, (FOOTER_Y - top - h) / 2)
     for i, card in enumerate(cards):
-        x = MARGIN + i * (cw + gap)
+        x = fx + i * (cw + gap)
         hl = bool(card.get("highlight") or card.get("featured") or card.get("recommended"))
         badge = card.get("badge")  # only explicit badges (never auto)
         _card_column(slide, t, x, y, cw, h, card, highlight=hl, badge=badge)
@@ -2310,8 +3394,8 @@ def _r_comparison(deck, slide_dict, page):
 
 def _r_kpi(deck, slide_dict, page):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     stats = _first(slide_dict, "stats", "kpis", "metrics", "numbers", "items",
                    "cards", default=[])
@@ -2321,12 +3405,18 @@ def _r_kpi(deck, slide_dict, page):
     n = min(len(stats), 4)
     stats = stats[:n]
     gap = 0.4
-    total_w = SLIDE_W_IN - 2 * MARGIN
+    fx, total_w, y0, avail = _content_layout_band(deck, top, y_floor_legacy=2.2)
     cw = (total_w - gap * (n - 1)) / n
-    y = max(top + 0.35, 2.2)
-    h = 2.7
+    if deck.template_mode:
+        f = deck.frame
+        foot = _footer_y_template(deck)
+        y = min(max(top, f.y + 0.08), foot - 1.0)
+        h = min(2.7, max(0.85, foot - 0.2 - y))
+    else:
+        y = max(top + 0.35, 2.2)
+        h = 2.7
     for i, s in enumerate(stats):
-        x = MARGIN + i * (cw + gap)
+        x = fx + i * (cw + gap)
         _card(slide, x, y, cw, h, fill=t["card_soft"], radius=0.06,
               line=t["card_border"], line_w=1.0, shadow=False)
         if isinstance(s, dict):
@@ -2358,8 +3448,8 @@ def _r_kpi(deck, slide_dict, page):
 
 def _r_timeline(deck, slide_dict, page, *, process=False):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     steps = _first(slide_dict, "steps", "phases", "milestones", "stages", "items",
                    "events", default=[])
@@ -2369,17 +3459,21 @@ def _r_timeline(deck, slide_dict, page, *, process=False):
     n = min(len(steps), 5)
     steps = steps[:n]
     gap = 0.35
-    total_w = SLIDE_W_IN - 2 * MARGIN
-    cw = (total_w - gap * (n - 1)) / n
-    # estimate needed card height from richest step, then centre vertically
     has_desc = any(isinstance(s, dict) and _first(s, "description", "detail", "text",
                    "body", default="") for s in steps)
     h = 2.5 if has_desc else 1.7
-    y = top + max(0.6, (FOOTER_Y - top - h) / 2)
-    # connector line
-    _rect(slide, MARGIN + cw / 2, y - 0.32, total_w - cw, 0.03, fill=t["card_border"])
+    if deck.template_mode:
+        fx, total_w, y0, avail = _content_layout_band(deck, top)
+        cw = (total_w - gap * (n - 1)) / n
+        y = y0 + max(0.35, (avail - h) / 2)
+    else:
+        fx = MARGIN
+        total_w = SLIDE_W_IN - 2 * MARGIN
+        cw = (total_w - gap * (n - 1)) / n
+        y = top + max(0.6, (FOOTER_Y - top - h) / 2)
+    _rect(slide, fx + cw / 2, y - 0.32, total_w - cw, 0.03, fill=t["card_border"])
     for i, s in enumerate(steps):
-        x = MARGIN + i * (cw + gap)
+        x = fx + i * (cw + gap)
         # node circle with number
         nd = 0.5
         _oval(slide, x + cw / 2 - nd / 2, y - 0.32 - nd / 2, nd, fill=t["accent"])
@@ -2416,8 +3510,71 @@ def _r_timeline(deck, slide_dict, page, *, process=False):
 
 def _r_quote(deck, slide_dict, page):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_dark"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_dark"])
+    if deck.template_mode:
+        tc = _template_text_colors(deck)
+        fx, fw = _frame_x_w(deck)
+        fy, fh = deck.frame.y, deck.frame.h
+        tbq, tfq = _textbox(slide, fx, fy + 0.05, min(2.0, fw * 0.2), fh * 0.18)
+        _add_para(
+            tfq,
+            "\u201C",
+            first=True,
+            size=min(110, int(90 * fh / 5.5)),
+            color=t["accent"],
+            bold=True,
+            font=t["head_font"],
+            space_after=0,
+        )
+        quote = _first(slide_dict, "quote", "text", "content", "message", default="")
+        tb, tf = _textbox(slide, fx, fy + fh * 0.22, fw * 0.92, fh * 0.42, anchor="top")
+        _add_para(
+            tf,
+            _strip_md(str(quote)),
+            first=True,
+            size=24,
+            color=tc["ink"],
+            italic=True,
+            font=t["head_font"],
+            line=1.22,
+            space_after=0,
+        )
+        author = _first(slide_dict, "author", "by", "source", default="")
+        role = _first(slide_dict, "role", "title", "position", default="")
+        if author:
+            tba, tfa = _textbox(slide, fx, fy + fh * 0.68, fw, 0.8)
+            line = f"\u2014 {_strip_md(str(author))}"
+            _add_para(
+                tfa,
+                line,
+                first=True,
+                size=15,
+                color=t["accent"],
+                bold=True,
+                font=t["body_font"],
+                space_after=2,
+            )
+            if role:
+                _add_para(
+                    tfa,
+                    _strip_md(str(role)),
+                    size=12,
+                    color=tc["on_dark_faint"],
+                    font=t["body_font"],
+                    space_after=0,
+                )
+        _footer(
+            slide,
+            t,
+            page=page,
+            label=deck.footer_label,
+            dark=False,
+            y=_footer_y_template(deck),
+            x=fx,
+            w=fw,
+        )
+        return
     _oval(slide, -1.4, -1.4, 3.4, fill=_lighten(t["bg_dark"], 0.06))
     # big quotation mark
     tbq, tfq = _textbox(slide, MARGIN, 0.9, 2.0, 1.6)
@@ -2444,8 +3601,82 @@ def _r_quote(deck, slide_dict, page):
 
 def _r_closing(deck, slide_dict, page):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_dark"])
+    slide = deck.blank("closing")
+    _maybe_set_bg(deck, slide, t["bg_dark"])
+    if deck.template_mode:
+        tc = _template_text_colors(deck)
+        fx, fw = _frame_x_w(deck)
+        fy, fh = deck.frame.y, deck.frame.h
+        y_cur = fy + fh * 0.06
+        eb = _first(slide_dict, "eyebrow", "kicker", default="")
+        if eb:
+            _eyebrow(slide, t, eb, x=fx, y=y_cur, w=fw, dark=False)
+            y_cur += 0.38
+        title = _first(slide_dict, "title", "heading", default="Thank you")
+        tb, tf = _textbox(slide, fx, y_cur, fw, min(1.4, fh * 0.2), anchor="top")
+        _add_para(
+            tf,
+            _strip_md(str(title)),
+            first=True,
+            size=min(40, max(28, int(36 * fh / 5.5))),
+            color=tc["ink"],
+            bold=True,
+            font=t["head_font"],
+            line=1.03,
+            space_after=0,
+        )
+        y_cur += min(1.4, fh * 0.2)
+        takeaways = _first(
+            slide_dict, "takeaways", "key_takeaways", "next_steps", "points", default=[]
+        )
+        takeaways = (
+            _harvest_bullets({"points": takeaways})
+            if takeaways
+            else _harvest_bullets(slide_dict)
+        )
+        if takeaways:
+            tbk, tfk = _textbox(
+                slide, fx, y_cur, fw, _footer_y_template(deck) - y_cur - 0.55
+            )
+            first = True
+            for b in takeaways[:5]:
+                _add_bullet(
+                    tfk,
+                    _clean_bullet(b),
+                    first=first,
+                    size=15,
+                    color=tc["muted"],
+                    accent=t["accent"],
+                    font=t["body_font"],
+                    space_after=10,
+                )
+                first = False
+        contact = _first(slide_dict, "contact", "email", "cta", "footer", default="")
+        if contact:
+            tbc, tfc = _textbox(
+                slide, fx, _footer_y_template(deck) - 0.5, fw, 0.45, anchor="middle"
+            )
+            _add_para(
+                tfc,
+                _strip_md(str(contact)),
+                first=True,
+                size=13,
+                color=t["accent"],
+                bold=True,
+                font=t["body_font"],
+                space_after=0,
+            )
+        _footer(
+            slide,
+            t,
+            page=page,
+            label=deck.footer_label,
+            dark=False,
+            y=_footer_y_template(deck),
+            x=fx,
+            w=fw,
+        )
+        return
     _oval(slide, SLIDE_W_IN - 3.0, -2.0, 5.2, fill=_lighten(t["bg_dark"], 0.07))
     _oval(slide, SLIDE_W_IN - 1.0, 4.6, 3.0, fill=t["accent"], alpha=18)
     eb = _first(slide_dict, "eyebrow", "kicker", default="")
@@ -2492,8 +3723,8 @@ _ALERT_ICONS = {
 def _r_alert(deck, slide_dict, page):
     import math
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     level = str(_first(slide_dict, "level", "severity", "variant", default="info")).lower()
     color = _ALERT_COLORS.get(level, t["accent"])
@@ -2501,10 +3732,15 @@ def _r_alert(deck, slide_dict, page):
     bullets = _harvest_bullets(slide_dict)
     heading = _first(slide_dict, "callout_title", "alert_title", "heading", default="")
 
-    y = max(top + 0.35, 2.2)
-    avail = FOOTER_Y - y - 0.4
-    x = MARGIN
-    card_w = SLIDE_W_IN - 2 * MARGIN
+    if deck.template_mode:
+        x, card_w, y0, band = _content_layout_band(deck, top, y_floor_legacy=2.2)
+        y = y0 + 0.1
+        avail = band - 0.15
+    else:
+        y = max(top + 0.35, 2.2)
+        avail = FOOTER_Y - y - 0.4
+        x = MARGIN
+        card_w = SLIDE_W_IN - 2 * MARGIN
     icon_d = 0.95
     text_x = x + 0.55 + icon_d + 0.5
     text_w = x + card_w - 0.6 - text_x
@@ -2553,8 +3789,8 @@ def _r_alert(deck, slide_dict, page):
 
 def _r_table(deck, slide_dict, page):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     rows = _first(slide_dict, "rows", "data", "table", default=[])
     headers = _first(slide_dict, "headers", "columns", "header", default=[])
@@ -2568,10 +3804,17 @@ def _r_table(deck, slide_dict, page):
         return
     ncols = max(len(headers) if headers else 0, max(len(r) for r in rows))
     nrows = len(rows) + (1 if headers else 0)
-    y = max(top + 0.25, 2.0)
-    h = min(FOOTER_Y - y - 0.2, 0.5 * nrows + 0.2)
-    tbl_shape = slide.shapes.add_table(nrows, ncols, Inches(MARGIN), Inches(y),
-                                       Inches(SLIDE_W_IN - 2 * MARGIN), Inches(h))
+    if deck.template_mode:
+        fx, fw, y0, avail = _content_layout_band(deck, top, y_floor_legacy=2.0)
+        y = y0
+        h = min(avail - 0.05, 0.5 * nrows + 0.2)
+        tbl_x, tbl_w = fx, fw
+    else:
+        y = max(top + 0.25, 2.0)
+        h = min(FOOTER_Y - y - 0.2, 0.5 * nrows + 0.2)
+        tbl_x, tbl_w = MARGIN, SLIDE_W_IN - 2 * MARGIN
+    tbl_shape = slide.shapes.add_table(nrows, ncols, Inches(tbl_x), Inches(y),
+                                       Inches(tbl_w), Inches(h))
     table = tbl_shape.table
     r0 = 0
     if headers:
@@ -2616,24 +3859,30 @@ def _icon_items(slide_dict):
 
 def _r_icon_list(deck, slide_dict, page):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     items = _icon_items(slide_dict)[:5]
     if not items:
         return
-    y = max(top + 0.25, 2.05)
-    avail = FOOTER_Y - y - 0.1
+    if deck.template_mode:
+        fx, fw, y0, avail = _content_layout_band(deck, top, y_floor_legacy=2.05)
+        y, avail = y0, avail - 0.1
+    else:
+        fx = MARGIN
+        fw = SLIDE_W_IN - 2 * MARGIN
+        y = max(top + 0.25, 2.05)
+        avail = FOOTER_Y - y - 0.1
     rh = min(1.0, avail / max(1, len(items)))
     for i, it in enumerate(items):
         ry = y + i * rh
         d = min(0.72, rh - 0.18)
-        _draw_icon(slide, t, _first(it, "icon", default=""), MARGIN, ry, d,
+        _draw_icon(slide, t, _first(it, "icon", default=""), fx, ry, d,
                    circle_fill=t["accent_soft"], glyph_color=t["accent"], idx=i)
-        tx = MARGIN + d + 0.35
+        tx = fx + d + 0.35
         title = _first(it, "title", "heading", "label", "name", default="")
         desc = _first(it, "description", "detail", "text", "body", default="")
-        tbt, tft = _textbox(slide, tx, ry, SLIDE_W_IN - MARGIN - tx, rh)
+        tbt, tft = _textbox(slide, tx, ry, fx + fw - tx, rh)
         _add_para(tft, _strip_md(str(title)), first=True, size=16, color=t["ink"],
                   bold=True, font=t["head_font"], space_after=2)
         if desc:
@@ -2643,8 +3892,8 @@ def _r_icon_list(deck, slide_dict, page):
 
 def _r_icon_grid(deck, slide_dict, page, cols=3):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     items = _icon_items(slide_dict)
     if not items:
@@ -2654,14 +3903,19 @@ def _r_icon_grid(deck, slide_dict, page, cols=3):
     cols = min(cols, 3)
     rows = (n + cols - 1) // cols
     gap = 0.35
-    total_w = SLIDE_W_IN - 2 * MARGIN
+    if deck.template_mode:
+        fx, total_w, y0, avail_h = _content_layout_band(deck, top, y_floor_legacy=2.0)
+        avail_h -= 0.1
+    else:
+        fx = MARGIN
+        total_w = SLIDE_W_IN - 2 * MARGIN
+        y0 = max(top + 0.25, 2.0)
+        avail_h = FOOTER_Y - y0 - 0.1
     cw = (total_w - gap * (cols - 1)) / cols
-    y0 = max(top + 0.25, 2.0)
-    avail_h = FOOTER_Y - y0 - 0.1
     ch = (avail_h - gap * (rows - 1)) / rows
     for i, it in enumerate(items[:cols * rows]):
         r, c = divmod(i, cols)
-        x = MARGIN + c * (cw + gap)
+        x = fx + c * (cw + gap)
         yy = y0 + r * (ch + gap)
         _card(slide, x, yy, cw, ch, fill=t["card_soft"], radius=0.06,
               line=t["card_border"], line_w=1.0, shadow=False)
@@ -2720,6 +3974,10 @@ class Tools:
             default=True,
             description="Allow inspect_slides tool (template inventory JSON).",
         )
+        inspect_extract_images: bool = Field(
+            default=True,
+            description="Upload referenced template images on inspect (images[] JSON).",
+        )
 
     # -- status / link helpers -------------------------------------------
     async def _emit(self, emitter, desc, *, done=False):
@@ -2758,63 +4016,63 @@ class Tools:
         day = datetime.now(timezone.utc).strftime("%Y%m%d")
         short = uuid.uuid4().hex[:6]
         filename = f"presentation-{slug}_{day}_{short}.pptx"
-        user_id = (user_dict or {}).get("id") if isinstance(user_dict, dict) else None
-        if _HAS_OWUI_FILES and request is not None and user_id:
-            try:
-                user_model = await _maybe_await(Users.get_user_by_id(user_id))
-                if user_model:
-                    buf = BytesIO(data)
-                    buf.seek(0)
-                    upload = UploadFile(
-                        file=buf,
-                        filename=filename,
-                        headers=Headers({
-                            "content-type":
-                                "application/vnd.openxmlformats-officedocument."
-                                "presentationml.presentation"
-                        }),
-                    )
-                    item = await _maybe_await(upload_file_handler(
-                        request=request, file=upload,
-                        metadata={}, process=False,
-                        user=user_model,
-                    ))
-                    fid = _extract_file_id(item)
-                    if fid:
-                        return filename, f"/api/v1/files/{fid}/content", None, fid
-                    log.warning(
-                        "[generate_slides] Files API returned no file id "
-                        "(type=%s)",
-                        type(item).__name__,
-                    )
-                else:
-                    log.warning(
-                        "[generate_slides] user not found for Files API: %s",
-                        user_id,
-                    )
-            except Exception:
-                log.exception("[generate_slides] Files API save failed")
-        elif not _HAS_OWUI_FILES:
-            log.debug("[generate_slides] Open WebUI Files API unavailable")
-        elif request is None or not user_id:
-            log.debug(
-                "[generate_slides] missing request or user id for Files API"
-            )
         export_dir = (self.valves.pptx_export_dir or "").strip() or \
             "/app/backend/data/cache/files"
-        try:
-            os.makedirs(export_dir, mode=0o775, exist_ok=True)
-            path = os.path.join(export_dir, filename)
-            with open(path, "wb") as fh:
-                fh.write(data)
-            if os.path.isfile(path) and os.path.getsize(path) > 0:
+        url, err, fid = await _upload_bytes_to_files_api(
+            data,
+            filename=filename,
+            content_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "presentationml.presentation"
+            ),
+            request=request,
+            user_dict=user_dict,
+            export_dir=export_dir,
+            log_prefix="generate_slides",
+        )
+        if url:
+            return filename, url, err, fid
+        return filename, url, err or "impossibile salvare", fid
+
+    async def _build_inspect_images(
+        self,
+        data: bytes,
+        pack: _TemplatePack,
+        request,
+        user_dict,
+    ) -> list[dict]:
+        """Extract referenced media and upload sidecar files for inspect JSON."""
+        raw = _extract_referenced_media(data, pack)
+        if not raw:
+            return []
+        export_dir = (self.valves.pptx_export_dir or "").strip() or \
+            "/app/backend/data/cache/files"
+        for im in raw:
+            base = Path(im.internal_path).name
+            stem = _slugify(Path(base).stem, max_len=40) or "asset"
+            ext = Path(base).suffix or ".bin"
+            short = uuid.uuid4().hex[:6]
+            filename = f"template-asset-{stem}_{short}{ext}"
+            url, err, fid = await _upload_bytes_to_files_api(
+                im.blob,
+                filename=filename,
+                content_type=im.mime,
+                request=request,
+                user_dict=user_dict,
+                export_dir=export_dir,
+                log_prefix="inspect_slides",
+            )
+            if url:
+                im.url = url
+                im.cache_file_id = fid
+            else:
+                im.upload_skipped = True
                 log.warning(
-                    "[generate_slides] saved via cache fallback: %s", filename
+                    "[inspect_slides] media upload skipped for %s: %s",
+                    im.internal_path,
+                    err or "no url",
                 )
-                return filename, f"/cache/files/{filename}", None, None
-        except Exception as exc:
-            return filename, None, str(exc), None
-        return filename, None, "impossibile salvare", None
+        return _inspect_images_to_json(raw)
 
     @staticmethod
     def _error(msg: str) -> str:
@@ -2870,18 +4128,55 @@ class Tools:
                                                      user_dict, ratio)
 
     # -- rendering pipeline ----------------------------------------------
-    def _build(self, spec: dict):
-        prs = Presentation()
-        prs.slide_width = Inches(SLIDE_W_IN)
-        prs.slide_height = Inches(SLIDE_H_IN)
-
+    def _build(
+        self,
+        spec: dict,
+        *,
+        template_pack: Optional[_TemplatePack] = None,
+        reference_bytes: Optional[bytes] = None,
+    ):
         raw_slides = _first(spec, "slides", "sections", "pages", "deck",
                             "slideshow", "presentation", default=[])
         slides = [s for s in _as_list(raw_slides) if isinstance(s, dict)]
-        theme = _resolve_theme(spec, slides)
         footer = (spec.get("footer") or self.valves.footer_label or
                   spec.get("title") or "").strip()
-        deck = _Deck(prs, theme, footer)
+        mapping = spec.get("template_mapping")
+        source_prs = None
+
+        if template_pack is not None:
+            if not reference_bytes:
+                raise ValueError("template_pack requires reference_bytes")
+            _validate_template_mapping(template_pack, mapping)
+            pack = template_pack
+            if spec.get("template_edits"):
+                pack = _apply_template_edits(pack, spec["template_edits"])
+            source_prs = Presentation(BytesIO(reference_bytes))
+            prs = Presentation()
+            prs.slide_width = Inches(pack.slide_width_in)
+            prs.slide_height = Inches(pack.slide_height_in)
+            pal = spec.get("palette") if isinstance(spec.get("palette"), dict) else {}
+            content_bg = _content_slide_bg_hex(pack, mapping)
+            theme = _merge_theme_from_template(
+                _resolve_theme(spec, slides),
+                pack,
+                content_bg_hex=content_bg,
+                palette_override=pal,
+            )
+            deck = _Deck(
+                prs,
+                theme,
+                footer,
+                template_pack=pack,
+                source_prs=source_prs,
+                template_mapping=mapping,
+            )
+        else:
+            prs = Presentation()
+            prs.slide_width = Inches(SLIDE_W_IN)
+            prs.slide_height = Inches(SLIDE_H_IN)
+            theme = _resolve_theme(spec, slides)
+            deck = _Deck(prs, theme, footer)
+
         deck.total = len(slides)
 
         for i, slide_dict in enumerate(slides):
@@ -2893,8 +4188,16 @@ class Tools:
                 import traceback
                 traceback.print_exc()
                 # never fail the whole deck for one slide
-                _r_title_body(deck, {"title": _first(slide_dict, "title", default="Slide"),
-                                     "body": f"(errore rendering: {exc})"}, page)
+                role = _layout_mapping_role(layout)
+                _r_title_body(
+                    deck,
+                    {
+                        "title": _first(slide_dict, "title", default="Slide"),
+                        "body": f"(errore rendering: {exc})",
+                    },
+                    page,
+                    blank_layout=role,
+                )
         buf = BytesIO()
         prs.save(buf)
         return buf.getvalue(), len(slides)
@@ -2916,9 +4219,17 @@ class Tools:
         Pass `file_id` from the Open WebUI Files API, or omit it when the user
         attached a .pptx in the current chat (auto-detected from messages).
 
-        The JSON lists shape ids, bounding boxes, text_verbatim, safe_zone, and
-        theme colors — use it before calling generate_slides with
-        reference_file_id and template_edits.
+        The JSON lists shape ids, bounding boxes, text_verbatim, safe_zone,
+        theme colors, and images[] (cache_file_id / url for referenced media,
+        no base64). Template look in generate still comes from cloning
+        reference_file_id — images[] helps the model decide drops/mapping.
+
+        Text in text_verbatim and shapes[].text is a faithful copy of the .pptx
+        (Slidesgo placeholders and boilerplate included). Inspect never drops or
+        rewrites template text. To omit text when generating, set template_edits
+        in generate_slides (e.g. drop_text: true, drop_ids on specific shapes).
+
+        Set valve inspect_extract_images=false to skip media upload (empty images[]).
         """
         if not self.valves.inspect_slides_enabled:
             return _inspect_tool_result(
@@ -2971,16 +4282,26 @@ class Tools:
                 )
             )
 
+        images_json: list[dict] = []
+        if self.valves.inspect_extract_images:
+            images_json = await self._build_inspect_images(
+                data, pack, __request__, __user__
+            )
+        else:
+            log.debug("[inspect_slides] inspect_extract_images disabled")
+
         payload = _serialize_inspect_payload(
             pack,
             file_id=fid,
             filename=fname or "template.pptx",
             ok=True,
+            images=images_json,
         )
         log.info(
-            "[inspect_slides] ok file_id=%s slides=%s",
+            "[inspect_slides] ok file_id=%s slides=%s images=%s",
             fid,
             payload.get("slide_count"),
+            len(payload.get("images") or []),
         )
         return _inspect_tool_result(payload)
 
@@ -2993,9 +4314,19 @@ class Tools:
         __metadata__: Any = None,
         __request__: Any = None,
     ) -> str:
-        """Create a high-quality NATIVE PowerPoint (.pptx) presentation and
-        return a download link. Use this tool whenever the user asks for slides,
-        a presentation, a deck, a pitch or similar.
+        """Create a high-quality NATIVE PowerPoint (.pptx) and return a download
+        link. Use when the user wants a finished deck (slides, pitch, etc.).
+
+        Do NOT use this tool to analyze or inventory an attached template .pptx.
+        For Passo 1 (shape ids, bbox, safe_zone, text_verbatim, images[]) call
+        `inspect_slides` instead — pass the same Files API `file_id` or rely on
+        chat attachment auto-detection. If the user asks only for inspect JSON,
+        do not call generate_slides and do not replace the tool JSON with a
+        markdown summary.
+
+        Template workflow (when the user wants their .pptx look):
+        1) `inspect_slides` → factual inventory JSON (verbatim in the reply).
+        2) This tool with the same `reference_file_id` plus content + mapping.
 
         The `content` parameter MUST be a SINGLE JSON string (no text before or
         after, no markdown fence). Structure:
@@ -3009,8 +4340,28 @@ class Tools:
                                         // sage | cherry | charcoal | slate
           "accent": "#C99A3B",          // opt: force the accent color
           "footer": "Footer label",      // opt
+          "reference_file_id": "...",    // opt: Files API id of template .pptx
+          "template_mapping": {          // opt: reference slide index per role
+            "default": 0, "cover": 0, "content": 1, "closing": 2
+          },
+          "template_edits": {            // opt: clone policy (defaults false)
+            "defaults": {
+              "drop_text": false,
+              "drop_placeholders": false,
+              "drop_offslide": true
+            },
+            "slides": [{ "index": 0, "drop_ids": [12, 18] }]
+          },
           "slides": [ { "layout": "...", ... }, ... ]
         }
+
+        `drop_ids` use shape `id` from inspect JSON, not slide shape order.
+        Set `drop_text` / remove text only when the user explicitly wants template
+        wording removed (R8); default is to clone template textboxes.
+
+        Requires admin valve `template_mode_enabled` for `reference_file_id`
+        (otherwise reference is ignored). Template rendering E2E may still be
+        gated by deployment version.
 
         Each slide has a `layout` and fields consistent with that layout. Common
         fields: `title`, `eyebrow` (kicker, e.g. "PART I"), `subtitle`.
@@ -3417,8 +4768,8 @@ def _r_chart(deck, slide_dict, page):
         # creating a slide so we don't emit an empty header-only slide.
         return _r_title_bullets(deck, slide_dict, page)
 
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
 
     # side insight bullets?
@@ -3427,15 +4778,30 @@ def _r_chart(deck, slide_dict, page):
     side = _harvest_bullets({"points": insight}) if insight else []
     side_title = _first(slide_dict, "insight_title", "side_title", default="")
 
-    y = max(top + 0.2, 1.95)
-    h = FOOTER_Y - y - 0.2
-    if side:
-        cw = 7.1
-        chart_x, chart_w = MARGIN, cw
-        text_x = MARGIN + cw + 0.5
-        text_w = SLIDE_W_IN - MARGIN - text_x
+    if deck.template_mode:
+        fx, fw, y0, avail = _content_layout_band(deck, top)
+        y = max(y0 + 0.05, y0)
+        h = avail - 0.05
+        gap = 0.45
+        if side:
+            chart_w = fw * 0.55
+            chart_x = fx
+            text_x = fx + chart_w + gap
+            text_w = fw - chart_w - gap
+        else:
+            chart_x, chart_w = fx, fw
+            text_x, text_w = fx, fw
     else:
-        chart_x, chart_w = MARGIN, SLIDE_W_IN - 2 * MARGIN
+        y = max(top + 0.2, 1.95)
+        h = FOOTER_Y - y - 0.2
+        if side:
+            cw = 7.1
+            chart_x, chart_w = MARGIN, cw
+            text_x = MARGIN + cw + 0.5
+            text_w = SLIDE_W_IN - MARGIN - text_x
+        else:
+            chart_x, chart_w = MARGIN, SLIDE_W_IN - 2 * MARGIN
+            text_x, text_w = chart_x, chart_w
 
     cd = CategoryChartData()
     cd.categories = labels
@@ -3495,13 +4861,43 @@ def _slide_images(slide_dict):
 
 def _r_image(deck, slide_dict, page, layout):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     imgs = _slide_images(slide_dict)
 
     if layout == "image_full_caption":
         raw = imgs[0] if imgs else None
         cap = _first(slide_dict, "caption", "subtitle", "lead", default="")
+        if deck.template_mode:
+            fx, fw = _frame_x_w(deck)
+            fy, fh = deck.frame.y, deck.frame.h
+            _place_image(slide, t, raw, fx, fy, fw, fh, caption="")
+            if _first(slide_dict, "title", default=""):
+                band_h = min(1.5, fh * 0.22)
+                _rect(slide, fx, fy + fh - band_h, fw, band_h, fill="0A0F26", alpha=62)
+                tb, tf = _textbox(
+                    slide, fx, fy + fh - band_h + 0.15, fw, band_h - 0.2, anchor="middle"
+                )
+                _add_para(
+                    tf,
+                    _strip_md(str(slide_dict.get("title"))),
+                    first=True,
+                    size=28,
+                    color="FFFFFF",
+                    bold=True,
+                    font=t["head_font"],
+                    space_after=2,
+                )
+                if cap and cap != slide_dict.get("title"):
+                    _add_para(
+                        tf,
+                        _strip_md(str(cap)),
+                        size=13,
+                        color="E8EAF0",
+                        font=t["body_font"],
+                        space_after=0,
+                    )
+            return
         _place_image(slide, t, raw, 0, 0, SLIDE_W_IN, SLIDE_H_IN, caption="")
         # title band bottom
         if _first(slide_dict, "title", default=""):
@@ -3523,13 +4919,18 @@ def _r_image(deck, slide_dict, page, layout):
         cols = 2 if n <= 4 else 3
         rows = (n + cols - 1) // cols
         gap = 0.3
-        total_w = SLIDE_W_IN - 2 * MARGIN
+        if deck.template_mode:
+            fx, total_w, y0, avail = _content_layout_band(deck, top, y_floor_legacy=2.0)
+            ch = (avail - 0.1 - gap * (rows - 1)) / rows
+        else:
+            fx = MARGIN
+            total_w = SLIDE_W_IN - 2 * MARGIN
+            y0 = max(top + 0.2, 2.0)
+            ch = (FOOTER_Y - y0 - 0.1 - gap * (rows - 1)) / rows
         cw = (total_w - gap * (cols - 1)) / cols
-        y0 = max(top + 0.2, 2.0)
-        ch = (FOOTER_Y - y0 - 0.1 - gap * (rows - 1)) / rows
         for i in range(n):
             r, c = divmod(i, cols)
-            x = MARGIN + c * (cw + gap)
+            x = fx + c * (cw + gap)
             yy = y0 + r * (ch + gap)
             raw = imgs[i] if i < len(imgs) else None
             cap = ""
@@ -3542,16 +4943,30 @@ def _r_image(deck, slide_dict, page, layout):
     top = deck._content_head(slide, slide_dict, page)
     raw = imgs[0] if imgs else None
     img_left = (layout == "image_left_text_right")
-    y = max(top + 0.15, 1.95)
-    h = FOOTER_Y - y - 0.2
-    iw = 5.2
-    if img_left:
-        img_x = MARGIN
-        txt_x = MARGIN + iw + 0.6
+    if deck.template_mode:
+        fx, fw, y0, avail = _content_layout_band(deck, top)
+        y = max(y0 + 0.05, y0)
+        h = avail - 0.05
+        iw = fw * 0.42
+        gap = 0.45
+        if img_left:
+            img_x = fx
+            txt_x = fx + iw + gap
+        else:
+            img_x = fx + fw - iw
+            txt_x = fx
+        txt_w = fw - iw - gap
     else:
-        img_x = SLIDE_W_IN - MARGIN - iw
-        txt_x = MARGIN
-    txt_w = SLIDE_W_IN - MARGIN - iw - 0.6 - MARGIN
+        y = max(top + 0.15, 1.95)
+        h = FOOTER_Y - y - 0.2
+        iw = 5.2
+        if img_left:
+            img_x = MARGIN
+            txt_x = MARGIN + iw + 0.6
+        else:
+            img_x = SLIDE_W_IN - MARGIN - iw
+            txt_x = MARGIN
+        txt_w = SLIDE_W_IN - MARGIN - iw - 0.6 - MARGIN
     _place_image(slide, t, raw, img_x, y, iw, h,
                  caption=_first(slide_dict, "caption", default=""))
     bullets = _harvest_bullets(slide_dict)
@@ -3596,17 +5011,16 @@ def _node_desc(n):
 
 def _r_funnel(deck, slide_dict, page, nodes):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     n = min(len(nodes), 6)
     nodes = nodes[:n]
-    y = max(top + 0.3, 2.1)
-    avail = FOOTER_Y - y - 0.3
+    dx, y, dw, avail = _diagram_region(deck, top)
     bh = min(0.9, (avail - (n - 1) * 0.12) / n)
-    maxw = 8.4
-    minw = 3.6
-    cx = SLIDE_W_IN / 2
+    maxw = dw * 0.92 if deck.template_mode else 8.4
+    minw = dw * 0.38 if deck.template_mode else 3.6
+    cx = dx + dw / 2
     for i, node in enumerate(nodes):
         w = maxw - (maxw - minw) * (i / max(1, n - 1))
         x = cx - w / 2
@@ -3633,18 +5047,17 @@ def _r_funnel(deck, slide_dict, page, nodes):
 
 def _r_pyramid(deck, slide_dict, page, nodes):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     n = min(len(nodes), 5)
     nodes = nodes[:n]
-    y = max(top + 0.3, 2.1)
-    avail = FOOTER_Y - y - 0.3
+    dx, y, dw, avail = _diagram_region(deck, top)
     bh = min(1.0, (avail - (n - 1) * 0.1) / n)
-    maxw = 8.0
-    minw = 2.6
-    cx = MARGIN + maxw / 2 + 0.2
-    side_x = cx + maxw / 2 + 0.4
+    maxw = dw * 0.88 if deck.template_mode else 8.0
+    minw = dw * 0.28 if deck.template_mode else 2.6
+    cx = dx + maxw / 2 + (0.05 if deck.template_mode else 0.2)
+    side_x = cx + maxw / 2 + 0.35
     for i, node in enumerate(nodes):
         # top = narrow (i=0), bottom = wide
         w = minw + (maxw - minw) * (i / max(1, n - 1))
@@ -3666,22 +5079,27 @@ def _r_pyramid(deck, slide_dict, page, nodes):
                   bold=True, font=t["body_font"], align="center", space_after=0)
         desc = _node_desc(node)
         if desc:
-            tbd, tfd = _textbox(slide, side_x, yy, SLIDE_W_IN - MARGIN - side_x, bh,
-                                anchor="middle")
+            side_w = (dx + dw - side_x) if deck.template_mode else (SLIDE_W_IN - MARGIN - side_x)
+            tbd, tfd = _textbox(slide, side_x, yy, side_w, bh, anchor="middle")
             _add_para(tfd, desc, first=True, size=11, color=t["muted"],
                       font=t["body_font"], line=1.15, space_after=0)
 
 
 def _r_cycle(deck, slide_dict, page, nodes):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     import math
     n = min(len(nodes), 6)
     nodes = nodes[:n]
-    cx, cy = SLIDE_W_IN / 2, (top + FOOTER_Y) / 2 + 0.2
-    R = min(2.1, (FOOTER_Y - top) / 2 - 0.2)
+    dx, y, dw, avail = _diagram_region(deck, top)
+    if deck.template_mode:
+        cx, cy = dx + dw / 2, y + avail / 2
+        R = min(dw / 2 - 0.35, avail / 2 - 0.25)
+    else:
+        cx, cy = SLIDE_W_IN / 2, (top + FOOTER_Y) / 2 + 0.2
+        R = min(2.1, (FOOTER_Y - top) / 2 - 0.2)
     nd = 1.5
     for i, node in enumerate(nodes):
         ang = -math.pi / 2 + 2 * math.pi * i / n
@@ -3698,18 +5116,25 @@ def _r_cycle(deck, slide_dict, page, nodes):
 
 def _r_quadrant(deck, slide_dict, page, nodes):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     xa = _first(slide_dict, "x_axis", "xaxis", "x_label", default="")
     ya = _first(slide_dict, "y_axis", "yaxis", "y_label", default="")
-    # full-width matrix; leave a left gutter for the y-axis label
     left_gutter = 0.45 if ya else 0.0
-    x0 = MARGIN + left_gutter
-    y = max(top + 0.35, 2.0)
-    bottom = FOOTER_Y - (0.4 if xa else 0.15)
-    w = SLIDE_W_IN - MARGIN - x0
-    hh = bottom - y
+    if deck.template_mode:
+        fx, fw, y0, avail = _content_layout_band(deck, top, y_floor_legacy=2.0)
+        x0 = fx + left_gutter
+        y = y0 + 0.1
+        bottom = y + avail - (0.35 if xa else 0.12)
+        w = fx + fw - x0
+        hh = bottom - y
+    else:
+        x0 = MARGIN + left_gutter
+        y = max(top + 0.35, 2.0)
+        bottom = FOOTER_Y - (0.4 if xa else 0.15)
+        w = SLIDE_W_IN - MARGIN - x0
+        hh = bottom - y
     gap = 0.25
     cw = (w - gap) / 2
     ch = (hh - gap) / 2
@@ -3755,21 +5180,33 @@ def _r_quadrant(deck, slide_dict, page, nodes):
 
 def _r_bullseye(deck, slide_dict, page, nodes):
     t = deck.theme
-    slide = deck.blank()
-    _set_bg(slide, t["bg_light"])
+    slide = deck.blank("content")
+    _maybe_set_bg(deck, slide, t["bg_light"])
     top = deck._content_head(slide, slide_dict, page)
     n = min(len(nodes), 4)
     nodes = nodes[:n]
-    cy = (top + FOOTER_Y) / 2 + 0.1
-    cx = MARGIN + 3.0
-    maxd = min(4.4, (FOOTER_Y - top) - 0.4)
+    dx, y, dw, avail = _diagram_region(deck, top)
+    if deck.template_mode:
+        maxd = min(dw * 0.55, avail - 0.3)
+        cx = dx + maxd / 2 + 0.15
+        cy = y + avail / 2
+        lx = cx + maxd / 2 + 0.35
+        leg_w = dx + dw - lx
+    else:
+        cy = (top + FOOTER_Y) / 2 + 0.1
+        cx = MARGIN + 3.0
+        maxd = min(4.4, (FOOTER_Y - top) - 0.4)
+        lx = cx + maxd / 2 + 0.6
+        leg_w = SLIDE_W_IN - MARGIN - lx
     for i in range(n):
         d = maxd * (1 - i / n)
         color = _mix(_lighten(t["accent"], 0.55), t["accent"], i / max(1, n - 1))
         _oval(slide, cx - d / 2, cy - d / 2, d, fill=color)
-    # center label + legend on right
-    lx = cx + maxd / 2 + 0.6
-    tb, tf = _textbox(slide, lx, top + 0.4, SLIDE_W_IN - MARGIN - lx, FOOTER_Y - top - 0.4)
+    if deck.template_mode:
+        tb_y, tb_h = y + 0.15, avail - 0.2
+    else:
+        tb_y, tb_h = top + 0.4, FOOTER_Y - top - 0.4
+    tb, tf = _textbox(slide, lx, tb_y, leg_w, tb_h)
     first = True
     for i, node in enumerate(nodes):
         color = _mix(_lighten(t["accent"], 0.55), t["accent"], (n - 1 - i) / max(1, n - 1))

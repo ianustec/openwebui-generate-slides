@@ -2,8 +2,8 @@
 
 > **Issue:** [#2 Support custom themes](https://github.com/ianustec/openwebui-generate-slides/issues/2) (estesa)  
 > **Versione base:** `generate_slides.py` v1.0.3  
-> **Stato:** Progettazione approvata — implementazione da avviare  
-> **Ultimo aggiornamento:** 2026-09-22  
+> **Stato:** Fasi **0–3** implementate in repo; Fasi **3.1–3.4** (hardening inspect) + **4+** da completare  
+> **Ultimo aggiornamento:** 2026-09-24  
 > **Contesto deploy:** Neura è **già in produzione** con clienti attivi — Template Mode deve essere **opt-in esplicito** e **inattivo di default** fino ad abilitazione admin.
 
 ---
@@ -34,17 +34,21 @@ Permettere all’utente di allegare un file **`.pptx` di esempio** (slide vuota 
 
 ### Soluzione adottata
 
-Un **flusso a 3 passi** sulla stessa classe `Tools`, senza tool OWUI separati e senza cache in memoria:
+Un **flusso a 3 passi** sulla stessa classe `Tools`, senza tool OWUI separati e **senza cache in-memory** tra le chiamate:
 
 | Passo | Attore | Output |
 |-------|--------|--------|
-| **1** | `inspect_slides` | Inventario JSON **fattuale** del file (id shape, bbox, testo, safe zone) |
-| **2** | AI / utente | JSON di contenuto + `reference_file_id` + `template_mapping` + `template_edits` |
-| **3** | `generate_slides` | Clone selettivo delle shape dal file originale + overlay contenuto in safe zone |
+| **1** | `inspect_slides` | Inventario JSON **fattuale** (shape, bbox, **testo verbatim completo**, safe zone, theme) + **`images[]`** con puntatori a asset su Files API |
+| **2** | AI / utente | JSON di contenuto + `reference_file_id` + `template_mapping` + `template_edits` (testo/placeholder: **decisione esplicita**, non default automatico) |
+| **3** | `generate_slides` | Clone selettivo dal **medesimo** `.pptx` (`reference_file_id`) + overlay contenuto in safe zone |
 
-### Insight centrale
+### Insight centrale (doppia source of truth)
 
-> Il `.pptx` allegato **è la cache**. L’AI passa solo **testo e decisioni** (`file_id`, `drop_ids`). Loghi, foglie e immagini embedded **non transitano nel prompt** — vengono ricopiati dal binario in `generate_slides`.
+> Il `.pptx` su Files API (`reference_file_id`) resta la **source of truth grafica** per il clone OOXML in passo 3 (loghi, foglie, media embedded).
+>
+> In passo 1, le immagini referenziate vengono anche **materializzate** come file sidecar (stesso pattern upload di `_save`: Files API + fallback `/cache/files`, ACL utente) e referenziate nel JSON come `cache_file_id` / `url` — **senza base64** nel payload inspect.
+>
+> Servono all’AI per **decisioni** (drop, mapping, ruoli, eventuale riuso in campi immagine del content JSON). Il modello **non** assembla il `.pptx`; `generate_slides` clona dal binario template salvo dove il content JSON chiede esplicitamente asset alternativi.
 
 ### Regola produzione (Neura / clienti esistenti)
 
@@ -76,8 +80,9 @@ Un **flusso a 3 passi** sulla stessa classe `Tools`, senza tool OWUI separati e 
 | R4 | Layout ricchi (chart, KPI, funnel) | **Opzione B:** esistono ancora, **ridimensionati** dentro la safe zone; decorazioni angolari intatte |
 | R5 | Footer e numeri pagina | **Mantenuti** (con adattamento posizione se overlap decorazioni) |
 | R6 | Colori testo | **Automatici** per leggibilità sullo sfondo della safe zone |
-| R7 | Safe zone | **Calcolo automatico** (max rettangolo vuoto centrato) |
-| R8 | Testo placeholder nel template | **Ignorato e sovrascritto** (`drop_text` default) |
+| R7 | Safe zone | **Calcolo automatico** (max rettangolo vuoto centrato); campo `safe_zone.quality` se fallback (§6.1.2) |
+| R8 | Testo nel template (inspect vs generate) | **Inspect:** testo **integrale e verbatim** nel JSON (placeholder Slidesgo inclusi). **Generate:** l’AI/utente decide in passo 2 via `template_edits` (`drop_text`, `drop_ids`) — **nessun** drop automatico in inspect |
+| R13 | Asset immagine inspect | Part **referenziate** in `ppt/media/` estratte su Files API; JSON `images[]` con dedup per `internal_path` (§6.1.1) |
 | R9 | Elementi da rimuovere (logo, watermark) | AI specifica `drop_ids` dopo `inspect`; tool applica meccanicamente |
 | R10 | Modalità senza template | Comportamento **identico a v1.0.3** (nessuna breaking change) |
 | R11 | Abilitazione feature | Valve admin `template_mode_enabled` — default **`false`** fino a rollout pilot |
@@ -146,8 +151,9 @@ Utente: allega template.pptx
 ┌─────────────────────────────────────────────────────────────────┐
 │  PASSO 1 — inspect_slides(file_id | attachment)                 │
 │  → GET /api/v1/files/{id}/content                               │
-│  → inventario JSON: shape id, kind, bbox, text_verbatim,        │
-│    safe_zone, theme colors, slide_count                         │
+│  → inventario JSON: shape id, kind, bbox, cloneable,            │
+│    text_verbatim (completo), safe_zone + quality, theme         │
+│  → upload asset referenziati → images[].cache_file_id / url     │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
@@ -155,10 +161,10 @@ Utente: allega template.pptx
 │  PASSO 2 — AI                                                   │
 │  → legge inventario + richiesta utente                          │
 │  → produce: content JSON (slides[])                             │
-│            + reference_file_id                                  │
+│            + reference_file_id (stesso .pptx del passo 1)       │
 │            + template_mapping                                   │
-│            + template_edits.drop_ids                            │
-│  → NON passa immagini/loghi (solo testo e id)                   │
+│            + template_edits (drop_ids; drop_text se richiesto)  │
+│  → usa images[] per decisioni; pixel template via clone passo 3 │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
@@ -183,17 +189,22 @@ Utente: allega template.pptx
 
 Il JSON di `generate_slides` descrive **contenuto semantico** (`layout: kpi_row`, `stats[]`), non la scenografia (posizioni foglie, PNG embedded). Invertire non è fedele al 100% e **perde la grafica**. `inspect` produce un **verbale**, non una spec di rendering.
 
-### Perché NON cache/variabile temporanea
+### Persistenza tra tool call (no in-memory)
 
-OWUI istanzia `Tools` per ogni request — `self._pack` muore a fine chiamata. Il file su **Files API** è l’unica cache persistente necessaria; `generate_slides` riapre `reference_file_id`.
+OWUI istanzia `Tools` per ogni request — `self._pack` muore a fine chiamata. Persistenza ammessa:
+
+1. **`reference_file_id`** — `.pptx` template (clone in generate).
+2. **`images[].cache_file_id`** — sidecar opzionali creati in inspect (stesso utente/ACL).
+
+`generate_slides` riapre sempre `reference_file_id`; le immagini cache sono per l’AI e per campi contenuto espliciti, **non** sostituto obbligatorio del clone.
 
 ---
 
 ## 5. Principi di design
 
-1. **File = source of truth grafica.** Media in `ppt/media/`; clone via OOXML + relationship copy.
-2. **AI = source of truth semantica.** Testi, argomento, quali id droppare.
-3. **Inspect = solo fatti.** Niente `layout: kpi_row` nel body (solo in `hints` opzionali non vincolanti).
+1. **File = source of truth grafica.** Media in `ppt/media/`; clone via OOXML + relationship copy; sidecar immagini in inspect (§6.1.1) **non** sostituisce il binario template in generate.
+2. **AI = source of truth semantica.** Testi nuovi, argomento, quali id droppare; **edit** del testo template solo via `template_edits` espliciti (R8).
+3. **Inspect = solo fatti.** Testo verbatim integrale; niente `layout: kpi_row` nel body (solo in `hints` opzionali non vincolanti).
 4. **Edit esplicito.** `drop_ids` / `keep_ids` — niente “capisce da solo” cosa è logo.
 5. **Regression zero.** Senza `reference_file_id` (o valve off) → path attuale invariato.
 6. **Safe zone geometrica.** Algoritmo deterministico; non vision AI in v1.
@@ -275,10 +286,12 @@ def _content_bounds(deck, top_y: float) -> tuple[float, float, float, float]:
         "y": 1.1,
         "w": 10.6,
         "h": 5.2,
-        "method": "max_empty_rect"
+        "method": "max_empty_rect",
+        "quality": "computed"
       }
     }
   ],
+  "images": [],
   "hints": {
     "likely_roles": [{ "index": 0, "role": "content", "confidence": "low" }]
   }
@@ -290,6 +303,37 @@ def _content_bounds(deck, top_y: float) -> tuple[float, float, float, float]:
 - Campi in root/`slides[]` = fatti misurabili.
 - `hints` = interpretazione non vincolante per l’AI.
 - `safe_zone.method` sempre presente se calcolata.
+- `text_verbatim` / `shapes[].text` = **copia fedele** del file; nessuna normalizzazione “placeholder” in inspect (R8).
+- `images[]` popolato dopo Fase **3.1** (vuoto o assente fino ad allora è accettabile in dev).
+
+### 6.1.1 Schema `images[]` (inspect — Fase 3.1)
+
+Inventario asset **referenziati** dal package OOXML (non orphan non usati). **Dedup** per part interna: una riga per `internal_path`, più occorrenze in `usages[]`.
+
+| Campo | Tipo | Descrizione |
+|-------|------|-------------|
+| `internal_path` | string | Es. `ppt/media/image3.png` |
+| `cache_file_id` | string | ID Files API (stesso utente del template) |
+| `url` | string | URL servibile (API o `/cache/files/…` fallback) |
+| `mime` | string | Es. `image/png` |
+| `w_px`, `h_px` | number | Dimensioni intrinseche |
+| `source` | string | `shape` \| `background` \| `layout` \| `master` (v1: slide + background prioritari) |
+| `usages` | array | `{ "slide_index", "shape_id"?, "name"? }` — shape_id null per solo background |
+| `role_hint` | string? | Solo in `hints` o campo opzionale non vincolante |
+
+**Scope v1 estrazione:** picture shape (inclusi **group flatten**, stesso criterio di `_iter_shapes`), fill picture **sfondo slide**, distinti in `source`. Template Slidesgo (7–32 MB, decine/centinaia di PNG referenziati): estrarre **tutte** le part referenziate; log warning se volume/tempo eccessivi.
+
+**Generate:** il look resta clone da `reference_file_id`; `cache_file_id` serve per decisioni AI e per layout contenuto che referenziano esplicitamente un asset (es. `image` con `file_id` nel content JSON).
+
+### 6.1.2 Safe zone — campo `quality` (Fase 3.3)
+
+| Valore | Significato |
+|--------|-------------|
+| `computed` | Griglia edge-based completata; rettangolo max empty rect (area ≥ soglia) |
+| `grid_capped` | Griglia troppo grande (`_MAX_SAFE_ZONE_GRID_CELLS`); usata regione ammissibile (margini) |
+| `admissible_fallback` | Griglia eseguita ma nessun rettangolo utile; regione ammissibile |
+
+L’AI deve trattare `quality !== "computed"` come safe zone **conservativa** (Fase 4+ overlay contenuto).
 
 ### 6.2 Input `generate_slides` (estensione spec JSON)
 
@@ -309,8 +353,8 @@ Campi **esistenti** invariati: `title`, `slides[]`, `theme`, `footer`, layout fi
 {
   "template_edits": {
     "defaults": {
-      "drop_text": true,
-      "drop_placeholders": true,
+      "drop_text": false,
+      "drop_placeholders": false,
       "drop_offslide": true
     },
     "slides": [
@@ -326,10 +370,10 @@ Campi **esistenti** invariati: `title`, `slides[]`, `theme`, `footer`, layout fi
 
 **Ordine applicazione:**
 
-1. Applica `defaults` (es. escludi tutte le shape con testo).
+1. Applica `defaults` solo se esplicitamente `true` (Fase **3.4**): es. `drop_text: true` esclude shape testo dal clone; default **`false`** = clona anche textbox finché non in `drop_ids`.
 2. Se `keep_ids` definito → clona **solo** quella lista (meno eventuali drop).
-3. Altrimenti → clona tutte le shape grafiche ammesse, meno `drop_ids`.
-4. Escludi sempre shape fuori slide se `drop_offslide: true`.
+3. Altrimenti → clona decorazioni ammesse (`cloneable: true`), meno `drop_ids`.
+4. Escludi shape fuori slide se `drop_offslide: true`.
 
 ### 6.4 Schema `template_mapping`
 
@@ -435,6 +479,9 @@ Posizione: `generate_slides.py`, prima di `# Deck builder + renderers`.
 | `_find_blank_layout(prs)` | Per nome ("Blank"), non indice 6 |
 | `_derive_readable_colors(bg_hex)` | ink/muted per leggibilità |
 | `_merge_theme_from_template(theme, pack)` | Colori/font da theme XML |
+| `_extract_referenced_media(data)` | (Fase 3.1) Part media referenziate dal OOXML |
+| `_upload_inspect_asset(...)` | (Fase 3.1) Upload sidecar; riuso pattern `_save` |
+| `_serialize_inspect_images(...)` | (Fase 3.1) Costruisce `images[]` deduplicato |
 
 ### 7.2 Nuovo metodo: `inspect_slides`
 
@@ -532,8 +579,9 @@ data, n = self._build(spec, template_pack=template_pack)
 | `template_mode_enabled` | **`false`** | Abilita download reference + clone; se false, ignora `reference_file_id` |
 
 | `inspect_slides_enabled` | **`true`** (opzionale v1) | Se `false`, nasconde/disabilita il secondo tool OWUI (solo `generate_slides`) |
+| `inspect_extract_images` | **`true`** (Fase 3.1) | Se `false`, inspect senza upload sidecar (`images[]` vuoto); clone generate invariato |
 
-Valve opzionale post-v1: `template_strict_mode` (fail se safe zone troppo piccola).
+Valve opzionale post-v1: `template_strict_mode` (fail se `safe_zone.quality !== "computed"` o area troppo piccola).
 
 ### 7.6.1 Wiring `deck.blank(layout)` (~21 call site)
 
@@ -640,7 +688,7 @@ examples/
 
 - [ ] Template da **PNG/JPG** (solo background ripetuto).
 - [ ] Tool OWUI **separato** `analyze_slides` / `pptx_to_json`.
-- [ ] **Cache sidecar** con PNG estratte (ridondante).
+- [ ] **Base64 immagini** nel JSON inspect (usare `images[].cache_file_id` / url — Fase 3.1).
 - [ ] **Variabile in-memory** tra inspect e generate.
 - [ ] **Full template mode** (placeholder master nativi al posto dei renderer).
 - [ ] Edit geometrici via AI (`resize`, `move`, `rotate` shape per id).
@@ -648,6 +696,7 @@ examples/
 - [ ] Supporto **`.thmx`** standalone.
 - [ ] **Inject automatico** inventario all’upload (enhancement Neura/OWUI — fase 2 ops).
 - [ ] Auto-detect `.pptx` in `generate_slides` via `__messages__` (**vietato** — rischio regression clienti).
+- [x] **Clone v1 chart/table/smartart/ole/media:** inspect segnala `cloneable: false`; generate non clona identico (Fase 3.2).
 
 ---
 
@@ -664,7 +713,9 @@ examples/
 | Reference fail → fallback classico | Media | Alto | **Fail closed** con `_error()` |
 | `slide_layouts[6]` ≠ blank su template custom | Alta | Crash | `_find_blank_layout()` **solo** in template mode |
 | Font corporate assente in container | Media | Medio | Fallback Calibri + log warning |
-| Safe zone non ottimale vs occhio umano | Media | Basso | Margine 0.15"; documentare limite |
+| Safe zone non ottimale vs occhio umano | Media | Basso | `safe_zone.quality`; Fase 3.3; margine 0.15" |
+| Payload inspect enorme (Slidesgo + `images[]`) | Media | Medio | Dedup media; metadati in JSON; url per vision; §7.13 timeout |
+| Quota Files API / upload mass inspect | Media | Medio | Log warning; dedup; ACL utente; opzionale valve `inspect_extract_images` |
 | Footer overlap decorazioni basso-dx | Media | Basso | Footer dentro safe zone |
 | Cover con `dark=True` su template chiaro | Alta | Medio | `dark=False` + readable colors in template mode |
 | Gruppi / SmartArt complessi | Media | Medio | Clone gruppo XML; `unsupported` in inspect |
@@ -687,7 +738,7 @@ examples/
 
 - [ ] **F1** — Slide template solo grafica → output con stesse decorazioni e posizioni.
 - [ ] **F2** — `drop_ids: [12]` → shape id=12 assente nell’output.
-- [ ] **F3** — Testo placeholder reference assente nell’output.
+- [ ] **F3** — Testo placeholder reference assente nell’output **solo se** passo 2 imposta `drop_text: true` e/o `drop_ids` su quelle shape (R8). *Fase 3.4:* inspect verbatim + clone fixture (`examples/inspect_template_text_contract.py`); verifica E2E deck output in **Fase 6**.
 - [ ] **F4** — Contenuto generato solo in safe zone, non sopra decorazioni.
 - [ ] **F5** — `kpi_row`, `chart`, `funnel` presenti e ridimensionati in safe zone.
 - [ ] **F6** — Footer e numero pagina visibili.
@@ -718,9 +769,11 @@ examples/
 ## 11. Piano di implementazione a fasi
 
 > Usare le checkbox `[ ]` per tracciare avanzamento.  
-> **Stima complessiva:** 4–5 giorni dev + QA (include safety gate e NF5).
+> **Stima complessiva:** 5–7 giorni dev + QA (include Fasi 3.1–3.4, safety gate e NF5).
 
-**Ordine consigliato:** Fase 0 → **0.5** → 1 → 2 → 3 → 4 → **6 (MVP 1 layout)** → 5 (resto renderer) → 7 → 8.
+**Ordine consigliato:** Fase 0 → **0.5** → 1 → 2 → 3 → **3.1 → 3.2 → 3.3 → 3.4** → 4 → **6 (MVP 1 layout)** → 5 (resto renderer) → 7 → 8.
+
+> **Nota (2026-09-24):** Fasi **0–3** sono già implementate in repo. Le sotto-fasi **3.1–3.4** consolidano inspect/parse/clone **prima** di Fase 4 ( `_Deck` ) e del flusso E2E Fase 6, in particolare per template Slidesgo reali (`doc/online_templates/`).
 
 ---
 
@@ -821,23 +874,88 @@ examples/
 
 ---
 
+### Fase 3.1 — Cache immagini inspect (sidecar Files API)
+
+**Obiettivo:** in passo 1, materializzare le immagini **referenziate** dal `.pptx` su Files API (o fallback `/cache/files`), con puntatori nel JSON — **senza base64** nel payload inspect (R13, §6.1.1).
+
+- [x] Implementare `_extract_referenced_media(data: bytes)` — enumerare part in `ppt/media/` **usate** da slide (shape blip, background fill picture, layout referenziati); escludere orphan non referenziati
+- [x] Allineare scope picture a **`_iter_shapes` (flatten group)** + voci `source: "background"` distinte dalle picture shape
+- [x] **Dedup:** una entry `images[]` per `internal_path`; array `usages[]` con `{ slide_index, shape_id?, name? }`
+- [x] Implementare `_upload_inspect_asset(...)` riusando il pattern di `Tools._save` (Files API + fallback cache, ACL `__user__`)
+- [x] Popolare `mime`, `w_px`, `h_px` (Pillow o metadati EMU dove sufficiente)
+- [x] Estendere `_serialize_inspect_payload` con root `images[]` e mantenere `file_id` del `.pptx` template
+- [x] Valve opzionale `inspect_extract_images` (default **`true`** se `inspect_slides_enabled`) per disabilitare upload in ambienti limitati
+- [x] Log: numero asset, byte totali, durata upload; warning su template molto pesanti (Slidesgo 7–32 MB)
+- [x] Documentare: generate **non dipende** obbligatoriamente da `cache_file_id` per il look — clone da `reference_file_id` resta primario (§1 insight)
+- [x] Test: fixture `template_corners_one_slide` / picture → almeno un `cache_file_id`; dedup se stessa part su più slide
+- [x] Test offline: script in `examples/` con mock skip upload quando assente OWUI
+
+**Deliverable:** inspect JSON con `images[]` navigabile dall’AI; asset riusabili per decisioni passo 2 e campi immagine espliciti nel content JSON.
+
+---
+
+### Fase 3.2 — Kind shape, `cloneable`, clone allineato
+
+**Obiettivo:** ridurre falsi `unsupported`, esporre limiti v1 su chart/table, allineare inspect e `_clone_decorations` (Fase 3 già implementata — **estensione** senza rompere fixture).
+
+- [x] Rafforzare `_shape_kind`: picture placeholder / blip embedded → `picture` dove python-pptx/XML lo consente
+- [x] Kind distinti `chart`, `table`, `connector`, `group`, …; SmartArt/OLE restano documentati come limite (overlap Fase 8)
+- [x] Campo inspect `shapes[].cloneable: bool` derivato da policy clone (`picture`, `autoshape`, `group`, … vs `_CLONE_SKIP_KINDS`)
+- [x] Opzionale `hints.uncloneable`: riepilogo per slide (es. “2 chart non clonabili in v1”)
+- [x] Verificare regression **Fase 3** fixture dopo reclassificazione (`examples/clone_template_fixture.py`)
+- [x] Test: slide con picture full-bleed (Progetto / Slidesgo) non classificata `unsupported` se fix applicabile
+- [x] Documentare in §8: v1 **non** garantisce clone identico chart/table; inspect segnala, generate salta
+
+**Deliverable:** inventario shape affidabile per `drop_ids` e aspettative realistiche sul clone visivo.
+
+---
+
+### Fase 3.3 — Safe zone su slide dense
+
+**Obiettivo:** safe zone **onesta** su template Slidesgo (molte decorazioni top-level); campo `quality` nel JSON (§6.1.2).
+
+- [x] Esporre `safe_zone.quality`: `computed` \| `grid_capped` \| `admissible_fallback`
+- [x] Refinement `_compute_safe_zone`: mantenere guard `_MAX_SAFE_ZONE_GRID_CELLS`; valutare semplificazione occupazione (merge bbox piccoli / cap decorazioni per griglia) **prima** del fallback
+- [x] Hint inspect se slide mapping `content` ha `quality !== "computed"`
+- [x] Estendere `examples/inspect_online_templates.py` (o script dedicato) con statistiche % quality per deck
+- [x] Test NF1: stesso file → stessi `quality` + bbox; fixture piccole → prevalenza `computed`
+
+**Deliverable:** l’AI distingue safe zone ottimizzata vs conservativa; meno sorprese in Fase 4 overlay.
+
+---
+
+### Fase 3.4 — Contratto testo inspect (R8)
+
+**Obiettivo:** inspect = **verità testuale integrale**; edit testo solo in passo 2/3 via `template_edits` espliciti.
+
+- [x] Confermare in parse: **nessuna** rimozione/filtro placeholder in `_parse_reference_pptx` / serializzazione (`text_verbatim`, `shapes[].text`)
+- [x] Aggiornare default `template_edits.defaults`: `drop_text` **`false`**, `drop_placeholders` **`false`** (§6.3); allineare `_apply_template_edits` già in Fase 3
+- [x] Docstring `inspect_slides`: testo riportato verbatim; l’AI decide drop/rewrite in generate
+- [x] Aggiornare esempio appendice §12 (`drop_text` solo se richiesto dall’utente)
+- [x] Criterio **F3** allineato (vedi §10)
+- [x] Test: boilerplate Slidesgo presente in JSON (`examples/inspect_online_templates.py`)
+
+**Deliverable:** contratto R8 coerente end-to-end; nessuna ambiguità “inspect vs generate” sul testo.
+
+---
+
 ### Fase 4 — Integrazione `_Deck` e geometria
 
 **Obiettivo:** template mode attiva `deck.frame` e disabilita override sfondo.
 
-- [ ] Aggiungere `template_pack` e `template_mode` a `_Deck.__init__`
-- [ ] Refactor `blank(layout="default")` → chiama clone se template_mode; legacy `blank()` = stesso comportamento di oggi se `layout` default e non template
-- [ ] Implementare `_pick_template_slide(pack, layout, mapping)` + validazione indice (§6.10)
-- [ ] Aggiornare **tutti** i `_r_*` (~21) per passare ruolo a `blank()` (§7.6.1)
-- [ ] `_build` loop: fallback `_r_title_body` su exception usa `blank` con ruolo layout corretto
-- [ ] Helper `_content_bounds(deck, top_y)` dual path (§5.1)
-- [ ] Implementare `_default_frame() -> _BBox`
-- [ ] Property `deck.frame` usata dai renderer
-- [ ] Skip `_set_bg()` quando `deck.template_mode`
-- [ ] Implementare `_derive_readable_colors(bg_hex)` e merge theme (sezione 6.8)
-- [ ] `_find_blank_layout(prs)` **solo** se `template_mode=True`; altrimenti `slide_layouts[6]`
-- [ ] Test: `title_bullets` con template → testo dentro safe zone
-- [ ] Dopo ogni modifica: NF5 hash senza reference
+- [x] Aggiungere `template_pack` e `template_mode` a `_Deck.__init__`
+- [x] Refactor `blank(layout="default")` → chiama clone se template_mode; legacy `blank()` = stesso comportamento di oggi se `layout` default e non template
+- [x] Implementare `_pick_template_slide(pack, layout, mapping)` + validazione indice (§6.10)
+- [x] Aggiornare **tutti** i `_r_*` (~21) per passare ruolo a `blank()` (§7.6.1)
+- [x] `_build` loop: fallback `_r_title_body` su exception usa `blank` con ruolo layout corretto
+- [x] Helper `_content_bounds(deck, top_y)` dual path (§5.1)
+- [x] Implementare `_default_frame() -> _BBox`
+- [x] Property `deck.frame` usata dai renderer
+- [x] Skip `_set_bg()` quando `deck.template_mode`
+- [x] Implementare `_derive_readable_colors(bg_hex)` e merge theme (sezione 6.8)
+- [x] `_find_blank_layout(prs)` **solo** se `template_mode=True`; altrimenti `slide_layouts[6]`
+- [x] Test: `title_bullets` con template → testo dentro safe zone
+- [x] Dopo ogni modifica: NF5 hash senza reference
 
 **Deliverable:** una slide contenuto renderizzata correttamente in template mode.
 
@@ -849,25 +967,25 @@ examples/
 
 **Priorità alta (5 renderer + chrome):**
 
-- [ ] `_r_title_bullets` → usa `deck.frame`
-- [ ] `_r_title_body` → usa `deck.frame`
-- [ ] `_r_cover` → skip ovali programmatici se template; contenuto in frame; **`dark=False`** + readable colors
-- [ ] `_r_kpi` → ridimensiona card in `deck.frame.w`
-- [ ] `_r_chart` → chart width/height proporzionali a frame
-- [ ] `_Deck._content_head()` / `_eyebrow` / `_title` / `_footer` → coordinate relative a `deck.frame`
-- [ ] Footer: fallback dentro safe zone se overlap decorazione basso
+- [x] `_r_title_bullets` → usa `deck.frame`
+- [x] `_r_title_body` → usa `deck.frame`
+- [x] `_r_cover` → skip ovali programmatici se template; contenuto in frame; **`dark=False`** + readable colors
+- [x] `_r_kpi` → ridimensiona card in `deck.frame.w`
+- [x] `_r_chart` → chart width/height proporzionali a frame
+- [x] `_Deck._content_head()` / `_eyebrow` / `_title` / `_footer` → coordinate relative a `deck.frame`
+- [x] Footer: fallback dentro safe zone se overlap decorazione basso
 
 **Priorità media (resto layout):**
 
-- [ ] `_r_section` / `_r_closing` → stessa policy `dark=False` in template mode
-- [ ] `_r_comparison`
-- [ ] `_r_timeline` / `_r_process`
-- [ ] `_r_quote`
-- [ ] `_r_alert`
-- [ ] `_r_table`
-- [ ] `_r_icon_list` / `_r_icon_grid`
-- [ ] `_r_image` → **no full-bleed** in template mode; rispetta `deck.frame` (sezione 7.10)
-- [ ] `_r_funnel` / `_r_diagram` / diagrammi
+- [x] `_r_section` / `_r_closing` → stessa policy `dark=False` in template mode
+- [x] `_r_comparison`
+- [x] `_r_timeline` / `_r_process`
+- [x] `_r_quote`
+- [x] `_r_alert`
+- [x] `_r_table`
+- [x] `_r_icon_list` / `_r_icon_grid`
+- [x] `_r_image` → **no full-bleed** in template mode; rispetta `deck.frame` (sezione 7.10)
+- [x] `_r_funnel` / `_r_diagram` / diagrammi
 
 **Deliverable:** deck multi-slide con mix layout in template mode.
 
@@ -878,6 +996,8 @@ examples/
 **Obiettivo:** flusso 3 passi completo in produzione.
 
 **MVP (può precedere completamento Fase 5):** valve ON + reference + solo `title_bullets` / `title_body` in template mode.
+
+**Prerequisito consigliato:** Fasi **3.1–3.4** complete (o almeno 3.2 + 3.3) prima di pilot Slidesgo in produzione.
 
 - [ ] Estendere `_build(spec, template_pack=None)`
 - [ ] Parse **solo** `reference_file_id` da spec JSON (entry point sezione 7.5)
@@ -920,12 +1040,12 @@ examples/
 
 **Obiettivo:** robustezza produzione; non bloccante per MVP.
 
-- [ ] Gestione esplicita SmartArt / OLE → `unsupported` in inspect
-- [ ] Gestione shape group annidate (clone ricorsivo)
-- [ ] Valve `template_strict_mode` (fail se safe zone troppo piccola)
+- [ ] Gestione esplicita SmartArt / OLE → `unsupported` / `cloneable: false` (complemento Fase 3.2)
+- [ ] Gestione shape group annidate (clone ricorsivo oltre Fase 3 base)
+- [ ] Valve `template_strict_mode` (fail se `safe_zone.quality !== "computed"` o area troppo piccola)
 - [ ] Master slide decorations (completamento P1)
 - [ ] Inject automatico inventario all’upload `.pptx` (integrazione Neura/OWUI)
-- [ ] Preview thumbnail URL in output inspect (senza base64)
+- [ ] Thumbnail leggeri opzionali oltre asset full-res (Fase 3.1); mai base64 in JSON inspect
 - [ ] Supporto PNG/JPG come template (background mode — fase separata)
 - [ ] Metriche/log: tempo parse, tempo clone, slide count
 
@@ -960,12 +1080,14 @@ Prompt: "Generami una presentazione sull'AI in medicina usando questo template.
       { "id": 12, "kind": "picture", "bbox": { "x": 11.2, "y": 0.2, "w": 1.4, "h": 0.8 } },
       { "id": 18, "kind": "textbox", "text": "Confidential" }
     ],
-    "safe_zone": { "x": 1.35, "y": 1.1, "w": 10.6, "h": 5.2, "method": "max_empty_rect" }
+    "safe_zone": { "x": 1.35, "y": 1.1, "w": 10.6, "h": 5.2, "method": "max_empty_rect", "quality": "computed" }
   }]
 }
 ```
 
 ### Passo 2 — AI → `generate_slides`
+
+`drop_text: true` qui perché l’utente ha chiesto di togliere “Confidential”; il default inspect/generate è `drop_text: false` (R8).
 
 ```json
 {
@@ -973,7 +1095,7 @@ Prompt: "Generami una presentazione sull'AI in medicina usando questo template.
   "reference_file_id": "abc123",
   "template_mapping": { "default": 0 },
   "template_edits": {
-    "defaults": { "drop_text": true },
+    "defaults": { "drop_text": true, "drop_placeholders": false, "drop_offslide": true },
     "slides": [{ "index": 0, "drop_ids": [12, 18] }]
   },
   "slides": [

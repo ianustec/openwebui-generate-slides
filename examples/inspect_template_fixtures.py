@@ -33,6 +33,29 @@ def _shape_ids(pack) -> list[tuple[int, int]]:
     return out
 
 
+def _safe_zone_fingerprint(pack) -> list[tuple]:
+    out = []
+    for st in pack.slides:
+        sz = st.safe_zone
+        if sz is None:
+            out.append((st.index, None))
+            continue
+        out.append(
+            (
+                st.index,
+                round(sz.x, 4),
+                round(sz.y, 4),
+                round(sz.w, 4),
+                round(sz.h, 4),
+                sz.quality,
+            )
+        )
+    return out
+
+
+_VALID_QUALITIES = frozenset({"computed", "grid_capped", "admissible_fallback"})
+
+
 def main() -> None:
     mod = _load_mod()
     if not mod._HAS_PPTX:
@@ -53,25 +76,59 @@ def main() -> None:
         if ids_a != ids_b:
             print(f"FAIL: shape ids differ between runs for {path.name}", file=sys.stderr)
             sys.exit(1)
+        sz_a = _safe_zone_fingerprint(pack_a)
+        sz_b = _safe_zone_fingerprint(pack_b)
+        if sz_a != sz_b:
+            print(
+                f"FAIL: safe_zone fingerprint differs between runs for {path.name}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
+        media = mod._extract_referenced_media(data, pack_a)
+        images_json = mod._inspect_images_to_json(media)
         payload = mod._serialize_inspect_payload(
             pack_a,
             file_id=f"fixture:{path.name}",
             filename=path.name,
             ok=True,
+            images=images_json,
         )
         raw = json.dumps(payload)
         parsed = json.loads(raw)
-        for key in ("ok", "slides", "theme", "decorations_source", "hints"):
+        for key in ("ok", "slides", "theme", "decorations_source", "hints", "images"):
             if key not in parsed:
                 print(f"FAIL: missing key {key!r} in {path.name}", file=sys.stderr)
                 sys.exit(1)
         assert parsed["ok"] is True
+        assert isinstance(parsed["images"], list)
+        assert "uncloneable" in parsed["hints"]
         for slide in parsed["slides"]:
             if slide.get("safe_zone"):
                 assert slide["safe_zone"].get("method"), "safe_zone.method required"
+                q = slide["safe_zone"].get("quality")
+                if q not in _VALID_QUALITIES:
+                    print(
+                        f"FAIL: invalid safe_zone.quality {q!r} in {path.name}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                if q != "computed":
+                    print(
+                        f"FAIL: fixture {path.name} slide {slide['index']} "
+                        f"expected quality=computed, got {q!r}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+            for sh in slide["shapes"]:
+                assert "cloneable" in sh, "shapes[].cloneable required"
+                assert sh["cloneable"] == mod._shape_cloneable(sh["kind"])
 
-        print(f"OK {path.name}: slides={parsed['slide_count']} shapes={len(ids_a)}")
+        img_n = len(parsed["images"])
+        print(
+            f"OK {path.name}: slides={parsed['slide_count']} "
+            f"shapes={len(ids_a)} images={img_n}"
+        )
 
     logo = FIXTURES / "template_logo_confidential.pptx"
     pack = mod._parse_reference_pptx(logo.read_bytes())
@@ -81,6 +138,14 @@ def main() -> None:
     texts = payload["slides"][0]["text_verbatim"]
     if not any("Confidential" in t for t in texts):
         print(f"FAIL: Confidential not in text_verbatim: {texts}", file=sys.stderr)
+        sys.exit(1)
+    conf_shapes = [
+        sh
+        for sh in payload["slides"][0]["shapes"]
+        if sh.get("text") and "Confidential" in sh["text"]
+    ]
+    if not conf_shapes:
+        print("FAIL: Confidential missing from shapes[].text (R8)", file=sys.stderr)
         sys.exit(1)
     pics = [s for s in payload["slides"][0]["shapes"] if s["kind"] == "picture"]
     if not pics:

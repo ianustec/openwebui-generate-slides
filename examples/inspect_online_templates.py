@@ -82,7 +82,28 @@ def validate_structural(payload: dict, prs, mod) -> list[str]:
         sz = slide.get("safe_zone")
         if sz and not sz.get("method"):
             errs.append(f"slide {idx} safe_zone.method")
+        if sz and sz.get("quality") not in (
+            "computed",
+            "grid_capped",
+            "admissible_fallback",
+        ):
+            errs.append(f"slide {idx} safe_zone.quality")
     return errs
+
+
+def _aggregate_safe_zone_quality(payload: dict) -> dict:
+    counts = {"computed": 0, "grid_capped": 0, "admissible_fallback": 0}
+    total = 0
+    for slide in payload.get("slides") or []:
+        sz = slide.get("safe_zone")
+        if not sz:
+            continue
+        q = sz.get("quality")
+        if q in counts:
+            counts[q] += 1
+            total += 1
+    pct = round(100.0 * counts["computed"] / total, 1) if total else 100.0
+    return {**counts, "slides_with_safe_zone": total, "computed_pct": pct}
 
 
 def _norm_text(s: str) -> str:
@@ -118,6 +139,26 @@ def validate_semantic(payload: dict, prs) -> list[str]:
     return errs
 
 
+_R8_SLIDESGO_MARKERS = (
+    "slidesgo",
+    "you can easily edit",
+    "thank you for downloading",
+    "this template",
+)
+
+
+def validate_r8_boilerplate(payload: dict, filename: str) -> list[str]:
+    """R8: Slidesgo decks should retain boilerplate text in inspect JSON."""
+    if "slidesgo" not in (filename or "").casefold():
+        return []
+    blob = _norm_text("\n".join(_json_all_text(payload)))
+    if not blob.strip():
+        return []
+    if any(marker in blob for marker in _R8_SLIDESGO_MARKERS):
+        return []
+    return [f"R8: no Slidesgo boilerplate marker in JSON text for {filename}"]
+
+
 def main() -> None:
     from pptx import Presentation
 
@@ -144,20 +185,25 @@ def main() -> None:
             data = path.read_bytes()
             prs = Presentation(BytesIO(data))
             pack = mod._parse_reference_pptx(data)
+            media = mod._extract_referenced_media(data, pack)
+            images_json = mod._inspect_images_to_json(media)
             payload = mod._serialize_inspect_payload(
                 pack,
                 file_id=f"local:{path.stem}",
                 filename=path.name,
                 ok=True,
+                images=images_json,
             )
             struct_errs = validate_structural(payload, prs, mod)
             sem_errs = validate_semantic(payload, prs)
-            errs = struct_errs + sem_errs
+            r8_errs = validate_r8_boilerplate(payload, path.name)
+            errs = struct_errs + sem_errs + r8_errs
             out = OUT / f"{path.stem}.inspect.json"
             out.write_text(
                 json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
                 encoding="utf-8",
             )
+            sq = _aggregate_safe_zone_quality(payload)
             row.update(
                 {
                     "slide_count": payload["slide_count"],
@@ -169,11 +215,17 @@ def main() -> None:
                     "pictures_total": sum(
                         s["picture_count"] for s in payload["slides"]
                     ),
+                    "images_unique": len(payload.get("images") or []),
+                    "images_usages": sum(
+                        len(img.get("usages") or [])
+                        for img in (payload.get("images") or [])
+                    ),
                     "theme": payload.get("theme"),
                     "valid": len(errs) == 0,
                     "validation_errors": errs,
                     "json_path": str(out.relative_to(BASE)),
                     "elapsed_sec": round(time.time() - t0, 2),
+                    "safe_zone_quality": sq,
                 }
             )
             if payload["slides"]:
@@ -190,7 +242,10 @@ def main() -> None:
             row["elapsed_sec"] = round(time.time() - t0, 2)
         summary.append(row)
         status = "OK" if row.get("valid") else "FAIL"
-        print(f"{status} {path.name} ({row.get('elapsed_sec')}s)")
+        sq = row.get("safe_zone_quality") or {}
+        pct = sq.get("computed_pct")
+        sq_note = f" safe_zone computed={pct}%" if pct is not None else ""
+        print(f"{status} {path.name} ({row.get('elapsed_sec')}s){sq_note}")
 
     (OUT / "_summary.json").write_text(
         json.dumps(summary, indent=2, ensure_ascii=False) + "\n",

@@ -97,6 +97,11 @@ def main() -> None:
         ("parse_template_fixtures", ["examples/parse_template_fixtures.py"]),
         ("inspect_template_fixtures", ["examples/inspect_template_fixtures.py"]),
         ("clone_template_fixture", ["examples/clone_template_fixture.py"]),
+        (
+            "template_mode_title_bullets",
+            ["examples/template_mode_title_bullets.py"],
+        ),
+        ("template_mode_mixed_deck", ["examples/template_mode_mixed_deck.py"]),
     ]
     for label, argv in scripts:
         _run(label, argv)

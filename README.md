@@ -134,6 +134,8 @@ python examples/check_baseline.py     # NF5 golden regression smoke
 python examples/fixtures/build_fixtures.py   # template-mode dev fixtures
 python examples/parse_template_fixtures.py   # Fase 1 template parse smoke
 python examples/inspect_template_fixtures.py # Fase 2 inspect JSON (offline)
+python examples/inspect_extract_media_fixtures.py  # Fase 3.1 media extract (offline)
+python examples/inspect_shape_kinds.py           # Fase 3.2 kind + cloneable (offline)
 python examples/inspect_online_templates.py  # real Slidesgo decks in doc/online_templates/
 python examples/clone_template_fixture.py    # Fase 3 clone smoke → examples/output/
 ```
