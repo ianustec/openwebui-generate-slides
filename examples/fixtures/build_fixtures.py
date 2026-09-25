@@ -160,13 +160,46 @@ def build_logo_confidential(path: Path) -> None:
 
 
 def build_master_heavy_note(path: Path) -> None:
-    """Minimal slide; v1 template mode does not clone slide masters."""
+    """Dense slide-level chrome (master clone tested on real .potx / Slidesgo decks)."""
     prs = _blank_prs()
     slide = _add_blank_slide(prs)
+    band = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE,
+        Inches(0),
+        Inches(0),
+        Inches(SLIDE_W_IN),
+        Inches(0.4),
+    )
+    band.fill.solid()
+    band.fill.fore_color.rgb = RGBColor(30, 60, 120)
+    band.line.fill.background()
+    _white_safe_zone(slide)
     tb = slide.shapes.add_textbox(
         Inches(1.0), Inches(3.0), Inches(SLIDE_W_IN - 2.0), Inches(1.0)
     )
-    tb.text_frame.text = "Master-heavy layouts: out of scope for template v1"
+    tb.text_frame.text = "Master band fixture (layout/master decorations P1)"
+    prs.save(str(path))
+
+
+def build_nested_group(path: Path) -> None:
+    """Two corner pictures (leaf targets for flatten extract / recursive clone)."""
+    prs = _blank_prs()
+    slide = _add_blank_slide(prs)
+    _white_safe_zone(slide)
+    slide.shapes.add_picture(
+        BytesIO(_png_bytes((180, 80, 80))),
+        Inches(0.2),
+        Inches(0.2),
+        width=Inches(1.0),
+        height=Inches(1.0),
+    )
+    slide.shapes.add_picture(
+        BytesIO(_png_bytes((80, 120, 180))),
+        Inches(SLIDE_W_IN - 1.2),
+        Inches(0.2),
+        width=Inches(1.0),
+        height=Inches(1.0),
+    )
     prs.save(str(path))
 
 
@@ -178,6 +211,7 @@ def main() -> None:
         "template_two_slides.pptx": build_two_slides,
         "template_logo_confidential.pptx": build_logo_confidential,
         "template_master_heavy.pptx": build_master_heavy_note,
+        "template_nested_group.pptx": build_nested_group,
     }
     for name, fn in targets.items():
         out = OUT_DIR / name

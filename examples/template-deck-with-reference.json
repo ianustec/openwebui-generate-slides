@@ -1,0 +1,35 @@
+{
+  "_comment": "Replace reference_file_id with the Files API id from inspect_slides or upload. drop_ids must match shape id from inspect JSON.",
+  "title": "AI in Medicina",
+  "reference_file_id": "REPLACE_WITH_FILES_API_ID",
+  "template_mapping": { "default": 0 },
+  "template_edits": {
+    "defaults": {
+      "drop_text": true,
+      "drop_placeholders": false,
+      "drop_offslide": true
+    },
+    "slides": [{ "index": 0, "drop_ids": [12, 18] }]
+  },
+  "slides": [
+    {
+      "layout": "cover",
+      "title": "AI in Medicina",
+      "subtitle": "Opportunità e sfide cliniche",
+      "author": "NEURA"
+    },
+    {
+      "layout": "kpi_row",
+      "title": "Impatto numerico",
+      "stats": [
+        { "value": "30%", "label": "Riduzione tempi diagnosi", "change": "studi 2025" },
+        { "value": "24/7", "label": "Supporto decisionale", "change": "always-on" }
+      ]
+    },
+    {
+      "layout": "closing",
+      "title": "Grazie",
+      "takeaways": ["L'AI augmenta il clinico", "Serve governance dei dati"]
+    }
+  ]
+}

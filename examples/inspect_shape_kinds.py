@@ -55,6 +55,21 @@ def main() -> None:
             print("FAIL: shapes[].cloneable missing", file=sys.stderr)
             failed = True
             break
+        if not sh["cloneable"]:
+            reason = sh.get("clone_reason")
+            expected = mod._shape_clone_reason(sh["kind"])
+            if reason != expected:
+                print(
+                    f"FAIL: clone_reason {reason!r} != {expected!r} for kind={sh['kind']}",
+                    file=sys.stderr,
+                )
+                failed = True
+
+    for kind in mod._CLONE_SKIP_KINDS:
+        r = mod._shape_clone_reason(kind)
+        if not r:
+            print(f"FAIL: missing clone_reason for skip kind {kind}", file=sys.stderr)
+            failed = True
 
     progetto = ONLINE / "Progetto senza titolo.pptx"
     if progetto.is_file():

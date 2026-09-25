@@ -127,7 +127,8 @@ def main() -> None:
         img_n = len(parsed["images"])
         print(
             f"OK {path.name}: slides={parsed['slide_count']} "
-            f"shapes={len(ids_a)} images={img_n}"
+            f"shapes={len(ids_a)} decorations_source={parsed.get('decorations_source')} "
+            f"images={img_n}"
         )
 
     logo = FIXTURES / "template_logo_confidential.pptx"

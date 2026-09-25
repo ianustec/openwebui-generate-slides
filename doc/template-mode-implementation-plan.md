@@ -999,19 +999,19 @@ examples/
 
 **Prerequisito consigliato:** Fasi **3.1–3.4** complete (o almeno 3.2 + 3.3) prima di pilot Slidesgo in produzione.
 
-- [ ] Estendere `_build(spec, template_pack=None)`
-- [ ] Parse **solo** `reference_file_id` da spec JSON (entry point sezione 7.5)
-- [ ] **Vietato:** fallback attachment in `generate_slides`
-- [ ] Parse `template_mapping` e `template_edits` da spec
-- [ ] Pipeline: load → parse → edits → build → save; fail closed su errori reference (F9)
-- [ ] `_emit` stati: “Loading template…”, “Applying template…” durante download/clone
-- [ ] Aggiornare docstring `generate_slides` (campi nuovi + workflow inspect + valve)
-- [ ] Test NF9: smoke `generate_slides` async (mock/minimo OWUI) con valve off
-- [ ] Creare `examples/template-deck-with-reference.json` di esempio
+- [x] Estendere `_build(spec, template_pack=None)` (Fase 4)
+- [x] Parse **solo** `reference_file_id` da spec JSON (entry point sezione 7.5)
+- [x] **Vietato:** fallback attachment in `generate_slides`
+- [x] Parse `template_mapping` e `template_edits` da spec (via `_build`)
+- [x] Pipeline: load → parse → edits → build → save; fail closed su errori reference (F9)
+- [x] `_emit` stati: “Loading template…”, “Applying template…” durante download/clone
+- [x] Aggiornare docstring `generate_slides` (campi nuovi + workflow inspect + valve)
+- [x] Test NF9: smoke `generate_slides` async (mock/minimo OWUI) con valve off
+- [x] Creare `examples/template-deck-with-reference.json` di esempio
 - [ ] Test E2E manuale OWUI v0.11.3: inspect → generate con drop_ids
-- [ ] Test E2E: generate senza reference → NF5
-- [ ] Test F10: attachment in chat senza `reference_file_id` → NF5
-- [ ] Test NF6: deck 15 slide template
+- [x] Test E2E: generate senza reference → NF5 (`examples/generate_slides_async_smoke.py`)
+- [x] Test F10: attachment in chat senza `reference_file_id` → NF5
+- [x] Test NF6: deck 15 slide template (`examples/template_mode_nf6_15_slides.py`)
 - [ ] Checklist deploy: aggiornare tool in UI OWUI (lezione release v1.0.3)
 
 **Deliverable:** feature invocabile su Neura pilot con `template_mode_enabled=true`.
@@ -1022,15 +1022,15 @@ examples/
 
 **Obiettivo:** docs utente/admin e bump versione.
 
-- [ ] Aggiornare `README.md` — sezione Template Mode + workflow 3 passi
-- [ ] Documentare `palette{}`, `heading_font`, `body_font` (quick win anche senza template)
-- [ ] Aggiungere tabella campi JSON nuovi (`reference_file_id`, `template_edits`, …)
-- [ ] Bump version frontmatter `1.0.3` → `1.1.0` (minor feature)
-- [ ] Changelog: **“Nessun cambiamento comportamento se `template_mode_enabled=false` (default) e senza `reference_file_id`”**
-- [ ] Nota admin Neura: abilitare valve solo per pilot; aggiornare tool in UI
-- [ ] System prompt / istruzioni modello per workflow inspect → generate (opzionale Neura)
-- [ ] Commento su GitHub Issue #2 con link doc e istruzioni
-- [ ] Screenshot before/after (template vs output) in `assets/` (opzionale)
+- [x] Aggiornare `README.md` — sezione Template Mode + workflow 3 passi
+- [x] Documentare `palette{}`, `heading_font`, `body_font` (quick win anche senza template)
+- [x] Aggiungere tabella campi JSON nuovi (`reference_file_id`, `template_edits`, …)
+- [x] Bump version frontmatter `1.0.3` → `1.1.0` (minor feature)
+- [x] Changelog: **“Nessun cambiamento comportamento se `template_mode_enabled=false` (default) e senza `reference_file_id`”** (`CHANGELOG.md`)
+- [x] Nota admin Neura: abilitare valve solo per pilot; aggiornare tool in UI (README § Admin notes)
+- [x] System prompt / istruzioni modello per workflow inspect → generate (`doc/neura-template-mode-model-hints.md`)
+- [ ] Commento su GitHub Issue #2 con link doc e istruzioni (non richiesto in Fase 7)
+- [ ] Screenshot before/after (template vs output) in `assets/` (opzionale, non fatto)
 
 **Deliverable:** release documentata.
 
@@ -1040,14 +1040,14 @@ examples/
 
 **Obiettivo:** robustezza produzione; non bloccante per MVP.
 
-- [ ] Gestione esplicita SmartArt / OLE → `unsupported` / `cloneable: false` (complemento Fase 3.2)
-- [ ] Gestione shape group annidate (clone ricorsivo oltre Fase 3 base)
-- [ ] Valve `template_strict_mode` (fail se `safe_zone.quality !== "computed"` o area troppo piccola)
-- [ ] Master slide decorations (completamento P1)
-- [ ] Inject automatico inventario all’upload `.pptx` (integrazione Neura/OWUI)
-- [ ] Thumbnail leggeri opzionali oltre asset full-res (Fase 3.1); mai base64 in JSON inspect
-- [ ] Supporto PNG/JPG come template (background mode — fase separata)
-- [ ] Metriche/log: tempo parse, tempo clone, slide count
+- [x] Gestione esplicita SmartArt / OLE → `unsupported` / `cloneable: false` (complemento Fase 3.2; `clone_reason` + hint note)
+- [x] Gestione shape group annidate (clone ricorsivo oltre Fase 3 base; `_shape_by_id_recursive`, decorazioni flatten)
+- [x] Valve `template_strict_mode` (fail se `safe_zone.quality !== "computed"` o area troppo piccola)
+- [x] Master slide decorations (completamento P1; layout/master merge + `decorations_source`)
+- [ ] Inject automatico inventario all’upload `.pptx` (integrazione Neura/OWUI — fuori single-file, defer)
+- [ ] Thumbnail leggeri opzionali oltre asset full-res (Fase 3.1); mai base64 in JSON inspect (defer)
+- [ ] Supporto PNG/JPG come template (background mode — fase separata, defer)
+- [x] Metriche/log: tempo parse, tempo clone, slide count (`parse_ms`, `inspect_ms`, `build clone_ms`)
 
 **Deliverable:** production-hardening iterativo.
 

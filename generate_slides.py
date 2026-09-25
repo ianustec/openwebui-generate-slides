@@ -6,7 +6,7 @@ funding_url: https://github.com/ianustec
 description: Generate high-quality native PowerPoint (.pptx) presentations from a JSON spec - layered graphics, native charts, icons, rich layouts
 requirements: python-pptx, pillow
 required_open_webui_version: 0.4.0
-version: 1.0.3
+version: 1.1.0
 license: MIT
 """
 
@@ -26,6 +26,7 @@ license: MIT
 
 import inspect
 import logging
+import time
 import mimetypes
 import os
 import re
@@ -1179,6 +1180,19 @@ def _shape_cloneable(kind: str) -> bool:
     return kind not in _CLONE_SKIP_KINDS
 
 
+def _shape_clone_reason(kind: str) -> Optional[str]:
+    if _shape_cloneable(kind):
+        return None
+    return {
+        "smartart": "not_cloned_v1_smartart",
+        "ole": "not_cloned_v1_ole",
+        "chart": "not_cloned_v1_chart",
+        "table": "not_cloned_v1_table",
+        "media": "not_cloned_v1_media",
+        "unsupported": "not_cloned_v1_unsupported",
+    }.get(kind, "not_cloned_v1")
+
+
 @dataclass
 class _BBox:
     x: float
@@ -1209,6 +1223,7 @@ class _Decoration:
     name: str
     bbox: _BBox
     z_order: int
+    source_container: str = "slide"  # slide | layout | master
 
 
 @dataclass
@@ -1699,18 +1714,27 @@ def _shape_to_record(shape, z_order: int) -> _ShapeRecord:
 
 
 def _extract_decorations(slide) -> list[_Decoration]:
+    """Leaf non-text decorations (flattened groups), aligned with inspect shapes[]."""
     out: list[_Decoration] = []
-    for z, shape in enumerate(slide.shapes):
+    seen_ids: set[int] = set()
+    for shape, z in _iter_shapes(slide, flatten_groups=True):
         if _is_text_shape(shape):
             continue
+        kind = _shape_kind(shape)
+        if kind == "group":
+            continue
         sid = int(getattr(shape, "shape_id", 0) or 0)
+        if sid in seen_ids:
+            continue
+        seen_ids.add(sid)
         out.append(
             _Decoration(
                 shape_id=sid,
-                kind=_shape_kind(shape),
+                kind=kind,
                 name=str(getattr(shape, "name", "") or ""),
                 bbox=_shape_bbox(shape),
                 z_order=z,
+                source_container="slide",
             )
         )
     return out
@@ -1958,18 +1982,105 @@ def _compute_safe_zone(
     )
 
 
-def _inspect_master_decorations(prs, slide_index: int) -> list[_Decoration]:
-    """P1: corporate templates with art on slide master — not implemented in v1."""
-    log.debug(
-        "[template] master decorations not implemented in v1 (slide_index=%s)",
-        slide_index,
-    )
-    return []
+def _decorations_from_container(
+    shapes_container,
+    *,
+    source_container: str,
+    z_base: int,
+) -> list[_Decoration]:
+    out: list[_Decoration] = []
+    seen: set[int] = set()
+    z = 0
+    for shape in shapes_container:
+        if _shape_is_placeholder(shape):
+            continue
+        if _group_child_shapes(shape):
+            for ch, cz in zip(
+                _group_child_shapes(shape),
+                range(len(_group_child_shapes(shape))),
+            ):
+                if _shape_is_placeholder(ch) or _is_text_shape(ch):
+                    continue
+                kind = _shape_kind(ch)
+                if kind == "group":
+                    continue
+                sid = int(getattr(ch, "shape_id", 0) or 0)
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                out.append(
+                    _Decoration(
+                        shape_id=sid,
+                        kind=kind,
+                        name=str(getattr(ch, "name", "") or ""),
+                        bbox=_shape_bbox(ch),
+                        z_order=z_base + z + cz,
+                        source_container=source_container,
+                    )
+                )
+            z += max(1, len(_group_child_shapes(shape)))
+            continue
+        if _is_text_shape(shape):
+            continue
+        kind = _shape_kind(shape)
+        if kind == "group":
+            continue
+        sid = int(getattr(shape, "shape_id", 0) or 0)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        out.append(
+            _Decoration(
+                shape_id=sid,
+                kind=kind,
+                name=str(getattr(shape, "name", "") or ""),
+                bbox=_shape_bbox(shape),
+                z_order=z_base + z,
+                source_container=source_container,
+            )
+        )
+        z += 1
+    return out
+
+
+def _inspect_master_decorations(prs, slide) -> list[_Decoration]:
+    """Layout / slide-master shapes linked to this slide (P1)."""
+    out: list[_Decoration] = []
+    try:
+        layout = slide.slide_layout
+        out.extend(
+            _decorations_from_container(
+                layout.shapes, source_container="layout", z_base=-2000
+            )
+        )
+        master = layout.slide_master
+        out.extend(
+            _decorations_from_container(
+                master.shapes, source_container="master", z_base=-4000
+            )
+        )
+    except Exception as exc:
+        log.debug("[template] master/layout decoration scan: %s", exc)
+    return out
+
+
+def _merge_decorations(
+    slide_decs: list[_Decoration], extra: list[_Decoration]
+) -> list[_Decoration]:
+    seen = {d.shape_id for d in slide_decs}
+    merged = list(slide_decs)
+    for dec in extra:
+        if dec.shape_id in seen:
+            continue
+        seen.add(dec.shape_id)
+        merged.append(dec)
+    return merged
 
 
 def _parse_reference_pptx(data: bytes) -> _TemplatePack:
     if not _HAS_PPTX:
         raise RuntimeError("python-pptx is not installed")
+    t_parse = time.monotonic()
     try:
         prs = Presentation(BytesIO(data))
     except Exception as exc:
@@ -1982,6 +2093,7 @@ def _parse_reference_pptx(data: bytes) -> _TemplatePack:
     slide_h_in = _emu_in(prs.slide_height)
     theme = _extract_theme_from_prs(prs)
     slides_out: list[_SlideTemplate] = []
+    pack_sources: set[str] = set()
 
     for idx, slide in enumerate(prs.slides):
         try:
@@ -1996,8 +2108,16 @@ def _parse_reference_pptx(data: bytes) -> _TemplatePack:
                     text_verbatim.append(rec.text)
                 z += 1
 
-            decorations = _extract_decorations(slide)
-            safe = _compute_safe_zone(slide_w_in, slide_h_in, decorations)
+            slide_decs = _extract_decorations(slide)
+            master_decs = _inspect_master_decorations(prs, slide)
+            decorations = _merge_decorations(slide_decs, master_decs)
+            if slide_decs and master_decs:
+                pack_sources.add("both")
+            elif master_decs:
+                pack_sources.add("master")
+            else:
+                pack_sources.add("slide")
+            safe = _compute_safe_zone(slide_w_in, slide_h_in, slide_decs or decorations)
             bg = _extract_slide_background(slide)
             pic_n = sum(1 for r in records if r.kind == "picture")
 
@@ -2028,12 +2148,29 @@ def _parse_reference_pptx(data: bytes) -> _TemplatePack:
     if not slides_out:
         raise ValueError("No slides could be parsed from template .pptx")
 
+    if "both" in pack_sources or (
+        "master" in pack_sources and "slide" in pack_sources
+    ):
+        decorations_source = "both"
+    elif "master" in pack_sources:
+        decorations_source = "master"
+    else:
+        decorations_source = "slide"
+
+    parse_ms = (time.monotonic() - t_parse) * 1000.0
+    log.info(
+        "[template] parse_ms=%.1f slides=%s decorations_source=%s",
+        parse_ms,
+        len(slides_out),
+        decorations_source,
+    )
+
     return _TemplatePack(
         slide_width_in=slide_w_in,
         slide_height_in=slide_h_in,
         slides=slides_out,
         theme=theme,
-        decorations_source="slide",
+        decorations_source=decorations_source,
     )
 
 
@@ -2055,13 +2192,21 @@ def _inspect_uncloneable_summary(pack: _TemplatePack) -> list[dict]:
                 continue
             kinds[sh.kind] = kinds.get(sh.kind, 0) + 1
         if kinds:
-            out.append(
-                {
-                    "slide_index": st.index,
-                    "count": sum(kinds.values()),
-                    "kinds": kinds,
-                }
-            )
+            notes: list[str] = []
+            if kinds.get("smartart"):
+                notes.append("SmartArt is not cloned in v1 (use alternate layout content).")
+            if kinds.get("ole"):
+                notes.append("OLE/embed objects are not cloned in v1.")
+            if kinds.get("unsupported"):
+                notes.append("Some shapes are unsupported for clone in v1.")
+            entry: dict = {
+                "slide_index": st.index,
+                "count": sum(kinds.values()),
+                "kinds": kinds,
+            }
+            if notes:
+                entry["note"] = " ".join(notes)
+            out.append(entry)
     return out
 
 
@@ -2082,6 +2227,96 @@ def _inspect_safe_zone_caution(
                 "quality": sz.quality,
             }
         )
+    return out
+
+
+def _reference_indices_from_mapping(
+    pack: _TemplatePack, mapping: Optional[dict]
+) -> set[int]:
+    mapping = mapping if isinstance(mapping, dict) else {}
+    if not mapping:
+        return {0} if pack.slides else set()
+    indices: set[int] = set()
+    for val in mapping.values():
+        try:
+            indices.add(int(val))
+        except (TypeError, ValueError):
+            continue
+    return indices
+
+
+def _template_strict_issues(
+    pack: _TemplatePack, mapping: Optional[dict]
+) -> list[dict]:
+    issues: list[dict] = []
+    for idx in sorted(_reference_indices_from_mapping(pack, mapping)):
+        if idx < 0 or idx >= len(pack.slides):
+            issues.append(
+                {
+                    "slide_index": idx,
+                    "reason": "mapping_index_out_of_range",
+                }
+            )
+            continue
+        st = pack.slides[idx]
+        sz = st.safe_zone
+        if sz is None:
+            issues.append({"slide_index": idx, "reason": "missing_safe_zone"})
+            continue
+        if sz.quality != SAFE_ZONE_QUALITY_COMPUTED:
+            issues.append(
+                {
+                    "slide_index": idx,
+                    "reason": "safe_zone_quality",
+                    "quality": sz.quality,
+                }
+            )
+        area = sz.w * sz.h
+        if area < _SAFE_ZONE_MIN_AREA_SQ_IN:
+            issues.append(
+                {
+                    "slide_index": idx,
+                    "reason": "safe_zone_too_small",
+                    "area_sq_in": round(area, 4),
+                }
+            )
+    return issues
+
+
+def _validate_template_strict(pack: _TemplatePack, mapping: Optional[dict]) -> None:
+    issues = _template_strict_issues(pack, mapping)
+    if not issues:
+        return
+    first = issues[0]
+    idx = first.get("slide_index", "?")
+    reason = first.get("reason", "unknown")
+    if reason == "safe_zone_quality":
+        raise ValueError(
+            f"template_strict_mode: reference slide {idx} safe_zone quality "
+            f"is {first.get('quality')!r} (computed required)"
+        )
+    if reason == "safe_zone_too_small":
+        raise ValueError(
+            f"template_strict_mode: reference slide {idx} safe_zone area "
+            f"({first.get('area_sq_in')} sq in) below minimum"
+        )
+    if reason == "missing_safe_zone":
+        raise ValueError(
+            f"template_strict_mode: reference slide {idx} has no safe_zone"
+        )
+    raise ValueError(
+        f"template_strict_mode: reference slide {idx} failed check ({reason})"
+    )
+
+
+def _inspect_master_decoration_hint(pack: _TemplatePack) -> list[dict]:
+    out: list[dict] = []
+    for st in pack.slides:
+        n_master = sum(
+            1 for d in st.decorations if d.source_container in ("layout", "master")
+        )
+        if n_master:
+            out.append({"slide_index": st.index, "merged_from_master": n_master})
     return out
 
 
@@ -2115,6 +2350,10 @@ def _inspect_hints(pack: _TemplatePack) -> dict:
     caution = _inspect_safe_zone_caution(pack, role_by_index)
     if caution:
         hints["safe_zone_caution"] = caution
+    master_hint = _inspect_master_decoration_hint(pack)
+    if master_hint:
+        hints["master_decorations"] = master_hint
+    hints["strict_would_fail"] = _template_strict_issues(pack, {"default": 0})
     return hints
 
 
@@ -2136,8 +2375,9 @@ def _serialize_inspect_payload(
     assert pack is not None
     slides_json = []
     for st in pack.slides:
-        shapes = [
-            {
+        shapes = []
+        for sh in st.shapes:
+            entry = {
                 "id": sh.id,
                 "kind": sh.kind,
                 "name": sh.name,
@@ -2146,8 +2386,10 @@ def _serialize_inspect_payload(
                 "text": sh.text,
                 "cloneable": sh.cloneable,
             }
-            for sh in st.shapes
-        ]
+            reason = _shape_clone_reason(sh.kind)
+            if reason:
+                entry["clone_reason"] = reason
+            shapes.append(entry)
         sz = st.safe_zone
         slide_entry = {
             "index": st.index,
@@ -2361,11 +2603,43 @@ def _find_blank_layout(prs):
     return prs.slide_layouts[-1]
 
 
-def _shape_by_id(slide, shape_id: int):
-    for sh in slide.shapes:
-        if int(getattr(sh, "shape_id", 0) or 0) == shape_id:
-            return sh
+def _shape_by_id_in_tree(shape, shape_id: int):
+    sid = int(shape_id)
+    if int(getattr(shape, "shape_id", 0) or 0) == sid:
+        return shape
+    for ch in _group_child_shapes(shape):
+        found = _shape_by_id_in_tree(ch, sid)
+        if found is not None:
+            return found
     return None
+
+
+def _shape_by_id_on_container(container, shape_id: int):
+    for sh in container.shapes:
+        found = _shape_by_id_in_tree(sh, int(shape_id))
+        if found is not None:
+            return found
+    return None
+
+
+def _shape_by_id(slide, shape_id: int):
+    return _shape_by_id_on_container(slide, shape_id)
+
+
+def _decoration_source_shape(source_slide, dec: _Decoration):
+    container = source_slide
+    if dec.source_container == "layout":
+        container = source_slide.slide_layout
+    elif dec.source_container == "master":
+        container = source_slide.slide_layout.slide_master
+    shape = _shape_by_id_on_container(container, dec.shape_id)
+    if shape is not None:
+        return shape, container.part
+    return _shape_by_id_recursive(source_slide, dec.shape_id), source_slide.part
+
+
+def _shape_by_id_recursive(slide, shape_id: int):
+    return _shape_by_id_on_container(slide, int(shape_id))
 
 
 def _clone_background(target_slide, source_slide) -> None:
@@ -2411,7 +2685,6 @@ def _clone_decorations(
 ) -> None:
     if not _HAS_PPTX:
         return
-    source_part = source_slide.part
     rId_map: dict[str, str] = {}
     ordered = sorted(decorations, key=lambda d: d.z_order)
     sp_tree = target_slide.shapes._spTree
@@ -2423,7 +2696,7 @@ def _clone_decorations(
                 dec.shape_id,
             )
             continue
-        source_shape = _shape_by_id(source_slide, dec.shape_id)
+        source_shape, source_part = _decoration_source_shape(source_slide, dec)
         if source_shape is None:
             log.debug(
                 "[template] decoration shape_id=%s not on source slide",
@@ -2832,6 +3105,7 @@ class _Deck:
         self.frame_role = "default"
         self.frame_bg_hex: Optional[str] = None
         self.frame_slide_index: Optional[int] = None
+        self.template_clone_ms: float = 0.0
 
     def blank(self, layout: str = "default"):
         if not self.template_mode:
@@ -2840,6 +3114,7 @@ class _Deck:
             raise RuntimeError("template_mode requires template_pack and source_prs")
         idx = _pick_template_slide(self.template_pack, layout, self.template_mapping)
         st = self.template_pack.slides[idx]
+        t_clone = time.monotonic()
         slide = _clone_template_slide_to_prs(
             self.prs,
             self.source_prs,
@@ -2847,6 +3122,7 @@ class _Deck:
             source_slide_index=idx,
             decorations=st.decorations,
         )
+        self.template_clone_ms += (time.monotonic() - t_clone) * 1000.0
         self.frame_role = layout
         self.frame_slide_index = idx
         bg = st.background or {}
@@ -3933,7 +4209,7 @@ def _r_icon_grid(deck, slide_dict, page, cols=3):
 
 
 # ============================================================================
-# The Tools class (OpenWebUI native function calling)
+# The Tools class (OpenWebUI native function calling) Valves
 # ============================================================================
 
 class Tools:
@@ -3964,7 +4240,7 @@ class Tools:
             description="Fallback directory for saving.",
         )
         template_mode_enabled: bool = Field(
-            default=False,
+            default=True,
             description=(
                 "Enable template mode (reference .pptx). "
                 "Default off for existing deployments."
@@ -3977,6 +4253,13 @@ class Tools:
         inspect_extract_images: bool = Field(
             default=True,
             description="Upload referenced template images on inspect (images[] JSON).",
+        )
+        template_strict_mode: bool = Field(
+            default=False,
+            description=(
+                "Fail generate when reference safe_zone quality is not "
+                "'computed' or area is below minimum (pilot QA)."
+            ),
         )
 
     # -- status / link helpers -------------------------------------------
@@ -4198,6 +4481,12 @@ class Tools:
                     page,
                     blank_layout=role,
                 )
+        if template_pack is not None:
+            log.info(
+                "[template] build clone_ms=%.1f output_slides=%s",
+                deck.template_clone_ms,
+                len(slides),
+            )
         buf = BytesIO()
         prs.save(buf)
         return buf.getvalue(), len(slides)
@@ -4258,6 +4547,7 @@ class Tools:
                 )
             )
 
+        t_inspect = time.monotonic()
         data, fname, err = await _load_reference_pptx(fid, __request__, __user__)
         if err or not data:
             return _inspect_tool_result(
@@ -4297,8 +4587,10 @@ class Tools:
             ok=True,
             images=images_json,
         )
+        inspect_ms = (time.monotonic() - t_inspect) * 1000.0
         log.info(
-            "[inspect_slides] ok file_id=%s slides=%s images=%s",
+            "[inspect_slides] inspect_ms=%.1f file_id=%s slides=%s images=%s",
+            inspect_ms,
             fid,
             payload.get("slide_count"),
             len(payload.get("images") or []),
@@ -4359,9 +4651,13 @@ class Tools:
         Set `drop_text` / remove text only when the user explicitly wants template
         wording removed (R8); default is to clone template textboxes.
 
-        Requires admin valve `template_mode_enabled` for `reference_file_id`
-        (otherwise reference is ignored). Template rendering E2E may still be
-        gated by deployment version.
+        Requires admin valve `template_mode_enabled` for template rendering
+        when `reference_file_id` is set. If the valve is off, the reference is
+        ignored and a classic deck is generated (NF8). If the valve is on and
+        download or parse of the reference fails, the tool returns an error and
+        does not produce a `.pptx` (F9). Template mode does not use chat
+        attachments; only an explicit `reference_file_id` in this JSON applies
+        the template.
 
         Each slide has a `layout` and fields consistent with that layout. Common
         fields: `title`, `eyebrow` (kicker, e.g. "PART I"), `subtitle`.
@@ -4429,6 +4725,8 @@ class Tools:
             spec["theme"] = self.valves.default_theme
 
         template_extra = ""
+        template_pack = None
+        reference_bytes = None
         ref_id = (spec.get("reference_file_id") or "").strip()
         if ref_id:
             if not self.valves.template_mode_enabled:
@@ -4442,9 +4740,29 @@ class Tools:
                     "Template ignored: template_mode_enabled is false."
                 )
             else:
-                return self._error(
-                    "Template mode not available in this version yet."
+                await self._emit(
+                    __event_emitter__, "Loading template...", done=False
                 )
+                reference_bytes, _ref_fname, ref_err = await _load_reference_pptx(
+                    ref_id, __request__, __user__
+                )
+                if ref_err:
+                    return self._error(ref_err)
+                await self._emit(
+                    __event_emitter__, "Applying template...", done=False
+                )
+                try:
+                    template_pack = _parse_reference_pptx(reference_bytes)
+                except Exception as exc:
+                    log.exception("[generate_slides] reference parse failed")
+                    return self._error(f"Invalid template .pptx: {exc}")
+                if self.valves.template_strict_mode:
+                    try:
+                        _validate_template_strict(
+                            template_pack, spec.get("template_mapping")
+                        )
+                    except ValueError as exc:
+                        return self._error(str(exc))
 
         await self._emit(__event_emitter__, "Generating presentation...", done=False)
         try:
@@ -4454,7 +4772,16 @@ class Tools:
                    "text_image_right", "image_left_text_right") for s in _pf):
                 await self._emit(__event_emitter__, "Fetching images...", done=False)
                 await self._prefetch_images(_pf, __request__, __user__)
-            data, n = self._build(spec)
+            if template_pack is not None:
+                data, n = self._build(
+                    spec,
+                    template_pack=template_pack,
+                    reference_bytes=reference_bytes,
+                )
+            else:
+                data, n = self._build(spec)
+        except ValueError as exc:
+            return self._error(str(exc))
         except Exception as exc:
             import traceback
             traceback.print_exc()

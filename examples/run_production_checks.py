@@ -102,6 +102,14 @@ def main() -> None:
             ["examples/template_mode_title_bullets.py"],
         ),
         ("template_mode_mixed_deck", ["examples/template_mode_mixed_deck.py"]),
+        (
+            "generate_slides_async_smoke",
+            ["examples/generate_slides_async_smoke.py"],
+        ),
+        ("template_mode_nf6_15_slides", ["examples/template_mode_nf6_15_slides.py"]),
+        ("clone_nested_group", ["examples/clone_nested_group.py"]),
+        ("template_strict_mode_test", ["examples/template_strict_mode_test.py"]),
+        ("inspect_master_p1_smoke", ["examples/inspect_master_p1_smoke.py"]),
     ]
     for label, argv in scripts:
         _run(label, argv)
