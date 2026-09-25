@@ -3,7 +3,7 @@ title: Generate Slides
 author: IANUSTEC
 author_url: https://ianustec.com
 funding_url: https://github.com/ianustec
-description: Generate high-quality native PowerPoint (.pptx) presentations from a JSON spec - layered graphics, native charts, icons, rich layouts
+description: Generate high-quality native PowerPoint (.pptx) presentations from a JSON spec - layered graphics, native charts, icons, rich layouts. With an attached .pptx used as base/template, ALWAYS call inspect_slides first, then generate_slides with reference_file_id + per-slide reuse.
 requirements: python-pptx, pillow
 required_open_webui_version: 0.4.0
 version: 1.1.0
@@ -103,6 +103,12 @@ _REFERENCE_PPTX_MAX_BYTES = 25 * 1024 * 1024
 _INSPECT_MEDIA_WARN_BYTES = 50 * 1024 * 1024
 _INSPECT_MEDIA_WARN_COUNT = 200
 _PPTX_EXTENSIONS = (".pptx", ".potx")
+# Open WebUI Files API ids are UUIDs. Anything else (a bare number, a
+# filename, a slide index) was invented by the model and must be rejected
+# before download, with the real attachment id when the chat has one.
+_FILES_API_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 _PPTX_MIMES = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "application/vnd.ms-powerpoint",
@@ -1170,10 +1176,21 @@ _MAX_SAFE_ZONE_GRID_CELLS = 2_000_000
 _SAFE_ZONE_MIN_DECO_AREA_SQ_IN = 0.08
 _SAFE_ZONE_MAX_DECO_FOR_GRID = 48
 
-# Kinds skipped by _clone_decorations (inspect: cloneable=false)
+# Kinds skipped by _clone_decorations (inspect: cloneable=false).
+# Tables (p:graphicFrame/a:tbl) are self-contained XML with no package
+# relationships, so they clone verbatim and can be refilled via reuse.text.
 _CLONE_SKIP_KINDS = frozenset(
-    {"chart", "table", "unsupported", "media", "ole", "smartart"}
+    {"chart", "unsupported", "media", "ole", "smartart"}
 )
+
+# Kinds that are *content* rather than decoration: never cloned implicitly
+# on the classic template path (the renderer draws its own), only via reuse.
+_CONTENT_KINDS = frozenset({"table"})
+
+# Max cells summarised per table in inspect_slides output
+_INSPECT_TABLE_MAX_ROWS = 8
+_INSPECT_TABLE_MAX_COLS = 8
+_INSPECT_TABLE_CELL_CHARS = 40
 
 
 def _shape_cloneable(kind: str) -> bool:
@@ -1187,7 +1204,6 @@ def _shape_clone_reason(kind: str) -> Optional[str]:
         "smartart": "not_cloned_v1_smartart",
         "ole": "not_cloned_v1_ole",
         "chart": "not_cloned_v1_chart",
-        "table": "not_cloned_v1_table",
         "media": "not_cloned_v1_media",
         "unsupported": "not_cloned_v1_unsupported",
     }.get(kind, "not_cloned_v1")
@@ -1214,6 +1230,8 @@ class _ShapeRecord:
     z_order: int
     cloneable: bool = True
     is_placeholder: bool = False
+    # kind == "table": {"rows": R, "cols": C, "cells": [[...]]} (truncated)
+    table: Optional[dict] = None
 
 
 @dataclass
@@ -1694,6 +1712,33 @@ def _iter_shapes(
             z += 1
 
 
+def _table_summary(shape) -> Optional[dict]:
+    """Compact grid summary of a table graphicFrame for inspect_slides."""
+    try:
+        if not getattr(shape, "has_table", False):
+            return None
+        tbl = shape.table
+        n_rows = len(tbl.rows)
+        n_cols = len(tbl.columns)
+        cells: list[list[str]] = []
+        for r_idx, row in enumerate(tbl.rows):
+            if r_idx >= _INSPECT_TABLE_MAX_ROWS:
+                break
+            line: list[str] = []
+            for c_idx, cell in enumerate(row.cells):
+                if c_idx >= _INSPECT_TABLE_MAX_COLS:
+                    break
+                txt = (cell.text_frame.text or "").strip().replace("\n", " ")
+                if len(txt) > _INSPECT_TABLE_CELL_CHARS:
+                    txt = txt[: _INSPECT_TABLE_CELL_CHARS - 1] + "…"
+                line.append(txt)
+            cells.append(line)
+        return {"rows": n_rows, "cols": n_cols, "cells": cells}
+    except Exception as exc:
+        log.debug("[template] table summary failed: %s", exc)
+        return None
+
+
 def _shape_to_record(shape, z_order: int) -> _ShapeRecord:
     txt = _shape_text(shape)
     kind = _shape_kind(shape)
@@ -1710,18 +1755,25 @@ def _shape_to_record(shape, z_order: int) -> _ShapeRecord:
         z_order=z_order,
         cloneable=_shape_cloneable(kind),
         is_placeholder=_shape_is_placeholder(shape),
+        table=_table_summary(shape) if kind == "table" else None,
     )
 
 
 def _extract_decorations(slide) -> list[_Decoration]:
-    """Leaf non-text decorations (flattened groups), aligned with inspect shapes[]."""
+    """Leaf non-text decorations (flattened groups), aligned with inspect shapes[].
+
+    Text shapes and content kinds (tables) are excluded: on the classic
+    template path the renderer draws its own content inside the safe zone,
+    so cloning a template table would overlap it. Tables are cloned only
+    when addressed explicitly through slides[].reuse.
+    """
     out: list[_Decoration] = []
     seen_ids: set[int] = set()
     for shape, z in _iter_shapes(slide, flatten_groups=True):
         if _is_text_shape(shape):
             continue
         kind = _shape_kind(shape)
-        if kind == "group":
+        if kind == "group" or kind in _CONTENT_KINDS:
             continue
         sid = int(getattr(shape, "shape_id", 0) or 0)
         if sid in seen_ids:
@@ -2389,6 +2441,8 @@ def _serialize_inspect_payload(
             reason = _shape_clone_reason(sh.kind)
             if reason:
                 entry["clone_reason"] = reason
+            if sh.table is not None:
+                entry["table"] = sh.table
             shapes.append(entry)
         sz = st.safe_zone
         slide_entry = {
@@ -2419,11 +2473,83 @@ def _serialize_inspect_payload(
     return payload
 
 
+def _retry_tool_result(message: str) -> str:
+    """Tool result that tells the model to call again, not to stop the turn."""
+    return (
+        "[TOOL_RESULT — do not show this to the user and do not give up. "
+        "Do not generate a classic deck. Call the tool again now, correcting "
+        "only what is stated below.]\n\n"
+        + message
+    )
+
+
+def _compact_inspect_payload(payload: dict) -> dict:
+    """Model-facing inventory: text and tables only.
+
+    A Slidesgo slide can contain hundreds of decorative autoshapes. Listing
+    them makes the model lose `file_id` and invent another one. Decorations
+    are cloned automatically when `reuse` omits `keep_ids`, so the model only
+    needs the ids it must rewrite.
+    """
+    if not payload.get("ok"):
+        return payload
+    slides = []
+    for st in payload.get("slides") or []:
+        texts = []
+        tables = []
+        for sh in st.get("shapes") or []:
+            if sh.get("kind") == "table" or sh.get("table"):
+                entry = {"id": sh.get("id")}
+                if isinstance(sh.get("table"), dict):
+                    entry.update(sh["table"])
+                tables.append(entry)
+                continue
+            text = (sh.get("text") or "").strip()
+            if sh.get("has_text") and text:
+                texts.append({"id": sh.get("id"), "text": sh.get("text")})
+        listed = len(texts) + len(tables)
+        slides.append(
+            {
+                "index": st.get("index"),
+                "text": texts,
+                "tables": tables,
+                "decoration_count": max(0, int(st.get("shape_count") or 0) - listed),
+            }
+        )
+    file_id = payload.get("file_id") or ""
+    return {
+        "ok": True,
+        "file_id": file_id,
+        "filename": payload.get("filename"),
+        "slide_width_in": payload.get("slide_width_in"),
+        "slide_height_in": payload.get("slide_height_in"),
+        "slide_count": payload.get("slide_count"),
+        "slides": slides,
+        "next": (
+            "Call generate_slides exactly once. "
+            f'reference_file_id must be "{file_id}" copied character for '
+            "character. For every template slide you fill, emit one output "
+            'slide {"reuse": {"slide": <index>, "text": {"<id>": "new text"}}}. '
+            "Table ids take {\"headers\": [...], \"rows\": [[...]]}. "
+            "Omit keep_ids so decorations clone automatically. "
+            "Do not call inspect_slides again. Do not invent a file_id. "
+            "Do not fall back to classic layouts."
+        ),
+    }
+
+
 def _inspect_tool_result(payload: dict) -> str:
     body = json.dumps(payload, indent=2, ensure_ascii=False)
+    if not payload.get("ok"):
+        return (
+            "[TOOL_RESULT — the inspect failed. Do not invent another file_id "
+            "and do not generate a classic deck. Follow the error below.]\n\n"
+            + body
+        )
     return (
-        "[TOOL_RESULT — return the JSON below verbatim to the user/model, "
-        "without this instruction line.]\n\n"
+        "[TOOL_RESULT — do not paste this JSON to the user. "
+        'Your next action is one generate_slides call, as stated in "next". '
+        "Do not call inspect_slides again.]\n\n"
         + body
     )
 
@@ -2438,6 +2564,60 @@ def _is_presentation_file(name: str, content_type: Optional[str] = None) -> bool
     if "presentationml" in ct or "powerpoint" in ct:
         return True
     return False
+
+
+def _is_files_api_id(file_id: str) -> bool:
+    return bool(_FILES_API_ID_RE.match((file_id or "").strip()))
+
+
+def _wrong_reference_id_message(sent_id: str, attached: str) -> str:
+    """The model sent an id that is not the .pptx actually attached."""
+    sent = (sent_id or "").strip()
+    if not sent:
+        why = "generate_slides was called without reference_file_id."
+    elif not _is_files_api_id(sent):
+        why = f"reference_file_id {sent!r} is not a Files API id."
+    else:
+        why = (
+            f"reference_file_id {sent!r} is not the attached template "
+            "(it does not exist, or it is a different file)."
+        )
+    return (
+        f"{why} The attached template file_id is \"{attached}\". "
+        "Do not tell the user the template is missing. "
+        "Do not generate a classic deck. "
+        "Do not call inspect_slides with a new id. "
+        f'Call generate_slides with reference_file_id="{attached}" '
+        "and per-slide reuse from the inspect inventory of that file "
+        "(reuse.slide = slides[].index, reuse.text = the text and table ids). "
+        "Omit keep_ids so decorations are cloned."
+    )
+
+
+def _invented_reference_id_message(ref_id: str, messages: Any) -> str:
+    """Tell the model to retry generate_slides with the real Files API id."""
+    attached = _find_pptx_attachment(messages)
+    lines = [
+        f'reference_file_id {ref_id!r} is not a Files API id, so the template '
+        "was not loaded. Do not show this message to the user.",
+        'Call generate_slides again and copy "file_id" exactly from the '
+        "inspect_slides JSON you already have. It is a UUID (8-4-4-4-12 hex "
+        "digits). Never invent, shorten, or replace it with a number, a "
+        "filename, or a slide index.",
+    ]
+    if attached:
+        lines.append(
+            f'The attached template file_id is "{attached}". '
+            "Use that exact string as reference_file_id, and build each "
+            "output slide with reuse from inspect slides[].shapes[].id."
+        )
+    else:
+        lines.append(
+            "Build each output slide with reuse from inspect "
+            'slides[].shapes[].id, and set reference_file_id to that '
+            '"file_id" — not the value you just sent.'
+        )
+    return " ".join(lines)
 
 
 def _find_pptx_attachment(messages: Any) -> Optional[str]:
@@ -2626,23 +2806,193 @@ def _shape_by_id(slide, shape_id: int):
     return _shape_by_id_on_container(slide, shape_id)
 
 
-def _decoration_source_shape(source_slide, dec: _Decoration):
-    container = source_slide
-    if dec.source_container == "layout":
-        container = source_slide.slide_layout
-    elif dec.source_container == "master":
-        container = source_slide.slide_layout.slide_master
-    shape = _shape_by_id_on_container(container, dec.shape_id)
-    if shape is not None:
-        return shape, container.part
-    return _shape_by_id_recursive(source_slide, dec.shape_id), source_slide.part
-
-
 def _shape_by_id_recursive(slide, shape_id: int):
     return _shape_by_id_on_container(slide, int(shape_id))
 
 
-def _clone_background(target_slide, source_slide, rId_map: Optional[dict] = None) -> None:
+# --- Template clone engine ---------------------------------------------------
+#
+# The reference .pptx is the graphic source of truth. Cloning works on raw
+# OOXML so that every property python-pptx does not model (freeform geometry,
+# blip fills, SVG fallbacks, group transforms, letter spacing, ...) survives.
+#
+# Two invariants:
+#   1. Shapes are cloned as *top-level spTree elements*. A shape nested in a
+#      p:grpSp is never lifted out of its group: the group element is copied
+#      and pruned instead, so grpSpPr/a:xfrm (off/ext/chOff/chExt/rot) keeps
+#      mapping child-space coordinates onto the slide.
+#   2. Every r:embed found in the copied XML (a:blip, asvg:svgBlip, ...) is
+#      re-pointed to a media part copied into the target package. Media parts
+#      are copied as opaque blobs (no PIL round-trip) so SVG/EMF are supported.
+
+_SP_TREE_SHAPE_TAGS = frozenset(
+    {"sp", "grpSp", "pic", "graphicFrame", "cxnSp", "contentPart"}
+)
+_GROUP_TAG = "grpSp"
+
+
+def _oxml_local_name(el) -> str:
+    tag = el.tag if isinstance(el.tag, str) else ""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _oxml_shape_id(el) -> Optional[int]:
+    """Return the cNvPr id of a spTree element (sp, grpSp, pic, ...)."""
+    for child in el:
+        name = _oxml_local_name(child)
+        if name.startswith("nv") and name.endswith("Pr"):
+            cnv = child.find(qn("p:cNvPr"))
+            if cnv is not None:
+                try:
+                    return int(cnv.get("id"))
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+def _oxml_prune_to_ids(el, keep_ids: set[int]):
+    """Deep-copy `el` keeping only leaf shapes in `keep_ids`.
+
+    Groups are kept whenever at least one descendant survives, so the group
+    transform is preserved. Returns None when nothing survives.
+    """
+    name = _oxml_local_name(el)
+    if name not in _SP_TREE_SHAPE_TAGS:
+        return None
+    sid = _oxml_shape_id(el)
+    if name != _GROUP_TAG:
+        return deepcopy(el) if sid is not None and sid in keep_ids else None
+    if sid is not None and sid in keep_ids:
+        # whole group explicitly requested: keep it verbatim
+        return deepcopy(el)
+    copy = deepcopy(el)
+    survivors = 0
+    for child in list(copy):
+        if _oxml_local_name(child) not in _SP_TREE_SHAPE_TAGS:
+            continue
+        pruned = _oxml_prune_to_ids(child, keep_ids)
+        if pruned is None:
+            copy.remove(child)
+        else:
+            copy.replace(child, pruned)
+            survivors += 1
+    return copy if survivors else None
+
+
+@dataclass
+class _CloneContext:
+    """Per-target-slide relationship state for media remapping.
+
+    `part_cache` maps a source media partname to the Part already copied into
+    the target package, so the same PNG/SVG referenced by several shapes (or
+    several slides) is stored once.
+    """
+
+    target_part: Any
+    part_cache: dict[str, Any] = field(default_factory=dict)
+    rid_map: dict[tuple[str, str], str] = field(default_factory=dict)
+
+    def remap_rid(self, source_part, embed: str) -> Optional[str]:
+        key = (str(source_part.partname), embed)
+        if key in self.rid_map:
+            return self.rid_map[key]
+        rel = source_part.rels.get(embed)
+        if rel is None:
+            raise KeyError(f"relationship {embed} not found on {source_part.partname}")
+        if rel.is_external:
+            return None
+        src_media = rel.target_part
+        new_part = self._copy_media_part(src_media)
+        new_rid = self.target_part.relate_to(new_part, rel.reltype)
+        self.rid_map[key] = new_rid
+        return new_rid
+
+    def _copy_media_part(self, src_media):
+        from pptx.opc.package import Part  # type: ignore
+
+        key = str(src_media.partname)
+        cached = self.part_cache.get(key)
+        if cached is not None:
+            return cached
+        package = self.target_part.package
+        ext = src_media.partname.ext or "bin"
+        partname = package.next_partname(f"/ppt/media/image%d.{ext}")
+        new_part = Part(partname, src_media.content_type, package, src_media.blob)
+        self.part_cache[key] = new_part
+        return new_part
+
+
+def _remap_media_rels(element, source_part, ctx: _CloneContext) -> None:
+    """Re-point every r:embed in `element` to media copied into the target."""
+    embed_attr = qn("r:embed")
+    for el in element.iter():
+        embed = el.get(embed_attr)
+        if not embed:
+            continue
+        try:
+            new_rid = ctx.remap_rid(source_part, embed)
+        except Exception as exc:
+            log.warning(
+                "[template] clone media rel %s (%s): %s",
+                embed,
+                _oxml_local_name(el),
+                exc or type(exc).__name__,
+            )
+            continue
+        if new_rid is not None:
+            el.set(embed_attr, new_rid)
+
+
+_TABLE_STYLES_PARTNAME = "/ppt/tableStyles.xml"
+
+
+def _find_part(package, partname: str):
+    for part in package.iter_parts():
+        if str(part.partname) == partname:
+            return part
+    return None
+
+
+def _copy_table_styles(element, source_part, ctx: _CloneContext) -> None:
+    """Copy custom a:tblStyle definitions referenced by cloned tables.
+
+    Built-in PowerPoint style GUIDs render without an entry in
+    tableStyles.xml; custom styles do not, so they are appended to the target
+    part when missing. Best effort: failures only log.
+    """
+    style_ids = {
+        (el.text or "").strip()
+        for el in element.iter(qn("a:tableStyleId"))
+        if (el.text or "").strip()
+    }
+    if not style_ids:
+        return
+    try:
+        from lxml import etree  # type: ignore
+
+        src_part = _find_part(source_part.package, _TABLE_STYLES_PARTNAME)
+        tgt_part = _find_part(ctx.target_part.package, _TABLE_STYLES_PARTNAME)
+        if src_part is None or tgt_part is None:
+            return
+        src_root = etree.fromstring(src_part.blob)
+        tgt_root = etree.fromstring(tgt_part.blob)
+        existing = {s.get("styleId") for s in tgt_root.iter(qn("a:tblStyle"))}
+        changed = False
+        for style in src_root.iter(qn("a:tblStyle")):
+            sid = style.get("styleId")
+            if sid in style_ids and sid not in existing:
+                tgt_root.append(deepcopy(style))
+                existing.add(sid)
+                changed = True
+        if changed:
+            tgt_part._blob = etree.tostring(
+                tgt_root, xml_declaration=True, encoding="UTF-8", standalone=True
+            )
+    except Exception as exc:
+        log.debug("[template] table styles copy skipped: %s", exc)
+
+
+def _clone_background(target_slide, source_slide, ctx: Optional[_CloneContext] = None) -> None:
     try:
         src_cSld = source_slide.element.cSld
         tgt_cSld = target_slide.element.cSld
@@ -2654,60 +3004,60 @@ def _clone_background(target_slide, source_slide, rId_map: Optional[dict] = None
             tgt_cSld.remove(tgt_bg)
         new_bg = deepcopy(src_bg)
         tgt_cSld.insert(0, new_bg)
-        if rId_map is not None:
-            _remap_blips_in_element(
-                new_bg, source_slide.part, target_slide.part, rId_map
-            )
+        if ctx is not None:
+            _remap_media_rels(new_bg, source_slide.part, ctx)
     except Exception as exc:
         log.debug("[template] clone background: %s", exc)
 
 
-def _remap_blips_in_element(element, source_part, target_part, rId_map: dict) -> None:
-    from pptx.opc.constants import RELATIONSHIP_TYPE as RT  # type: ignore
+def _decoration_container(source_slide, container_name: str):
+    if container_name == "layout":
+        return source_slide.slide_layout
+    if container_name == "master":
+        return source_slide.slide_layout.slide_master
+    return source_slide
 
-    for blip in element.iter(qn("a:blip")):
-        embed = blip.get(qn("r:embed"))
-        if not embed:
-            continue
-        if embed in rId_map:
-            blip.set(qn("r:embed"), rId_map[embed])
+
+def _clone_shapes_from_container(
+    target_slide, container, keep_ids: set[int], ctx: _CloneContext
+) -> int:
+    """Clone spTree elements of `container` keeping only `keep_ids` leaves."""
+    src_tree = container.shapes._spTree
+    tgt_tree = target_slide.shapes._spTree
+    cloned = 0
+    for el in list(src_tree):
+        if _oxml_local_name(el) not in _SP_TREE_SHAPE_TAGS:
             continue
         try:
-            image_part = source_part.related_part(embed)
-            blob = image_part.blob
-            # python-pptx SlidePart.get_or_add_image_part already relates the
-            # image and returns (ImagePart, rId). Passing that tuple to
-            # relate_to stores a non-Part target and save() raises AssertionError
-            # with an empty message.
-            added = target_part.get_or_add_image_part(BytesIO(blob))
-            if isinstance(added, tuple):
-                _part, new_rid = added
-            else:
-                new_rid = target_part.relate_to(added, RT.IMAGE)
-            rId_map[embed] = new_rid
-            blip.set(qn("r:embed"), new_rid)
+            new_el = _oxml_prune_to_ids(el, keep_ids)
+            if new_el is None:
+                continue
+            _remap_media_rels(new_el, container.part, ctx)
+            _copy_table_styles(new_el, container.part, ctx)
+            tgt_tree.insert_element_before(new_el, "p:extLst")
+            cloned += 1
         except Exception as exc:
             log.warning(
-                "[template] clone image rel %s: %s",
-                embed,
-                exc or type(exc).__name__,
+                "[template] clone element %s id=%s failed: %s",
+                _oxml_local_name(el),
+                _oxml_shape_id(el),
+                exc,
             )
-            blip.attrib.pop(qn("r:embed"), None)
+    return cloned
 
 
 def _clone_decorations(
     target_slide,
     source_slide,
     decorations: list[_Decoration],
-    rId_map: Optional[dict] = None,
+    ctx: Optional[_CloneContext] = None,
 ) -> None:
     if not _HAS_PPTX:
         return
-    if rId_map is None:
-        rId_map = {}
-    ordered = sorted(decorations, key=lambda d: d.z_order)
-    sp_tree = target_slide.shapes._spTree
-    for dec in ordered:
+    if ctx is None:
+        ctx = _CloneContext(target_part=target_slide.part)
+    keep_by_container: dict[str, set[int]] = {"master": set(), "layout": set(), "slide": set()}
+    for dec in decorations:
         if dec.kind in _CLONE_SKIP_KINDS:
             log.warning(
                 "[template] skip clone unsupported kind=%s id=%s",
@@ -2715,43 +3065,15 @@ def _clone_decorations(
                 dec.shape_id,
             )
             continue
-        source_shape, source_part = _decoration_source_shape(source_slide, dec)
-        if source_shape is None:
-            log.debug(
-                "[template] decoration shape_id=%s not on source slide",
-                dec.shape_id,
-            )
+        name = dec.source_container if dec.source_container in keep_by_container else "slide"
+        keep_by_container[name].add(int(dec.shape_id))
+    # z-order: master beneath layout beneath slide; spTree order inside each.
+    for name in ("master", "layout", "slide"):
+        ids = keep_by_container[name]
+        if not ids:
             continue
-        try:
-            if dec.kind == "picture":
-                used_add_picture = False
-                try:
-                    target_slide.shapes.add_picture(
-                        BytesIO(source_shape.image.blob),
-                        source_shape.left,
-                        source_shape.top,
-                        width=source_shape.width,
-                        height=source_shape.height,
-                    )
-                    used_add_picture = True
-                except Exception:
-                    pass
-                if used_add_picture:
-                    continue
-                log.debug(
-                    "[template] clone picture id=%s via deepcopy (no .image blob)",
-                    dec.shape_id,
-                )
-            new_el = deepcopy(source_shape.element)
-            _remap_blips_in_element(new_el, source_part, target_slide.part, rId_map)
-            sp_tree.insert_element_before(new_el, "p:extLst")
-        except Exception as exc:
-            log.warning(
-                "[template] clone shape id=%s kind=%s failed: %s",
-                dec.shape_id,
-                dec.kind,
-                exc,
-            )
+        container = _decoration_container(source_slide, name)
+        _clone_shapes_from_container(target_slide, container, ids, ctx)
 
 
 def _clone_template_slide_to_prs(
@@ -2761,6 +3083,7 @@ def _clone_template_slide_to_prs(
     *,
     source_slide_index: int = 0,
     decorations: list[_Decoration],
+    part_cache: Optional[dict] = None,
 ):
     if not _HAS_PPTX:
         raise RuntimeError("python-pptx is not installed")
@@ -2768,9 +3091,12 @@ def _clone_template_slide_to_prs(
     target_prs.slide_height = Inches(pack.slide_height_in)
     source_slide = source_prs.slides[source_slide_index]
     target_slide = target_prs.slides.add_slide(_find_blank_layout(target_prs))
-    rId_map: dict[str, str] = {}
-    _clone_background(target_slide, source_slide, rId_map)
-    _clone_decorations(target_slide, source_slide, decorations, rId_map)
+    ctx = _CloneContext(
+        target_part=target_slide.part,
+        part_cache=part_cache if part_cache is not None else {},
+    )
+    _clone_background(target_slide, source_slide, ctx)
+    _clone_decorations(target_slide, source_slide, decorations, ctx)
     return target_slide
 
 
@@ -2893,6 +3219,424 @@ def _apply_template_edits(
     return replace(pack, slides=new_slides)
 
 
+# --- Per-slide reuse libretto (clone template slide by inspect shape ids) ----
+
+@dataclass
+class _ReuseTable:
+    """New content for a template table: `headers` → row 0, `rows` → body."""
+
+    headers: Optional[list[str]]
+    rows: list[list[str]]
+
+    @property
+    def grid(self) -> list[list[str]]:
+        return ([self.headers] if self.headers is not None else []) + self.rows
+
+    @property
+    def n_cols(self) -> int:
+        return max((len(r) for r in self.grid), default=0)
+
+
+@dataclass
+class _ReuseSpec:
+    slide_index: int
+    keep_ids: Optional[list[int]]
+    drop_ids: list[int]
+    text: dict[int, "str | _ReuseTable"]
+
+
+def _coerce_cells(raw_rows: Any, where: str) -> list[list[str]]:
+    if not isinstance(raw_rows, list):
+        raise ValueError(f"{where} must be a list of rows")
+    out: list[list[str]] = []
+    for row in raw_rows:
+        if isinstance(row, dict):
+            row = list(row.values())
+        if not isinstance(row, list):
+            raise ValueError(f"{where} rows must be lists of cell values")
+        out.append(["" if c is None else str(c) for c in row])
+    return out
+
+
+def _parse_reuse_table(raw: Any, where: str) -> _ReuseTable:
+    """Accept {"headers": [...], "rows": [[...]]} or a plain list of rows."""
+    if isinstance(raw, list):
+        return _ReuseTable(headers=None, rows=_coerce_cells(raw, where))
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{where} must be a string (text shape) or an object "
+            '{"headers": [...], "rows": [[...]]} (table shape)'
+        )
+    headers = raw.get("headers")
+    if headers is not None:
+        if not isinstance(headers, list):
+            raise ValueError(f"{where}.headers must be a list")
+        headers = ["" if h is None else str(h) for h in headers]
+    rows = _coerce_cells(raw.get("rows") or [], f"{where}.rows")
+    if headers is None and not rows:
+        raise ValueError(f"{where} table has neither headers nor rows")
+    return _ReuseTable(headers=headers, rows=rows)
+
+
+def _parse_reuse_spec(raw: Any, pack: _TemplatePack) -> _ReuseSpec:
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "slides[].reuse must be an object with "
+            '"slide", optional "keep_ids", "drop_ids", and "text" '
+            "(inspect shapes[].id) — not a list or string."
+        )
+    if "slide" not in raw:
+        raise ValueError('slides[].reuse requires "slide" (0-based template index)')
+    try:
+        slide_index = int(raw["slide"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f'slides[].reuse.slide must be an integer, got {raw["slide"]!r}'
+        ) from exc
+    n = len(pack.slides)
+    if slide_index < 0 or slide_index >= n:
+        raise ValueError(
+            f"slides[].reuse.slide {slide_index} out of range "
+            f"(template has {n} slides, indices 0..{n - 1})"
+        )
+
+    keep_ids: Optional[list[int]] = None
+    if "keep_ids" in raw and raw["keep_ids"] is not None:
+        if not isinstance(raw["keep_ids"], list):
+            raise ValueError("slides[].reuse.keep_ids must be a list of shape ids")
+        keep_ids = [int(x) for x in raw["keep_ids"]]
+
+    drop_ids: list[int] = []
+    if raw.get("drop_ids") is not None:
+        if not isinstance(raw["drop_ids"], list):
+            raise ValueError("slides[].reuse.drop_ids must be a list of shape ids")
+        drop_ids = [int(x) for x in raw["drop_ids"]]
+
+    text: dict[int, "str | _ReuseTable"] = {}
+    raw_text = raw.get("text")
+    if raw_text is not None:
+        if not isinstance(raw_text, dict):
+            raise ValueError(
+                "slides[].reuse.text must be an object mapping shape id → string "
+                '(text shape) or {"headers": [...], "rows": [[...]]} (table shape)'
+            )
+        for k, v in raw_text.items():
+            try:
+                sid = int(k)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"slides[].reuse.text key {k!r} must be a shape id (integer)"
+                ) from exc
+            if isinstance(v, (dict, list)):
+                text[sid] = _parse_reuse_table(v, f"slides[].reuse.text[{sid}]")
+            else:
+                text[sid] = "" if v is None else str(v)
+
+    return _ReuseSpec(
+        slide_index=slide_index,
+        keep_ids=keep_ids,
+        drop_ids=drop_ids,
+        text=text,
+    )
+
+
+def _decoration_from_record(rec: _ShapeRecord) -> _Decoration:
+    return _Decoration(
+        shape_id=rec.id,
+        kind=rec.kind,
+        name=rec.name,
+        bbox=rec.bbox,
+        z_order=rec.z_order,
+        source_container="slide",
+    )
+
+
+def _decorations_for_reuse(
+    st: _SlideTemplate,
+    keep_ids: Optional[list[int]],
+    drop_ids: list[int],
+) -> list[_Decoration]:
+    drop = set(drop_ids)
+    known = {rec.id for rec in st.shapes}
+    if keep_ids is not None:
+        for kid in keep_ids:
+            if kid not in known:
+                log.warning(
+                    "[reuse] keep_ids %s not on template slide %s (inspect shapes[].id)",
+                    kid,
+                    st.index,
+                )
+    for tid in drop:
+        if tid not in known:
+            log.warning(
+                "[reuse] drop_ids %s not on template slide %s",
+                tid,
+                st.index,
+            )
+
+    out: list[_Decoration] = []
+    if keep_ids is not None:
+        keep = set(keep_ids)
+        for rec in st.shapes:
+            if rec.id not in keep or rec.id in drop:
+                continue
+            if not rec.cloneable:
+                log.warning(
+                    "[reuse] skip non-cloneable shape id=%s kind=%s on slide %s",
+                    rec.id,
+                    rec.kind,
+                    st.index,
+                )
+                continue
+            out.append(_decoration_from_record(rec))
+    else:
+        for rec in st.shapes:
+            if rec.id in drop:
+                continue
+            if not rec.cloneable:
+                continue
+            out.append(_decoration_from_record(rec))
+    return out
+
+
+def _first_run_rPr_template(txBody):
+    """Return a deep copy of the first run properties found in `txBody`.
+
+    Falls back to the first paragraph's a:endParaRPr (renamed to a:rPr) so a
+    cloned empty placeholder still keeps size/spacing/color. Returns None when
+    no run-level formatting is available.
+    """
+    for p in txBody.findall(qn("a:p")):
+        for r in p.findall(qn("a:r")):
+            rPr = r.find(qn("a:rPr"))
+            if rPr is not None:
+                return deepcopy(rPr)
+    for p in txBody.findall(qn("a:p")):
+        end = p.find(qn("a:endParaRPr"))
+        if end is not None:
+            rPr = deepcopy(end)
+            rPr.tag = qn("a:rPr")
+            return rPr
+    return None
+
+
+def _set_shape_text_preserve_font(shape, text: str) -> None:
+    """Replace the text of a text shape keeping the original run formatting."""
+    if not getattr(shape, "has_text_frame", False):
+        return
+    _replace_txBody_text(shape.text_frame._txBody, text)
+
+
+def _replace_txBody_text(txBody, text: str) -> None:
+    """Rewrite the paragraphs of an a:txBody / p:txBody with `text`.
+
+    The first paragraph's a:pPr, the first run's full a:rPr (font, size,
+    bold, color, letter spacing `spc`, caps, lang, ...) and a:endParaRPr are
+    copied verbatim onto every new paragraph/run. `\\n` creates a paragraph.
+    """
+    from lxml import etree  # type: ignore
+
+    paras = txBody.findall(qn("a:p"))
+    first_p = paras[0] if paras else None
+    pPr_tpl = None
+    end_tpl = None
+    if first_p is not None:
+        pPr_src = first_p.find(qn("a:pPr"))
+        end_src = first_p.find(qn("a:endParaRPr"))
+        pPr_tpl = deepcopy(pPr_src) if pPr_src is not None else None
+        end_tpl = deepcopy(end_src) if end_src is not None else None
+    rPr_tpl = _first_run_rPr_template(txBody)
+
+    for p in paras:
+        txBody.remove(p)
+    lines = text.split("\n") if text else [""]
+    for line in lines:
+        p = etree.SubElement(txBody, qn("a:p"))
+        if pPr_tpl is not None:
+            p.append(deepcopy(pPr_tpl))
+        r = etree.SubElement(p, qn("a:r"))
+        if rPr_tpl is not None:
+            r.append(deepcopy(rPr_tpl))
+        t = etree.SubElement(r, qn("a:t"))
+        t.text = line
+        if end_tpl is not None:
+            p.append(deepcopy(end_tpl))
+
+
+def _fill_table_preserve_format(shape, data: _ReuseTable) -> None:
+    """Refill a cloned template table in place, keeping its cell formatting.
+
+    - Row 0 of the template is the header row; body rows are style templates
+      reused cyclically (so alternating fills survive when rows are added).
+    - Columns are added by copying the last column, removed from the right;
+      the remaining gridCol widths are rescaled to the original total width.
+    - The graphicFrame height follows the new row count.
+    """
+    if not getattr(shape, "has_table", False):
+        raise ValueError(f"shape id {shape.shape_id} is not a table")
+    tbl = shape.table._tbl
+    grid = data.grid
+    if not grid:
+        return
+    n_rows = len(grid)
+    n_cols = max(data.n_cols, 1)
+
+    # --- columns ------------------------------------------------------------
+    tblGrid = tbl.tblGrid
+    grid_cols = list(tblGrid.gridCol_lst)
+    total_w = sum(int(g.w) for g in grid_cols) or int(shape.width)
+    trs = list(tbl.tr_lst)
+    while len(grid_cols) > n_cols:
+        tblGrid.remove(grid_cols.pop())
+        for tr in trs:
+            tcs = tr.tc_lst
+            if tcs:
+                tr.remove(tcs[-1])
+    while len(grid_cols) < n_cols:
+        new_col = deepcopy(grid_cols[-1])
+        tblGrid.append(new_col)
+        grid_cols.append(new_col)
+        for tr in trs:
+            tcs = tr.tc_lst
+            if tcs:
+                new_tc = deepcopy(tcs[-1])
+                tcs[-1].addnext(new_tc)
+    cur_total = sum(int(g.w) for g in grid_cols) or 1
+    for g in grid_cols:
+        g.w = max(1, int(round(int(g.w) * total_w / cur_total)))
+
+    # --- rows ---------------------------------------------------------------
+    header_tpl = trs[0]
+    body_tpls = trs[1:] or [trs[0]]
+    for tr in trs:
+        tbl.remove(tr)
+    out_rows = []
+    for r_idx in range(n_rows):
+        if r_idx == 0 and data.headers is not None:
+            tpl = header_tpl
+        else:
+            body_idx = r_idx - (1 if data.headers is not None else 0)
+            tpl = body_tpls[body_idx % len(body_tpls)]
+        new_tr = deepcopy(tpl)
+        tbl.append(new_tr)
+        out_rows.append(new_tr)
+
+    # --- cell text ----------------------------------------------------------
+    for r_idx, tr in enumerate(out_rows):
+        values = grid[r_idx]
+        for c_idx, tc in enumerate(tr.tc_lst):
+            txt = values[c_idx] if c_idx < len(values) else ""
+            txBody = tc.find(qn("a:txBody"))
+            if txBody is None:
+                continue
+            _replace_txBody_text(txBody, txt)
+
+    # --- frame height -------------------------------------------------------
+    try:
+        shape.height = sum(int(tr.h) for tr in out_rows)
+    except Exception as exc:
+        log.debug("[reuse] table frame height not updated: %s", exc)
+
+
+def _apply_reuse_text_map(
+    target_slide,
+    text_map: dict[int, "str | _ReuseTable"],
+    st: _SlideTemplate,
+) -> None:
+    known = {rec.id for rec in st.shapes}
+    for sid, new_text in text_map.items():
+        if sid not in known:
+            log.warning(
+                "[reuse] text id %s not on template slide %s",
+                sid,
+                st.index,
+            )
+        shape = _shape_by_id(target_slide, sid)
+        if shape is None:
+            log.warning(
+                "[reuse] shape id %s missing on cloned output slide",
+                sid,
+            )
+            continue
+        is_table = bool(getattr(shape, "has_table", False))
+        if isinstance(new_text, _ReuseTable):
+            if not is_table:
+                raise ValueError(
+                    f"slides[].reuse.text[{sid}] is a table payload but shape "
+                    f"{sid} is not a table (kind from inspect shapes[])"
+                )
+            _fill_table_preserve_format(shape, new_text)
+        elif is_table:
+            raise ValueError(
+                f"slides[].reuse.text[{sid}] targets a table: pass "
+                '{"headers": [...], "rows": [[...]]} instead of a string'
+            )
+        else:
+            _set_shape_text_preserve_font(shape, new_text)
+
+
+def _reuse_table_from_slide_spec(
+    slide_dict: dict, reuse: _ReuseSpec, st: _SlideTemplate
+) -> None:
+    """Convenience: fill the single template table from slide-level headers/rows.
+
+    When a reuse slide contains exactly one cloneable table and the slide spec
+    carries the classic `headers`/`rows` payload without addressing that table
+    id in reuse.text, the payload is routed to the table automatically.
+    """
+    if not isinstance(slide_dict, dict):
+        return
+    tables = [rec for rec in st.shapes if rec.kind == "table" and rec.cloneable]
+    if len(tables) != 1:
+        return
+    tid = tables[0].id
+    if tid in reuse.text:
+        return
+    if reuse.keep_ids is not None and tid not in reuse.keep_ids:
+        return
+    if tid in reuse.drop_ids:
+        return
+    headers = slide_dict.get("headers")
+    rows = _first(slide_dict, "rows", "data", "table", default=None)
+    if headers is None and not rows:
+        return
+    try:
+        reuse.text[tid] = _parse_reuse_table(
+            {"headers": headers, "rows": rows or []}, "slides[].headers/rows"
+        )
+        log.info(
+            "[reuse] slide %s: routed slide-level headers/rows to template table id %s",
+            st.index,
+            tid,
+        )
+    except ValueError as exc:
+        log.warning("[reuse] slide-level table payload ignored: %s", exc)
+
+
+def _render_reuse_slide(
+    deck: "_Deck", reuse: _ReuseSpec, slide_dict: Optional[dict] = None
+) -> None:
+    if deck.template_pack is None or deck.source_prs is None:
+        raise RuntimeError("reuse slide requires template_pack and source_prs")
+    pack = deck.template_pack
+    st = pack.slides[reuse.slide_index]
+    if slide_dict is not None:
+        _reuse_table_from_slide_spec(slide_dict, reuse, st)
+    decs = _decorations_for_reuse(st, reuse.keep_ids, reuse.drop_ids)
+    t_clone = time.monotonic()
+    target_slide = _clone_template_slide_to_prs(
+        deck.prs,
+        deck.source_prs,
+        pack,
+        source_slide_index=reuse.slide_index,
+        decorations=decs,
+        part_cache=deck.media_part_cache,
+    )
+    deck.template_clone_ms += (time.monotonic() - t_clone) * 1000.0
+    if reuse.text:
+        _apply_reuse_text_map(target_slide, reuse.text, st)
+
+
 # --- Template mode: deck frame + mapping (§5.1 dual path) --------------------
 
 def _default_frame() -> _BBox:
@@ -2923,6 +3667,10 @@ def _pick_template_slide(
             if key in mapping:
                 return int(mapping[key])
         return 0
+    # An explicit per-layout key (e.g. "table": 9, "team": 7) wins over the
+    # coarse role fallback (cover/section/closing/content).
+    if layout in mapping:
+        return int(mapping[layout])
     role = _layout_mapping_role(layout)
     if role in mapping:
         return int(mapping[role])
@@ -3126,6 +3874,8 @@ class _Deck:
         self.frame_bg_hex: Optional[str] = None
         self.frame_slide_index: Optional[int] = None
         self.template_clone_ms: float = 0.0
+        # source media partname -> Part copied into self.prs (shared by all slides)
+        self.media_part_cache: dict[str, Any] = {}
 
     def blank(self, layout: str = "default"):
         if not self.template_mode:
@@ -3141,6 +3891,7 @@ class _Deck:
             self.template_pack,
             source_slide_index=idx,
             decorations=st.decorations,
+            part_cache=self.media_part_cache,
         )
         self.template_clone_ms += (time.monotonic() - t_clone) * 1000.0
         self.frame_role = layout
@@ -4483,8 +5234,27 @@ class Tools:
 
         deck.total = len(slides)
 
+        for sd in slides:
+            if sd.get("reuse") is not None:
+                if template_pack is None or source_prs is None:
+                    raise ValueError(
+                        "slides[].reuse requires reference_file_id with "
+                        "template_mode_enabled (template .pptx clone path)"
+                    )
+                _parse_reuse_spec(sd["reuse"], template_pack)
+
         for i, slide_dict in enumerate(slides):
             page = i + 1
+            reuse_raw = slide_dict.get("reuse")
+            if reuse_raw is not None:
+                reuse = _parse_reuse_spec(reuse_raw, template_pack)
+                try:
+                    _render_reuse_slide(deck, reuse, slide_dict)
+                except Exception as exc:
+                    raise ValueError(
+                        f"reuse slide {reuse.slide_index} failed: {exc}"
+                    ) from exc
+                continue
             layout = _resolve_layout(slide_dict)
             try:
                 _dispatch(deck, layout, slide_dict, page)
@@ -4519,27 +5289,32 @@ class Tools:
         __request__: Any = None,
         __user__: Optional[dict] = None,
     ) -> str:
-        """Return a factual JSON inventory of a user-uploaded .pptx template.
+        """MANDATORY FIRST STEP whenever a .pptx is attached or the user wants
+        their own slides used as base/template/style. Returns a compact JSON
+        inventory: file_id, and per slide the text ids and table ids to
+        rewrite. Decorations are omitted on purpose (a template slide can
+        have hundreds) and are cloned automatically. Then call
+        `generate_slides` once, following the "next" field. Never call
+        `generate_slides` for a template request before this tool has
+        returned, and never call this tool a second time with a different id.
 
-        Call this tool ONLY when the user explicitly asks to use an attached
-        or uploaded PowerPoint file as a visual template (decorations, logo,
-        safe zone, drop_ids). Do NOT call it for normal slide generation or
-        when no template .pptx is involved.
+        Trigger phrases (any language), e.g.: "usa le slide in allegato come
+        base", "usa questo template / questa presentazione come base",
+        "mantieni lo stile del file allegato", "partendo dal pptx allegato",
+        "use the attached deck as template", "same look as this file".
+        Also call it when the user asks to inspect/analyze/inventory a .pptx.
+
+        Do NOT call it when no .pptx is involved (classic deck from scratch).
 
         Pass `file_id` from the Open WebUI Files API, or omit it when the user
         attached a .pptx in the current chat (auto-detected from messages).
+        Copy file_id character for character into generate_slides
+        reference_file_id. Never invent, shorten, or replace it. If a call
+        fails, do not switch to a classic deck: reuse the file_id that worked.
 
-        The JSON lists shape ids, bounding boxes, text_verbatim, safe_zone,
-        theme colors, and images[] (cache_file_id / url for referenced media,
-        no base64). Template look in generate still comes from cloning
-        reference_file_id — images[] helps the model decide drops/mapping.
-
-        Text in text_verbatim and shapes[].text is a faithful copy of the .pptx
-        (Slidesgo placeholders and boilerplate included). Inspect never drops or
-        rewrites template text. To omit text when generating, set template_edits
-        in generate_slides (e.g. drop_text: true, drop_ids on specific shapes).
-
-        Set valve inspect_extract_images=false to skip media upload (empty images[]).
+        slides[].text and slides[].tables are a faithful copy of the .pptx
+        (Slidesgo placeholders included). Inspect never rewrites them. Omit
+        keep_ids in reuse so unlisted decorations are cloned.
         """
         if not self.valves.inspect_slides_enabled:
             return _inspect_tool_result(
@@ -4567,6 +5342,10 @@ class Tools:
                     error="No file_id provided and no .pptx attachment found in messages.",
                 )
             )
+
+        attached = _find_pptx_attachment(__messages__)
+        if attached and fid != attached:
+            return _retry_tool_result(_wrong_reference_id_message(fid, attached))
 
         t_inspect = time.monotonic()
         data, fname, err = await _load_reference_pptx(fid, __request__, __user__)
@@ -4616,7 +5395,7 @@ class Tools:
             payload.get("slide_count"),
             len(payload.get("images") or []),
         )
-        return _inspect_tool_result(payload)
+        return _inspect_tool_result(_compact_inspect_payload(payload))
 
     async def generate_slides(
         self,
@@ -4628,18 +5407,25 @@ class Tools:
         __request__: Any = None,
     ) -> str:
         """Create a high-quality NATIVE PowerPoint (.pptx) and return a download
-        link. Use when the user wants a finished deck (slides, pitch, etc.).
+        link.
 
-        Do NOT use this tool to analyze or inventory an attached template .pptx.
-        For Passo 1 (shape ids, bbox, safe_zone, text_verbatim, images[]) call
-        `inspect_slides` instead — pass the same Files API `file_id` or rely on
-        chat attachment auto-detection. If the user asks only for inspect JSON,
-        do not call generate_slides and do not replace the tool JSON with a
-        markdown summary.
+        PRECONDITION — attached .pptx / "usa le slide in allegato come base",
+        "usa questo template", "stesso stile del file", "use the attached
+        deck": you MUST call `inspect_slides` FIRST and only then call this
+        tool with the same Files API id as `reference_file_id` and per-slide
+        `reuse` built from inspect slides[].text / slides[].tables (ids only;
+        decorations are cloned when keep_ids is omitted). An id that is not
+        the attached file is rejected. Do not fall back to a classic deck.
+
+        Do NOT use this tool to analyze or inventory a template .pptx — that
+        is `inspect_slides`. If the user asks only for the inspect JSON, do not
+        call generate_slides and do not replace the tool JSON with a markdown
+        summary.
 
         Template workflow (when the user wants their .pptx look):
         1) `inspect_slides` → factual inventory JSON (verbatim in the reply).
-        2) This tool with the same `reference_file_id` plus content + mapping.
+        2) This tool: same `reference_file_id`, one output slide per template
+           slide to mirror, each with `reuse` {slide, keep_ids/drop_ids, text}.
 
         The `content` parameter MUST be a SINGLE JSON string (no text before or
         after, no markdown fence). Structure:
@@ -4653,7 +5439,7 @@ class Tools:
                                         // sage | cherry | charcoal | slate
           "accent": "#C99A3B",          // opt: force the accent color
           "footer": "Footer label",      // opt
-          "reference_file_id": "...",    // opt: Files API id of template .pptx
+          "reference_file_id": "<file_id from inspect_slides, copied verbatim>",
           "template_mapping": {          // opt: reference slide index per role
             "default": 0, "cover": 0, "content": 1, "closing": 2
           },
@@ -4665,8 +5451,52 @@ class Tools:
             },
             "slides": [{ "index": 0, "drop_ids": [12, 18] }]
           },
-          "slides": [ { "layout": "...", ... }, ... ]
+          "slides": [
+            {
+              "layout": "cover",
+              "reuse": {
+                "slide": 0,
+                "keep_ids": [3, 4, 8, 9],
+                "drop_ids": [10],
+                "text": { "8": "New title", "9": "Subtitle" }
+              }
+            },
+            {
+              "reuse": {
+                "slide": 9,
+                "text": {
+                  "9": "Project tracker",
+                  "2": { "headers": ["Project", "Status"],
+                         "rows": [["Alpha", "Done"], ["Beta", "WIP"]] }
+                }
+              }
+            },
+            { "layout": "title_bullets", "title": "...", "bullets": [] }
+          ]
         }
+
+        Per-slide `reuse` (preferred when mirroring a multi-slide template):
+        clone template slide `reuse.slide` (0-based, same as inspect
+        slides[].index), copy shapes by inspect `shapes[].id` via keep_ids /
+        drop_ids, replace text in place via `text` — no classic layout overlay
+        on that slide. Omit keep_ids to clone all cloneable shapes minus
+        drop_ids. Requires reference_file_id + template_mode_enabled.
+        `reference_file_id` is the inspect_slides `file_id` copied verbatim
+        (a UUID, 8-4-4-4-12 hex). A number, a filename, or a slide index is
+        rejected and you must call this tool again with the real id. Never
+        invent one.
+
+        Template tables (inspect `kind: "table"`, with `table.rows/cols/cells`)
+        are refilled in place: `text["<table id>"] = {"headers": [...],
+        "rows": [[...]]}` keeps the template cell formatting; rows/columns are
+        added or removed to fit the data. If the slide also carries the
+        classic `headers`/`rows` and the template slide has exactly one table,
+        they are routed to that table automatically. A plain string on a table
+        id is an error.
+
+        `template_mapping` accepts explicit layout keys (e.g. `"table": 9`,
+        `"team": 7`) which win over the coarse cover/section/closing/content
+        roles when a slide is not using `reuse`.
 
         `drop_ids` use shape `id` from inspect JSON, not slide shape order.
         Set `drop_text` / remove text only when the user explicitly wants template
@@ -4692,7 +5522,7 @@ class Tools:
         - "cover":        title, subtitle, author, eyebrow, icon, date, chips[]
         - "section":      number ("01"), eyebrow, title, lead   (chapter divider)
         - "title_bullets":title, eyebrow, bullets[] (or points/items)
-        - "title_body":   title, eyebrow, body (paragraphs separated by \n)
+        - "title_body":   title, eyebrow, body (paragraphs separated by \\n)
         - "two_column_text"/"comparison_two": left{}, right{} OR columns[];
               each card: {heading, icon, subtitle, description, points[],
               highlight:true, badge:"Most chosen"}
@@ -4750,10 +5580,37 @@ class Tools:
         if spec.get("theme") in (None, "") and self.valves.default_theme:
             spec["theme"] = self.valves.default_theme
 
+        _pre_slides = [
+            s
+            for s in _as_list(
+                _first(spec, "slides", "sections", "pages", "deck", default=[])
+            )
+            if isinstance(s, dict)
+        ]
+        _has_reuse = any(s.get("reuse") is not None for s in _pre_slides)
+        ref_id = (spec.get("reference_file_id") or "").strip()
+        attached = (
+            _find_pptx_attachment(__messages__)
+            if self.valves.template_mode_enabled
+            else None
+        )
+        if attached and ref_id != attached:
+            # A missing id, a bare number, or a UUID that is not the attachment
+            # must not fall through to a classic deck. The model retries.
+            return _retry_tool_result(_wrong_reference_id_message(ref_id, attached))
+        if _has_reuse and not ref_id:
+            return self._error(
+                "slides[].reuse requires reference_file_id (same Files API id as "
+                "inspect_slides on the template .pptx)."
+            )
+        if _has_reuse and not self.valves.template_mode_enabled:
+            return self._error(
+                "slides[].reuse requires admin valve template_mode_enabled=true."
+            )
+
         template_extra = ""
         template_pack = None
         reference_bytes = None
-        ref_id = (spec.get("reference_file_id") or "").strip()
         if ref_id:
             if not self.valves.template_mode_enabled:
                 log.warning(
@@ -4773,7 +5630,13 @@ class Tools:
                     ref_id, __request__, __user__
                 )
                 if ref_err:
-                    return self._error(ref_err)
+                    return _retry_tool_result(
+                        f"Could not load reference_file_id {ref_id!r}: {ref_err}. "
+                        "Do not generate a classic deck and do not invent another "
+                        "file_id. Call generate_slides again with the file_id "
+                        "from the successful inspect_slides result, copied exactly, "
+                        "and per-slide reuse."
+                    )
                 await self._emit(
                     __event_emitter__, "Applying template...", done=False
                 )

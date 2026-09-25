@@ -1,0 +1,347 @@
+{
+  "title": "IANUSTEC - Soluzioni IT Innovative",
+  "subtitle": "Presentazione Aziendale",
+  "author": "IANUSTEC SRL",
+  "theme": "auto",
+  "accent": "#C99A3B",
+  "footer": "IANUSTEC SRL — San Fior, Italia",
+  "reference_file_id": "4440bca3-d023-4f98-a6db-12b1085a6b00",
+  "template_mapping": {
+    "default": 0,
+    "cover": 0,
+    "content": 1,
+    "section": 2,
+    "title_body": 3,
+    "title_bullets": 4,
+    "icon_grid_2x2": 5,
+    "comparison_two": 6,
+    "team": 7,
+    "services": 8,
+    "table": 9,
+    "closing": 10
+  },
+  "template_edits": {
+    "defaults": {
+      "drop_text": false,
+      "drop_placeholders": false,
+      "drop_offslide": true
+    }
+  },
+  "slides": [
+    {
+      "layout": "cover",
+      "reuse": {
+        "slide": 0,
+        "keep_ids": [
+          3,
+          4,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "text": {
+          "8": "IANUSTEC",
+          "9": "SOLUZIONI IT",
+          "10": "2025",
+          "11": "BY IANUSTEC TEAM"
+        }
+      }
+    },
+    {
+      "layout": "title_bullets",
+      "reuse": {
+        "slide": 1,
+        "keep_ids": [
+          2,
+          3,
+          5,
+          6,
+          8,
+          9,
+          10
+        ],
+        "text": {
+          "2": "Chi Siamo\nLa Nostra Missione\nI Nostri Progetti\nVisione e Valori\nProblema e Soluzione\nIl Team\nI Servizi\nTracking Progetti",
+          "3": "Indice"
+        }
+      }
+    },
+    {
+      "layout": "title_body",
+      "reuse": {
+        "slide": 2,
+        "keep_ids": [
+          2,
+          4,
+          5,
+          7,
+          8,
+          10,
+          11,
+          12
+        ],
+        "text": {
+          "11": "Chi Siamo",
+          "12": "IANUSTEC è un'azienda innovativa specializzata in soluzioni IT per le imprese che guardano al futuro. Offriamo servizi di consulenza, sviluppo software, integrazione di sistemi e formazione sull'Intelligenza Artificiale applicata ai processi aziendali."
+        }
+      }
+    },
+    {
+      "layout": "title_body",
+      "reuse": {
+        "slide": 3,
+        "keep_ids": [
+          2,
+          3,
+          4,
+          6,
+          7,
+          9,
+          10,
+          12,
+          13
+        ],
+        "text": {
+          "2": "La Nostra Missione",
+          "3": "Accompagniamo le aziende nella trasformazione digitale, integrando tecnologie AI, cloud e automazione nei loro processi operativi, amministrativi e commerciali.",
+          "4": "Il nostro approccio combina competenza tecnica, ascolto del cliente e soluzioni su misura, per garantire risultati concreti e misurabili in termini di efficienza e crescita."
+        }
+      }
+    },
+    {
+      "layout": "title_body",
+      "reuse": {
+        "slide": 4,
+        "keep_ids": [
+          2,
+          3,
+          5,
+          7,
+          9,
+          10,
+          11,
+          13,
+          14,
+          16,
+          17
+        ],
+        "text": {
+          "10": "I Nostri Progetti",
+          "11": "Abbiamo realizzato soluzioni digitali per aziende di costruzioni, cybersecurity e settori manifatturieri, riducendo i tempi operativi fino al 40% e eliminando gli errori di pianificazione grazie a gestionali in cloud, BI finanziaria e automazione dei processi."
+        }
+      }
+    },
+    {
+      "layout": "title_bullets",
+      "reuse": {
+        "slide": 5,
+        "keep_ids": [
+          3,
+          4,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14
+        ],
+        "text": {
+          "8": "Visione e Valori",
+          "9": "Democratizzare l'accesso all'IA per le PMI italiane, rendendo la tecnologia uno strumento concreto di competitività.",
+          "10": "Mission",
+          "11": "Un ecosistema aziendale in cui ogni processo è potenziato dall'intelligenza artificiale, liberando tempo per la relazione con i clienti.",
+          "12": "Vision",
+          "13": "Innovazione responsabile, trasparenza, orientamento al risultato e partnership di lungo termine con ogni cliente.",
+          "14": "Valori"
+        }
+      }
+    },
+    {
+      "layout": "comparison_two",
+      "reuse": {
+        "slide": 6,
+        "keep_ids": [
+          3,
+          4,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          15,
+          16,
+          18,
+          19
+        ],
+        "text": {
+          "8": "La Soluzione",
+          "9": "Il Problema",
+          "10": "IANUSTEC integra CRM, gestione progetti, fatturazione e AI in un'unica piattaforma cloud, automatizzando i flussi e fornendo dashboards in tempo reale per decisioni basate sui dati.",
+          "11": "Le aziende perdono tempo e risorse con strumenti disconnessi: dati duplicati, errori di pianificazione, assenza di visibilità in tempo reale sulle operazioni e sul fatturato.",
+          "12": "Piattaforma integrata IANUSTEC",
+          "13": "Processi frammentati"
+        }
+      }
+    },
+    {
+      "layout": "icon_grid_2x2",
+      "reuse": {
+        "slide": 7,
+        "keep_ids": [
+          2,
+          3,
+          5,
+          7,
+          9,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          21,
+          22,
+          24,
+          25
+        ],
+        "text": {
+          "3": "Il Nostro Team",
+          "12": "Alissa",
+          "13": "CEO & Strategy",
+          "14": "Marco",
+          "15": "CTO & AI",
+          "16": "Giulia",
+          "17": "Operations",
+          "18": "Luca",
+          "19": "Sviluppo"
+        }
+      }
+    },
+    {
+      "layout": "title_bullets",
+      "reuse": {
+        "slide": 8,
+        "keep_ids": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          16,
+          17,
+          19,
+          20,
+          22,
+          23
+        ],
+        "text": {
+          "2": "I Nostri Servizi",
+          "9": "Consulenza AI e Automazione",
+          "10": "Sviluppo Software su Misura",
+          "11": "Integrazione ERP/CRM (Odoo)",
+          "12": "Formazione AI per Aziende",
+          "13": "Cloud Infrastructure & DevOps",
+          "14": "Business Intelligence e Analytics"
+        }
+      }
+    },
+    {
+      "layout": "table",
+      "title": "Tracking Progetti",
+      "reuse": {
+        "slide": 9,
+        "text": {
+          "9": "Tracking Progetti",
+          "2": {
+            "headers": [
+              "Progetto",
+              "Stato",
+              "Responsabile",
+              "Avanzamento",
+              "Scadenza"
+            ],
+            "rows": [
+              [
+                "Piano Formativo AI — ACME",
+                "In corso",
+                "Alissa",
+                "65%",
+                "30/06/2025"
+              ],
+              [
+                "Integrazione Odoo — Beta SRL",
+                "Completato",
+                "Marco",
+                "100%",
+                "15/03/2025"
+              ],
+              [
+                "Dashboard BI — Gamma SpA",
+                "In corso",
+                "Giulia",
+                "40%",
+                "31/07/2025"
+              ],
+              [
+                "Automazione Processi — Delta",
+                "Pianificato",
+                "Luca",
+                "10%",
+                "30/09/2025"
+              ],
+              [
+                "Migrazione Cloud — Epsilon",
+                "In corso",
+                "Marco",
+                "80%",
+                "15/05/2025"
+              ]
+            ]
+          }
+        }
+      }
+    },
+    {
+      "layout": "closing",
+      "reuse": {
+        "slide": 10,
+        "keep_ids": [
+          2,
+          3,
+          4,
+          5,
+          7,
+          8,
+          10,
+          11
+        ],
+        "text": {
+          "2": "Grazie!",
+          "3": "www.ianustec.com",
+          "4": "IANUSTEC SRL",
+          "5": "info@ianustec.com"
+        }
+      }
+    }
+  ]
+}

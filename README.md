@@ -98,7 +98,7 @@ Works on the standard theme engine (no `reference_file_id` required):
 Use this when the user attaches a **template `.pptx`** and wants the output to keep its look (backgrounds, logos, decorative shapes) while replacing slide content.
 
 1. **Step 1 — `inspect_slides`** — Pass the Files API `file_id` (or rely on chat attachment auto-detection **only in this tool**). Returns factual JSON: shape `"id"`, kind, bbox, `safe_zone`, verbatim text, optional `images[]`.
-2. **Step 2 — Model** — Builds the content JSON (`slides[]`) plus the **same** `reference_file_id`, `template_mapping`, and `template_edits` (`drop_ids` must use inspect shape `"id"`, not list order).
+2. **Step 2 — Model** — Builds the content JSON plus the **same** `reference_file_id`. Prefer per-slide **`reuse`** (`slide`, `keep_ids`, `drop_ids`, `text` from inspect shape `"id"`) when mirroring each template slide; otherwise `template_mapping` + `template_edits`.
 3. **Step 3 — `generate_slides(content)`** — Re-downloads the reference, clones allowed shapes, overlays layouts in the safe zone, saves the `.pptx`. Requires admin valve **`template_mode_enabled=true`**.
 
 **Important:** `generate_slides` does **not** infer the template from chat attachments. Only an explicit `reference_file_id` in the JSON enables Template Mode.
@@ -110,7 +110,8 @@ Example spec: [`examples/template-deck-with-reference.json`](examples/template-d
 | Field | Description |
 |---|---|
 | `reference_file_id` | Files API id of the template `.pptx` |
-| `template_mapping` | Maps layout role → reference slide index (`cover`, `section`, `content`, `closing`, `default`, …) |
+| `slides[].reuse` | Per output slide: clone template slide index + shape ids + in-place text (see [`examples/template-reuse-slide.json`](examples/template-reuse-slide.json)). Template tables (`kind: "table"`) are refilled in place with `text["<id>"] = {"headers": [...], "rows": [[...]]}` keeping cell formatting |
+| `template_mapping` | Fallback: maps layout role → reference slide index (`cover`, `section`, `content`, `closing`, `default`, …) |
 | `template_edits.defaults` | Clone policy: `drop_text`, `drop_placeholders`, `drop_offslide` (conservative defaults; set `drop_text: true` only when the user wants template wording removed) |
 | `template_edits.slides[]` | Per reference slide: `index` (0-based in the **template file**), `drop_ids`, optional `keep_ids` |
 

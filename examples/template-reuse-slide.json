@@ -1,0 +1,30 @@
+{
+  "_comment": "Per-slide reuse: clone template slide by index; shape ids from inspect JSON. Replace reference_file_id.",
+  "title": "Example — reuse libretto",
+  "reference_file_id": "REPLACE_WITH_FILES_API_ID",
+  "slides": [
+    {
+      "layout": "cover",
+      "reuse": {
+        "slide": 0,
+        "keep_ids": [3, 4, 6, 7, 8, 9, 11],
+        "drop_ids": [10],
+        "text": {
+          "8": "IANUSTEC",
+          "9": "PROPOSAL",
+          "11": "BY EXAMPLE CORP"
+        }
+      }
+    },
+    {
+      "layout": "title_bullets",
+      "reuse": {
+        "slide": 1,
+        "drop_ids": [],
+        "text": {
+          "2": "Agenda\nLine one\nLine two"
+        }
+      }
+    }
+  ]
+}

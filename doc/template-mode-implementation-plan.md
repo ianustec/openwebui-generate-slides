@@ -344,6 +344,7 @@ Campi **nuovi** (opzionali):
 | `reference_file_id` | string | ID Files API del `.pptx` template |
 | `template_mapping` | object | Mappa ruolo → indice slide reference (`cover`, `content`, `default`, …) |
 | `template_edits` | object | Policy clone + `drop_ids` / `keep_ids` per slide |
+| `slides[].reuse` | object | **Libretto per-slide** (preferito per deck 1:1 col template): `slide` (indice template), `keep_ids` / `drop_ids` (inspect `shapes[].id`), `text` (id → stringa). Nessun overlay layout classico su quella slide. `template_mapping` resta fallback se `reuse` assente. |
 
 Campi **esistenti** invariati: `title`, `slides[]`, `theme`, `footer`, layout fields, ecc.
 
@@ -696,7 +697,7 @@ examples/
 - [ ] Supporto **`.thmx`** standalone.
 - [ ] **Inject automatico** inventario all’upload (enhancement Neura/OWUI — fase 2 ops).
 - [ ] Auto-detect `.pptx` in `generate_slides` via `__messages__` (**vietato** — rischio regression clienti).
-- [x] **Clone v1 chart/table/smartart/ole/media:** inspect segnala `cloneable: false`; generate non clona identico (Fase 3.2).
+- [x] **Clone v1 chart/smartart/ole/media:** inspect segnala `cloneable: false`; generate non clona identico (Fase 3.2). **Table** è clonabile dalla Fase 8: `p:graphicFrame/a:tbl` senza rel, inspect espone `table.rows/cols/cells`, `reuse.text[<id>]` = `{headers, rows}` riempie in place conservando la formattazione celle; sul percorso classico la tabella template è *content* (`_CONTENT_KINDS`) e non viene clonata implicitamente.
 
 ---
 
@@ -1042,6 +1043,8 @@ examples/
 
 - [x] Gestione esplicita SmartArt / OLE → `unsupported` / `cloneable: false` (complemento Fase 3.2; `clone_reason` + hint note)
 - [x] Gestione shape group annidate (clone ricorsivo oltre Fase 3 base; `_shape_by_id_recursive`, decorazioni flatten)
+- [x] Clone per elemento top-level dello `spTree` con potatura dei gruppi (`_oxml_prune_to_ids`): un figlio di `p:grpSp` non viene mai estratto dal gruppo, così `grpSpPr/a:xfrm` (off/ext/chOff/chExt/rot) resta valida. Rimappatura generica di ogni `r:embed` (`a:blip`, `asvg:svgBlip`, …) con copia opaca delle part media (PNG/JPEG/SVG, dedup per `part_cache` di deck) in `_CloneContext`; sostituzione testo `reuse` che conserva `a:pPr`, l'intero `a:rPr` (incluso `spc`) e `a:endParaRPr`. Regressione coperta da `examples/ianustec_neura_reuse_local.py` (parità grp/custGeom/blip/svg/embed/spc con Marketing.pptx, nessun `r:embed` orfano).
+- [x] Tabelle template via `reuse`: `_fill_table_preserve_format` (header = riga 0, righe body come stili ciclici, colonne aggiunte/rimosse con larghezze riscalate al totale originale, altezza frame aggiornata); `_copy_table_styles` porta gli `a:tblStyle` custom in `tableStyles.xml`; fallback `headers`/`rows` di slide → unica tabella del template; `template_mapping` onora chiavi layout esplicite (`"table": 9`). Test: `examples/reuse_slide_text.py` (3×3, 10×7, fallback, payload errato, mapping), battery slide 9.
 - [x] Valve `template_strict_mode` (fail se `safe_zone.quality !== "computed"` o area troppo piccola)
 - [x] Master slide decorations (completamento P1; layout/master merge + `decorations_source`)
 - [ ] Inject automatico inventario all’upload `.pptx` (integrazione Neura/OWUI — fuori single-file, defer)
