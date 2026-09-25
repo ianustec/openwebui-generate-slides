@@ -2642,7 +2642,7 @@ def _shape_by_id_recursive(slide, shape_id: int):
     return _shape_by_id_on_container(slide, int(shape_id))
 
 
-def _clone_background(target_slide, source_slide) -> None:
+def _clone_background(target_slide, source_slide, rId_map: Optional[dict] = None) -> None:
     try:
         src_cSld = source_slide.element.cSld
         tgt_cSld = target_slide.element.cSld
@@ -2652,7 +2652,12 @@ def _clone_background(target_slide, source_slide) -> None:
         tgt_bg = tgt_cSld.find(qn("p:bg"))
         if tgt_bg is not None:
             tgt_cSld.remove(tgt_bg)
-        tgt_cSld.insert(0, deepcopy(src_bg))
+        new_bg = deepcopy(src_bg)
+        tgt_cSld.insert(0, new_bg)
+        if rId_map is not None:
+            _remap_blips_in_element(
+                new_bg, source_slide.part, target_slide.part, rId_map
+            )
     except Exception as exc:
         log.debug("[template] clone background: %s", exc)
 
@@ -2670,22 +2675,36 @@ def _remap_blips_in_element(element, source_part, target_part, rId_map: dict) ->
         try:
             image_part = source_part.related_part(embed)
             blob = image_part.blob
-            new_part = target_part.get_or_add_image_part(BytesIO(blob))
-            new_rid = target_part.relate_to(new_part, RT.IMAGE)
+            # python-pptx SlidePart.get_or_add_image_part already relates the
+            # image and returns (ImagePart, rId). Passing that tuple to
+            # relate_to stores a non-Part target and save() raises AssertionError
+            # with an empty message.
+            added = target_part.get_or_add_image_part(BytesIO(blob))
+            if isinstance(added, tuple):
+                _part, new_rid = added
+            else:
+                new_rid = target_part.relate_to(added, RT.IMAGE)
             rId_map[embed] = new_rid
             blip.set(qn("r:embed"), new_rid)
         except Exception as exc:
-            log.warning("[template] clone image rel %s: %s", embed, exc)
+            log.warning(
+                "[template] clone image rel %s: %s",
+                embed,
+                exc or type(exc).__name__,
+            )
+            blip.attrib.pop(qn("r:embed"), None)
 
 
 def _clone_decorations(
     target_slide,
     source_slide,
     decorations: list[_Decoration],
+    rId_map: Optional[dict] = None,
 ) -> None:
     if not _HAS_PPTX:
         return
-    rId_map: dict[str, str] = {}
+    if rId_map is None:
+        rId_map = {}
     ordered = sorted(decorations, key=lambda d: d.z_order)
     sp_tree = target_slide.shapes._spTree
     for dec in ordered:
@@ -2749,8 +2768,9 @@ def _clone_template_slide_to_prs(
     target_prs.slide_height = Inches(pack.slide_height_in)
     source_slide = source_prs.slides[source_slide_index]
     target_slide = target_prs.slides.add_slide(_find_blank_layout(target_prs))
-    _clone_background(target_slide, source_slide)
-    _clone_decorations(target_slide, source_slide, decorations)
+    rId_map: dict[str, str] = {}
+    _clone_background(target_slide, source_slide, rId_map)
+    _clone_decorations(target_slide, source_slide, decorations, rId_map)
     return target_slide
 
 
@@ -4240,10 +4260,11 @@ class Tools:
             description="Fallback directory for saving.",
         )
         template_mode_enabled: bool = Field(
-            default=True,
+            default=False,
             description=(
-                "Enable template mode (reference .pptx). "
-                "Default off for existing deployments."
+                "Enable template mode (reference .pptx clone). "
+                "Default off; turn on in Open WebUI Valves for the pilot. "
+                "Requires reference_file_id in the generate JSON."
             ),
         )
         inspect_slides_enabled: bool = Field(
@@ -4652,11 +4673,16 @@ class Tools:
         wording removed (R8); default is to clone template textboxes.
 
         Requires admin valve `template_mode_enabled` for template rendering
-        when `reference_file_id` is set. If the valve is off, the reference is
-        ignored and a classic deck is generated (NF8). If the valve is on and
-        download or parse of the reference fails, the tool returns an error and
-        does not produce a `.pptx` (F9). Template mode does not use chat
-        attachments; only an explicit `reference_file_id` in this JSON applies
+        when `reference_file_id` is set. The valve alone does not clone a chat
+        attachment: without `reference_file_id` (plus `template_mapping` and
+        `template_edits` when needed) the deck is always the classic theme
+        engine, even if the valve is true. If the valve is off, a provided
+        reference is ignored and a classic deck is generated (NF8). If the
+        valve is on and download, parse, or clone of the reference fails, the
+        tool returns an error and does not produce a `.pptx` (F9). Do not
+        retry the same request without `reference_file_id` when the user asked
+        to keep their template. Template mode does not use chat attachments;
+        only an explicit `reference_file_id` in this JSON applies
         the template.
 
         Each slide has a `layout` and fields consistent with that layout. Common
@@ -4785,7 +4811,14 @@ class Tools:
         except Exception as exc:
             import traceback
             traceback.print_exc()
-            return self._error(f"Rendering error: {exc}")
+            detail = str(exc).strip() or type(exc).__name__
+            hint = ""
+            if template_pack is not None:
+                hint = (
+                    " Template clone failed. Do not retry generate_slides "
+                    "without reference_file_id."
+                )
+            return self._error(f"Rendering error: {detail}.{hint}")
 
         await self._emit(__event_emitter__, "Saving file...", done=False)
         fname, url, err, file_id = await self._save(

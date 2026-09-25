@@ -20,13 +20,15 @@ When the user wants a presentation **using their PowerPoint template** (.pptx):
 
 4. **Defaults (R8):** Keep `drop_text: false` unless the user explicitly asked to remove template placeholder text. Prefer `drop_ids` for logos and labels like “Confidential”.
 
-5. **Template mode is admin-gated.** If generation ignores the reference, tell the user that `template_mode_enabled` may be off (classic deck was produced).
+5. **Template mode is admin-gated and explicit.** `template_mode_enabled=true` does **not** merge the chat attachment by itself. The generate JSON must include `reference_file_id` (same id as inspect), `template_mapping`, and `template_edits` when placeholder text should be dropped. If those fields are missing, the tool builds a classic themed deck.
 
-6. **Attachments:** Chat `.pptx` attachments do **not** apply the template to `generate_slides` unless you put `reference_file_id` in the JSON.
+6. **Do not drop the template on retry.** If `generate_slides` returns an error while `reference_file_id` was set, show that error to the user. Do **not** call `generate_slides` again without `reference_file_id`.
 
-7. **Re-inspect** if the user uploads a modified template file (shape ids may change).
+7. **Attachments:** Chat `.pptx` attachments do **not** apply the template to `generate_slides` unless you put `reference_file_id` in the JSON.
 
-8. **Strict QA (optional):** If `template_strict_mode` is enabled, generation fails when inspect reported `safe_zone.quality` is not `computed` — prefer conservative layouts or another reference slide.
+8. **Re-inspect** if the user uploads a modified template file (shape ids may change).
+
+9. **Strict QA (optional):** If `template_strict_mode` is enabled, generation fails when inspect reported `safe_zone.quality` is not `computed` — prefer conservative layouts or another reference slide.
 
 Example content spec: [`examples/template-deck-with-reference.json`](../examples/template-deck-with-reference.json).
 
