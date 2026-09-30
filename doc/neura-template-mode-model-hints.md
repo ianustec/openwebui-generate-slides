@@ -21,6 +21,8 @@ When the user wants a presentation **using their PowerPoint template** (.pptx):
    - **Fallback:** `template_mapping` + semantic `slides[]` when not using per-slide `reuse`. Explicit layout keys (`"table": 9`, `"team": 7`, …) are honoured; otherwise the coarse roles cover/section/closing/content apply
    - `template_edits` for global clone policy or per-template-slide `drop_ids` when not using `reuse` on every slide
 
+   **After the user opens the generated deck:** layout or wording fixes on specific slides → [`edit_presentation`](./neura-presentation-edit-hints.md), **not** another `generate_slides` unless they want a new deck. That flow is **not** step 4 of Template Mode.
+
 4. **Defaults (R8):** Keep `drop_text: false` unless the user explicitly asked to remove template placeholder text. Prefer `drop_ids` for logos and labels like “Confidential”.
 
 5. **Template mode is admin-gated.** `template_mode_enabled=true` does not merge the attachment by itself, but if a `.pptx` is attached the tool rejects a generate call whose `reference_file_id` is missing or different from that file. Do not answer by building a classic deck.
@@ -44,3 +46,4 @@ Example specs: [`examples/template-reuse-slide.json`](../examples/template-reuse
 | “What’s in this template?” / ids / safe zone | `inspect_slides` |
 | “Build the deck on this template” | `generate_slides` + `reference_file_id` |
 | “Build a deck” (no template) | `generate_slides` only, no `reference_file_id` |
+| Fix title size / overlap **after** the user saw the generated deck | [`edit_presentation`](./neura-presentation-edit-hints.md) (not part of template §4) |

@@ -2,6 +2,36 @@
 
 All notable changes to the Generate Slides Open WebUI tool.
 
+## [1.2.0] — Presentation Edit
+
+**Compatibility:** No change to `generate_slides` / Template Mode when `presentation_edit_enabled=false` (default) and when `edit_presentation` is not called.
+
+### Added
+
+- **`edit_presentation`** — post-generate edits on an existing `.pptx` via `presentation_file_id` (Files API UUID) and `operations[]`.
+- Operations v1: `set_text`, `shrink_font`, `fit_text`.
+- Operations v2: `enable_autofit`, `replace_text_and_fit`, `split_text`, `resize_shape`, `set_table_cell`.
+- Admin valves: `presentation_edit_enabled` (default `false`), `presentation_edit_min_font_pt`, `presentation_edit_shrink_step_pt`, `presentation_edit_progress_every`.
+
+### Behavior
+
+- Edit requires explicit UUID (`presentation_file_id`); cache-only URLs are rejected (#1A).
+- Batch operations: **fail total** on first invalid op (#8A); partial save (#8B) not implemented.
+- Rejects `presentation_file_id` equal to the chat-attached template file (#7B).
+- File load uses the same ACL path as template reference download.
+
+### Hardening
+
+- Status emits for large decks / long operation batches.
+- Logs: `edit_ms`, `ops_applied`, `ops_failed`.
+- Upload/save log prefix `edit_presentation`.
+
+### Docs and tests
+
+- [Presentation edit plan](doc/presentation-edit-implementation-plan.md)
+- [Model hints (Neura)](doc/neura-presentation-edit-hints.md)
+- `examples/edit_presentation_smoke.py`, `examples/edit_presentation_acl_smoke.py`
+
 ## [1.1.0] — Template Mode
 
 **Compatibility:** No behavior change when `template_mode_enabled=false` (default) and when the JSON spec has no `reference_file_id`. Classic deck generation matches the v1.0.3 path (NF5 / NF8).

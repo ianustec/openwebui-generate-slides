@@ -6,7 +6,7 @@ funding_url: https://github.com/ianustec
 description: Generate high-quality native PowerPoint (.pptx) presentations from a JSON spec - layered graphics, native charts, icons, rich layouts. With an attached .pptx used as base/template, ALWAYS call inspect_slides first, then generate_slides with reference_file_id + per-slide reuse.
 requirements: python-pptx, pillow
 required_open_webui_version: 0.4.0
-version: 1.1.0
+version: 1.2.0
 license: MIT
 """
 
@@ -3613,6 +3613,482 @@ def _replace_txBody_text(txBody, text: str) -> None:
             p.append(deepcopy(end_tpl))
 
 
+# --- Presentation edit engine (post-generate; does not touch reuse/clone) ----
+
+_EDIT_PROGRESS_OPS_EVERY = 5
+_EDIT_LARGE_DECK_SLIDES = 10
+
+
+def _presentation_id_is_template_attachment(file_id: str, messages: Any) -> bool:
+    attached = _find_pptx_attachment(messages)
+    fid = (file_id or "").strip()
+    return bool(attached and fid and attached == fid)
+
+
+def _bad_presentation_file_id_message(sent_id: str) -> str:
+    sent = (sent_id or "").strip()
+    if not sent:
+        why = "edit_presentation requires presentation_file_id."
+    elif sent.startswith("http") or "/cache/files/" in sent:
+        why = (
+            "presentation_file_id must be a Files API UUID from the last "
+            "generate_slides or edit_presentation tool message, not a cache URL."
+        )
+    elif not _is_files_api_id(sent):
+        why = f"presentation_file_id {sent!r} is not a Files API UUID."
+    else:
+        why = f"presentation_file_id {sent!r} is invalid."
+    return (
+        f"{why} Copy the file id character for character from the file block "
+        "returned by generate_slides or edit_presentation. Never use "
+        "reference_file_id or the template inspect file_id."
+    )
+
+
+def _parse_edit_json_content(content: Any) -> dict:
+    if isinstance(content, dict):
+        return content
+    if not isinstance(content, str):
+        raise ValueError("The `content` parameter must be a JSON object.")
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        cleaned = (content or "").strip()
+        for pre in ("```json", "```"):
+            if cleaned.startswith(pre):
+                cleaned = cleaned[len(pre):]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        try:
+            return json.loads(cleaned.strip())
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON: {exc}") from exc
+
+
+_EDIT_KNOWN_OPS = (
+    "set_text",
+    "shrink_font",
+    "fit_text",
+    "enable_autofit",
+    "replace_text_and_fit",
+    "split_text",
+    "resize_shape",
+    "set_table_cell",
+)
+
+
+def _edit_shrink_params(op: dict, i: int, valves: Any) -> tuple[float, float, int]:
+    min_pt = op.get("min_pt")
+    if min_pt is None:
+        min_pt = getattr(valves, "presentation_edit_min_font_pt", 14.0)
+    step_pt = op.get("step_pt")
+    if step_pt is None:
+        step_pt = getattr(valves, "presentation_edit_shrink_step_pt", 2.0)
+    max_iter = op.get("max_iterations", 20)
+    return float(min_pt), float(step_pt), int(max_iter)
+
+
+def _normalize_edit_op(op: dict, i: int, valves: Any) -> dict:
+    if not isinstance(op, dict):
+        raise ValueError(f"operations[{i}] must be an object.")
+    name = (op.get("op") or "").strip()
+    if not name:
+        raise ValueError(f"operations[{i}] missing op.")
+    try:
+        slide_idx = int(op["slide"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"operations[{i}] requires integer slide.") from exc
+
+    if name == "split_text":
+        try:
+            from_id = int(op["from_shape_id"])
+            to_id = int(op["to_shape_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"operations[{i}] split_text requires from_shape_id and to_shape_id."
+            ) from exc
+        mode = (op.get("mode") or "").strip()
+        if mode not in ("first_paragraph", "first_line"):
+            raise ValueError(
+                f"operations[{i}] split_text mode must be "
+                "first_paragraph or first_line."
+            )
+        return {
+            "op": name,
+            "slide": slide_idx,
+            "from_shape_id": from_id,
+            "to_shape_id": to_id,
+            "mode": mode,
+        }
+
+    if name == "set_table_cell":
+        try:
+            shape_id = int(op["shape_id"])
+            row = int(op["row"])
+            col = int(op["col"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"operations[{i}] set_table_cell requires shape_id, row, col."
+            ) from exc
+        if "text" not in op or not isinstance(op["text"], str):
+            raise ValueError(f"operations[{i}] set_table_cell requires text string.")
+        return {
+            "op": name,
+            "slide": slide_idx,
+            "shape_id": shape_id,
+            "row": row,
+            "col": col,
+            "text": op["text"],
+        }
+
+    try:
+        shape_id = int(op["shape_id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"operations[{i}] requires integer shape_id.") from exc
+
+    entry: dict = {"op": name, "slide": slide_idx, "shape_id": shape_id}
+
+    if name == "set_text":
+        if "text" not in op or not isinstance(op["text"], str):
+            raise ValueError(f"operations[{i}] set_text requires text.")
+        entry["text"] = op["text"]
+    elif name in ("shrink_font", "fit_text"):
+        min_pt, step_pt, max_iter = _edit_shrink_params(op, i, valves)
+        entry["min_pt"] = min_pt
+        entry["step_pt"] = step_pt
+        entry["max_iterations"] = max_iter
+    elif name == "enable_autofit":
+        pass
+    elif name == "replace_text_and_fit":
+        if "text" not in op or not isinstance(op["text"], str):
+            raise ValueError(f"operations[{i}] replace_text_and_fit requires text.")
+        entry["text"] = op["text"]
+        min_pt, step_pt, max_iter = _edit_shrink_params(op, i, valves)
+        entry["min_pt"] = min_pt
+        entry["step_pt"] = step_pt
+        entry["max_iterations"] = max_iter
+    elif name == "resize_shape":
+        delta_emu = op.get("delta_height_emu")
+        delta_in = op.get("delta_height_in")
+        if delta_emu is None and delta_in is None:
+            raise ValueError(
+                f"operations[{i}] resize_shape requires delta_height_in or "
+                "delta_height_emu."
+            )
+        if delta_emu is None:
+            delta_emu = int(float(delta_in) * EMU_IN)
+        else:
+            delta_emu = int(delta_emu)
+        entry["delta_height_emu"] = delta_emu
+    else:
+        raise ValueError(
+            f"operations[{i}] unknown op {name!r}; known: "
+            + ", ".join(_EDIT_KNOWN_OPS)
+            + "."
+        )
+    return entry
+
+
+def _parse_edit_spec(content: Any, valves: Any) -> dict:
+    """Validate edit_presentation JSON (structure only; shape checks at apply)."""
+    spec = _parse_edit_json_content(content)
+    if not isinstance(spec, dict):
+        raise ValueError("The `content` parameter must be a JSON object.")
+
+    fid = (spec.get("presentation_file_id") or "").strip()
+    if not fid:
+        raise ValueError(_bad_presentation_file_id_message(""))
+    if not _is_files_api_id(fid):
+        raise ValueError(_bad_presentation_file_id_message(fid))
+
+    ops_raw = spec.get("operations")
+    if not isinstance(ops_raw, list) or not ops_raw:
+        raise ValueError("operations must be a non-empty array.")
+
+    normalized = [_normalize_edit_op(op, i, valves) for i, op in enumerate(ops_raw)]
+
+    spec = dict(spec)
+    spec["presentation_file_id"] = fid
+    spec["operations"] = normalized
+    return spec
+
+
+def _edit_txBody_runs(txBody):
+    from lxml import etree  # type: ignore
+
+    for p in txBody.findall(qn("a:p")):
+        for r in p.findall(qn("a:r")):
+            yield r
+
+
+def _edit_shape_font_pt_max(shape) -> float:
+    """Largest run font size in points, or 18.0 default."""
+    if not getattr(shape, "has_text_frame", False):
+        return 18.0
+    tx_body = shape.text_frame._txBody
+    max_sz = 0
+    for r in _edit_txBody_runs(tx_body):
+        rPr = r.find(qn("a:rPr"))
+        if rPr is None:
+            continue
+        sz = rPr.get("sz")
+        if sz is None:
+            continue
+        try:
+            max_sz = max(max_sz, int(sz))
+        except (TypeError, ValueError):
+            continue
+    if max_sz <= 0:
+        return 18.0
+    return max_sz / 100.0
+
+
+def _edit_set_all_runs_sz_pt(shape, pt: float) -> None:
+    if not getattr(shape, "has_text_frame", False):
+        return
+    sz_val = str(max(100, int(round(pt * 100))))
+    tx_body = shape.text_frame._txBody
+    for r in _edit_txBody_runs(tx_body):
+        rPr = r.find(qn("a:rPr"))
+        if rPr is None:
+            from lxml import etree  # type: ignore
+
+            rPr = etree.SubElement(r, qn("a:rPr"))
+        rPr.set("sz", sz_val)
+
+
+def _text_fits_shape_heuristic(shape) -> bool:
+    """Rough v1 fit check — not a PowerPoint layout engine (§5.1 #4A)."""
+    if not getattr(shape, "has_text_frame", False):
+        return True
+    text = shape.text or ""
+    w_emu = int(getattr(shape, "width", 0) or 0)
+    h_emu = int(getattr(shape, "height", 0) or 0)
+    if w_emu <= 0 or h_emu <= 0:
+        return True
+    font_pt = _edit_shape_font_pt_max(shape)
+    pt_emu = 914400.0 / 72.0
+    line_h = font_pt * 1.25 * pt_emu
+    char_w = max(font_pt * 0.55 * pt_emu, 1.0)
+    chars_per_line = max(1, int(w_emu / char_w))
+    flat = text.replace("\n", " ")
+    wrapped_lines = max(1, (len(flat) + chars_per_line - 1) // chars_per_line)
+    explicit_lines = text.count("\n") + 1
+    est_lines = max(wrapped_lines, explicit_lines)
+    return est_lines * line_h <= h_emu * 1.05
+
+
+def _shrink_shape_font(
+    shape,
+    *,
+    min_pt: float,
+    step_pt: float,
+    max_iterations: int,
+) -> bool:
+    """Reduce a:rPr/@sz until heuristic fit or min_pt (edit-only helper)."""
+    if not getattr(shape, "has_text_frame", False):
+        raise ValueError(f"shape {shape.shape_id} has no text frame")
+    changed = False
+    for _ in range(max(1, max_iterations)):
+        if _text_fits_shape_heuristic(shape):
+            break
+        cur = _edit_shape_font_pt_max(shape)
+        if cur <= min_pt:
+            break
+        new_pt = max(min_pt, cur - step_pt)
+        if new_pt >= cur:
+            break
+        _edit_set_all_runs_sz_pt(shape, new_pt)
+        changed = True
+    return changed
+
+
+def _resolve_edit_shape(
+    prs,
+    slide_idx: int,
+    shape_id: int,
+    *,
+    allow_table: bool = False,
+):
+    n = len(prs.slides)
+    if slide_idx < 0 or slide_idx >= n:
+        raise ValueError(
+            f"slide index {slide_idx} out of range (deck has {n} slide(s), 0-based)."
+        )
+    slide = prs.slides[slide_idx]
+    shape = _shape_by_id_recursive(slide, shape_id)
+    if shape is None:
+        raise ValueError(f"shape_id {shape_id} not found on slide {slide_idx}.")
+    if getattr(shape, "has_table", False) and not allow_table:
+        raise ValueError(
+            f"shape_id {shape_id} is a table; use set_table_cell for tables."
+        )
+    return shape
+
+
+def _edit_enable_norm_autofit(shape) -> None:
+    """Set a:bodyPr normAutofit so PowerPoint shrinks text on open (edit-only)."""
+    from lxml import etree  # type: ignore
+
+    if not getattr(shape, "has_text_frame", False):
+        raise ValueError(f"shape {shape.shape_id} has no text frame")
+    tx_body = shape.text_frame._txBody
+    body = tx_body.find(qn("a:bodyPr"))
+    if body is None:
+        body = etree.Element(qn("a:bodyPr"))
+        tx_body.insert(0, body)
+    for tag in ("a:noAutofit", "a:spAutoFit"):
+        for el in list(body.findall(qn(tag))):
+            body.remove(el)
+    if body.find(qn("a:normAutofit")) is None:
+        etree.SubElement(body, qn("a:normAutofit"))
+
+
+def _replace_text_and_fit(
+    shape,
+    text: str,
+    *,
+    min_pt: float,
+    step_pt: float,
+    max_iterations: int,
+) -> None:
+    _set_shape_text_preserve_font(shape, text)
+    _shrink_shape_font(
+        shape,
+        min_pt=min_pt,
+        step_pt=step_pt,
+        max_iterations=max_iterations,
+    )
+
+
+def _edit_split_text(from_shape, to_shape, mode: str) -> None:
+    if not getattr(from_shape, "has_text_frame", False):
+        raise ValueError(f"shape {from_shape.shape_id} has no text frame")
+    if not getattr(to_shape, "has_text_frame", False):
+        raise ValueError(f"shape {to_shape.shape_id} has no text frame")
+    raw = from_shape.text or ""
+    paras = [
+        (p.text or "").strip()
+        for p in from_shape.text_frame.paragraphs
+        if (p.text or "").strip()
+    ]
+    if mode == "first_paragraph":
+        if "\n\n" in raw:
+            keep, move = raw.split("\n\n", 1)
+        elif len(paras) >= 2:
+            keep, move = paras[0], "\n\n".join(paras[1:])
+        elif "\n" in raw:
+            keep, move = raw.split("\n", 1)
+        else:
+            raise ValueError("split_text: no paragraph boundary in source shape")
+    else:
+        if "\n" in raw:
+            keep, move = raw.split("\n", 1)
+        elif len(paras) >= 2:
+            keep, move = paras[0], "\n".join(paras[1:])
+        else:
+            raise ValueError("split_text: no line break in source shape")
+    keep = keep.strip()
+    move = move.strip()
+    if not move:
+        raise ValueError("split_text: nothing to move after split")
+    _set_shape_text_preserve_font(from_shape, keep)
+    existing = (to_shape.text or "").strip()
+    dest = f"{existing}\n{move}" if existing else move
+    _set_shape_text_preserve_font(to_shape, dest)
+
+
+_EDIT_MAX_HEIGHT_DELTA_FRAC = 0.20
+
+
+def _edit_resize_shape_height(prs, shape, delta_emu: int) -> None:
+    max_delta = int(prs.slide_height * _EDIT_MAX_HEIGHT_DELTA_FRAC)
+    if abs(delta_emu) > max_delta:
+        raise ValueError(
+            f"resize_shape delta exceeds max ±{max_delta} EMU (~20% of slide height)."
+        )
+    min_h = int(EMU_IN * 0.25)
+    cur = int(shape.height)
+    new_h = cur + int(delta_emu)
+    if new_h < min_h:
+        raise ValueError("resize_shape would make the shape too small.")
+    shape.height = new_h
+
+
+def _edit_set_table_cell(shape, row: int, col: int, text: str) -> None:
+    if not getattr(shape, "has_table", False):
+        raise ValueError(f"shape {shape.shape_id} is not a table")
+    tbl = shape.table
+    n_rows = len(tbl.rows)
+    n_cols = len(tbl.columns)
+    if row < 0 or row >= n_rows or col < 0 or col >= n_cols:
+        raise ValueError(
+            f"set_table_cell row={row} col={col} out of range "
+            f"({n_rows}x{n_cols})."
+        )
+    cell = tbl.cell(row, col)
+    _replace_txBody_text(cell.text_frame._txBody, text)
+
+
+def _apply_edit_op(prs, op: dict, valves: Any, op_index: int) -> None:
+    name = op["op"]
+    if name == "split_text":
+        from_sh = _resolve_edit_shape(
+            prs, op["slide"], op["from_shape_id"]
+        )
+        to_sh = _resolve_edit_shape(prs, op["slide"], op["to_shape_id"])
+        _edit_split_text(from_sh, to_sh, op["mode"])
+        return
+
+    if name == "set_table_cell":
+        shape = _resolve_edit_shape(
+            prs, op["slide"], op["shape_id"], allow_table=True
+        )
+        _edit_set_table_cell(shape, op["row"], op["col"], op["text"])
+        return
+
+    shape = _resolve_edit_shape(prs, op["slide"], op["shape_id"])
+    if name == "set_text":
+        if not getattr(shape, "has_text_frame", False):
+            raise ValueError(
+                f"shape_id {op['shape_id']} has no text frame (set_text)."
+            )
+        _set_shape_text_preserve_font(shape, op["text"])
+        return
+    if name in ("shrink_font", "fit_text"):
+        _shrink_shape_font(
+            shape,
+            min_pt=op["min_pt"],
+            step_pt=op["step_pt"],
+            max_iterations=op["max_iterations"],
+        )
+        return
+    if name == "enable_autofit":
+        _edit_enable_norm_autofit(shape)
+        return
+    if name == "replace_text_and_fit":
+        _replace_text_and_fit(
+            shape,
+            op["text"],
+            min_pt=op["min_pt"],
+            step_pt=op["step_pt"],
+            max_iterations=op["max_iterations"],
+        )
+        return
+    if name == "resize_shape":
+        _edit_resize_shape_height(prs, shape, op["delta_height_emu"])
+        return
+    raise ValueError(f"unsupported op {name!r}.")
+
+
+def _apply_edit_operations(prs, operations: list, valves: Any) -> None:
+    for i, op in enumerate(operations):
+        try:
+            _apply_edit_op(prs, op, valves, i)
+        except ValueError as exc:
+            raise ValueError(f"operations[{i}]: {exc}") from exc
+
+
 def _fill_table_preserve_format(shape, data: _ReuseTable) -> None:
     """Refill a cloned template table in place, keeping its cell formatting.
 
@@ -5186,6 +5662,34 @@ class Tools:
                 "'computed' or area is below minimum (pilot QA)."
             ),
         )
+        presentation_edit_enabled: bool = Field(
+            default=False,
+            description=(
+                "Enable edit_presentation (post-generate text/font fixes on an "
+                "existing .pptx via presentation_file_id UUID)."
+            ),
+        )
+        presentation_edit_min_font_pt: float = Field(
+            default=14.0,
+            description=(
+                "Presentation edit: floor (pt) for shrink_font / replace_text_and_fit "
+                "(pilot default 14 — §5.1 #4C)."
+            ),
+        )
+        presentation_edit_shrink_step_pt: float = Field(
+            default=2.0,
+            description=(
+                "Presentation edit: font size decrement (pt) per shrink iteration "
+                "when op omits step_pt."
+            ),
+        )
+        presentation_edit_progress_every: int = Field(
+            default=5,
+            description=(
+                "Presentation edit: emit status every N operations (0 disables "
+                "per-op progress; large decks still get one summary emit)."
+            ),
+        )
 
     # -- status / link helpers -------------------------------------------
     async def _emit(self, emitter, desc, *, done=False):
@@ -5219,7 +5723,15 @@ class Tools:
         except Exception:
             pass
 
-    async def _save(self, data: bytes, *, title, request, user_dict):
+    async def _save(
+        self,
+        data: bytes,
+        *,
+        title,
+        request,
+        user_dict,
+        log_prefix: str = "generate_slides",
+    ):
         slug = _slugify(title)
         day = datetime.now(timezone.utc).strftime("%Y%m%d")
         short = uuid.uuid4().hex[:6]
@@ -5236,7 +5748,7 @@ class Tools:
             request=request,
             user_dict=user_dict,
             export_dir=export_dir,
-            log_prefix="generate_slides",
+            log_prefix=log_prefix,
         )
         if url:
             return filename, url, err, fid
@@ -5288,6 +5800,14 @@ class Tools:
             "[TOOL_RESULT — use the text below as your final reply, "
             "without this instruction line.]\n\n"
             f"I couldn't generate the presentation: {msg}"
+        )
+
+    @staticmethod
+    def _edit_error(msg: str) -> str:
+        return (
+            "[TOOL_RESULT — use the text below as your final reply, "
+            "without this instruction line.]\n\n"
+            f"I couldn't edit the presentation: {msg}"
         )
 
     @staticmethod
@@ -5549,6 +6069,203 @@ class Tools:
             len(payload.get("images") or []),
         )
         return _inspect_tool_result(_compact_inspect_payload(payload))
+
+    async def edit_presentation(
+        self,
+        content: str = "{}",
+        __event_emitter__: Any = None,
+        __user__: Optional[dict] = None,
+        __messages__: Any = None,
+        __metadata__: Any = None,
+        __request__: Any = None,
+    ) -> str:
+        """Apply deterministic edits to an existing generated .pptx (post-download).
+
+        Use this for small visual/text fixes after the user reviewed a deck from
+        `generate_slides` — not to rebuild the deck. Do **not** use
+        `reference_file_id` or the template inspect file_id; use
+        `presentation_file_id` (Files API UUID from the last generate/edit tool
+        file block).
+
+        Requires admin valve `presentation_edit_enabled=true`. Chat attachments
+        are **not** auto-detected.
+
+        `content` must be a single JSON string, for example:
+
+        {
+          "presentation_file_id": "<uuid from last generate/edit>",
+          "title": "Optional save title",
+          "operations": [
+            {
+              "op": "set_text",
+              "slide": 0,
+              "shape_id": 783,
+              "text": "Shorter title"
+            },
+            {
+              "op": "shrink_font",
+              "slide": 0,
+              "shape_id": 783,
+              "min_pt": 18,
+              "step_pt": 2
+            }
+          ]
+        }
+
+        Slide indices are 0-based (`slide 1` → `"slide": 0`). On the same shape,
+        prefer `replace_text_and_fit` over `set_text` + `shrink_font`. For
+        "fit like PowerPoint", use `enable_autofit`. Split one textbox across
+        two placeholders with `split_text`. Tables: `set_table_cell` only.
+
+        v2 ops: enable_autofit, replace_text_and_fit, split_text, resize_shape,
+        set_table_cell. See doc/neura-presentation-edit-hints.md.
+        """
+        if not self.valves.presentation_edit_enabled:
+            return self._edit_error(
+                "Presentation edit is disabled. Admin: set "
+                "presentation_edit_enabled=true."
+            )
+        if not _HAS_PPTX:
+            return self._edit_error("python-pptx is not installed in the runtime.")
+
+        t_edit = time.monotonic()
+        ops_applied = 0
+        ops_failed = 0
+
+        try:
+            spec = _parse_edit_spec(content, self.valves)
+        except ValueError as exc:
+            msg = str(exc)
+            if "presentation_file_id" in msg or "Files API" in msg:
+                return _retry_tool_result(msg)
+            return self._edit_error(msg)
+
+        fid = spec["presentation_file_id"]
+        ops = spec["operations"]
+
+        if _presentation_id_is_template_attachment(fid, __messages__):
+            return _retry_tool_result(
+                "presentation_file_id is the attached template file, not the "
+                "generated deck. Use the file_id from the last generate_slides or "
+                "edit_presentation output. Never use reference_file_id or the "
+                "template inspect id for edit."
+            )
+
+        await self._emit(__event_emitter__, "Loading presentation...", done=False)
+        data, _fname, err = await _load_reference_pptx(fid, __request__, __user__)
+        if err or not data:
+            edit_ms = (time.monotonic() - t_edit) * 1000.0
+            log.warning(
+                "[edit_presentation] edit_ms=%.1f file_id=%s ops_applied=0 "
+                "ops_failed=0 load_error=1",
+                edit_ms,
+                fid,
+            )
+            return self._edit_error(err or "Could not load presentation file.")
+
+        try:
+            prs = Presentation(BytesIO(data))
+        except Exception as exc:
+            log.exception("[edit_presentation] parse failed file_id=%s", fid)
+            edit_ms = (time.monotonic() - t_edit) * 1000.0
+            log.warning(
+                "[edit_presentation] edit_ms=%.1f file_id=%s ops_applied=0 "
+                "ops_failed=0 parse_error=1",
+                edit_ms,
+                fid,
+            )
+            return self._edit_error(f"Invalid .pptx: {exc}")
+
+        n_slides = len(prs.slides)
+        if n_slides >= _EDIT_LARGE_DECK_SLIDES or len(ops) >= _EDIT_PROGRESS_OPS_EVERY:
+            await self._emit(
+                __event_emitter__,
+                f"Editing deck ({n_slides} slides, {len(ops)} operations)...",
+                done=False,
+            )
+        else:
+            await self._emit(__event_emitter__, "Applying edits...", done=False)
+
+        progress_every = int(self.valves.presentation_edit_progress_every or 0)
+        total_ops = len(ops)
+        try:
+            for i, op in enumerate(ops):
+                _apply_edit_op(prs, op, self.valves, i)
+                ops_applied += 1
+                if progress_every > 0 and (
+                    (i + 1) % progress_every == 0 or (i + 1) == total_ops
+                ):
+                    await self._emit(
+                        __event_emitter__,
+                        f"Applied edit {i + 1}/{total_ops}...",
+                        done=False,
+                    )
+        except ValueError as exc:
+            ops_failed = 1
+            edit_ms = (time.monotonic() - t_edit) * 1000.0
+            log.warning(
+                "[edit_presentation] edit_ms=%.1f file_id=%s ops_applied=%s "
+                "ops_failed=%s slides=%s",
+                edit_ms,
+                fid,
+                ops_applied,
+                ops_failed,
+                n_slides,
+            )
+            return self._edit_error(str(exc))
+
+        buf = BytesIO()
+        try:
+            prs.save(buf)
+        except Exception as exc:
+            log.exception("[edit_presentation] save failed file_id=%s", fid)
+            edit_ms = (time.monotonic() - t_edit) * 1000.0
+            log.warning(
+                "[edit_presentation] edit_ms=%.1f file_id=%s ops_applied=%s "
+                "ops_failed=0 save_error=1 slides=%s",
+                edit_ms,
+                fid,
+                ops_applied,
+                n_slides,
+            )
+            return self._edit_error(f"Could not save presentation: {exc}")
+        out_bytes = buf.getvalue()
+
+        edit_ms = (time.monotonic() - t_edit) * 1000.0
+        log.info(
+            "[edit_presentation] edit_ms=%.1f file_id=%s ops_applied=%s "
+            "ops_failed=%s slides=%s",
+            edit_ms,
+            fid,
+            ops_applied,
+            ops_failed,
+            n_slides,
+        )
+
+        await self._emit(__event_emitter__, "Saving file...", done=False)
+        save_title = (spec.get("title") or "presentation-edited").strip()
+        fname, url, save_err, file_id = await self._save(
+            out_bytes,
+            title=save_title,
+            request=__request__,
+            user_dict=__user__,
+            log_prefix="edit_presentation",
+        )
+        if not url:
+            await self._emit(__event_emitter__, "Save failed.", done=True)
+            return self._edit_error(
+                f"Presentation edited but saving failed ({save_err})."
+            )
+        await self._emit_link(
+            __event_emitter__,
+            fname,
+            url,
+            slides=n_slides,
+            kb=max(1, round(len(out_bytes) / 1024)),
+            file_id=file_id,
+        )
+        await self._emit(__event_emitter__, "Presentation updated.", done=True)
+        return self._success(fname, url)
 
     async def generate_slides(
         self,

@@ -2,7 +2,7 @@
 
 > **Relazione:** complementare a [template-mode-implementation-plan.md](./template-mode-implementation-plan.md) — **non** fa parte del flusso inspect → generate (§4 di quel documento).  
 > **Versione base:** `generate_slides.py` v1.1.x (post template mode + reuse + materialize theme + layout bg flatten)  
-> **Stato:** **non implementato** — piano di lavoro  
+> **Stato:** **Fase 5 in corso** (rollout Neura — repo docs/runbook pronti; voci OWUI 1/3/4 in attesa esecuzione pilot)  
 > **Ultimo aggiornamento:** 2026-09-30 (decisioni gap §5.1)  
 > **Contesto deploy:** Neura — tool **on-demand** invocato solo quando l’utente chiede correzioni visive/testuali su un deck **già generato**.
 
@@ -375,7 +375,8 @@ generate_slides.py
 doc/
 ├── template-mode-implementation-plan.md   (invariato §4)
 ├── presentation-edit-implementation-plan.md   ← questo documento
-└── neura-presentation-edit-hints.md       (nuovo, Fase 5)
+├── neura-presentation-edit-hints.md       (Fase 5 rollout + system prompt)
+└── neura-presentation-edit-chat-examples.md (Fase 5 chat scenarios)
 
 examples/
 ├── edit_presentation_smoke.py             (nuovo)
@@ -422,21 +423,21 @@ examples/
 
 ### Funzionali
 
-- [ ] **PE1** — Dato un pptx reuse con titolo lungo, `shrink_font` riduce `sz` e il testo non supera grossolanamente il bbox (test fixture).
-- [ ] **PE2** — `set_text` su shape id valido cambia solo testo, preserva colore/grassetto/`spc` del primo run template.
+- [x] **PE1** — Dato un pptx reuse con titolo lungo, `shrink_font` riduce `sz` e il testo non supera grossolanamente il bbox (test fixture).
+- [x] **PE2** — `set_text` su shape id valido cambia solo testo, preserva colore/grassetto/`spc` del primo run template.
 - [ ] **PE3** — `presentation_file_id` invalido → errore, nessun file.
-- [ ] **PE4** — Valve off → tool rifiuta con messaggio admin.
-- [ ] **PE5** — Slide index out of range → errore chiaro.
-- [ ] **PE6** — Shape id assente → errore chiaro (op index citata).
+- [x] **PE4** — Valve off → tool rifiuta con messaggio admin.
+- [x] **PE5** — Slide index out of range → errore chiaro.
+- [x] **PE6** — Shape id assente → errore chiaro (op index citata).
 - [ ] **PE7** — Catena: generate (Files API **con UUID**) → edit → secondo edit sul **nuovo** `file_id` funziona (§5.1 #1A; non richiesto con solo URL cache).
-- [ ] **PE8** — `presentation_file_id` non-UUID o assente → errore esplicito, nessun download (§5.1 #1A).
+- [x] **PE8** — `presentation_file_id` non-UUID o assente → errore esplicito, nessun download (§5.1 #1A).
 
 ### Non funzionali
 
 - [ ] **PEN1** — `generate_slides` / template mode tests esistenti verdi senza chiamare edit.
-- [ ] **PEN2** — Script smoke edit in Docker con python-pptx.
-- [ ] **PEN3** — Log operazioni applicate (slide, shape_id, op).
-- [ ] **PEN4** — Doc Neura edit separata da template hints.
+- [x] **PEN2** — Script smoke edit in Docker con python-pptx.
+- [x] **PEN3** — Log operazioni applicate (slide, shape_id, op).
+- [x] **PEN4** — Doc Neura edit separata da template hints.
 
 ---
 
@@ -446,10 +447,10 @@ examples/
 
 **Obiettivo:** allineare Neura e repo prima del codice.
 
-- [ ] Approvare questo documento in review interna.
-- [ ] Creare `doc/neura-presentation-edit-hints.md` (workflow utente → Neura → edit; **no** inserimento in template §4; includere §5.1 #1A, #2A, #7A).
-- [ ] Aggiungere cross-link da README (voce “Post-generate edit”) — opzionale breve.
-- [ ] Definire nome tool OWUI definitivo: `edit_presentation` (alias doc `edit_slides` deprecato).
+- [x] Approvare questo documento in review interna.
+- [x] Creare `doc/neura-presentation-edit-hints.md` (workflow utente → Neura → edit; **no** inserimento in template §4; includere §5.1 #1A, #2A, #7A).
+- [x] Aggiungere cross-link da README (voce “Post-generate edit”) — opzionale breve.
+- [x] Definire nome tool OWUI definitivo: `edit_presentation` (alias doc `edit_slides` deprecato).
 
 **Deliverable:** hint copiabili in system prompt Neura.
 
@@ -459,17 +460,17 @@ examples/
 
 **Obiettivo:** download, `set_text`, `shrink_font`, save.
 
-- [ ] Valve `presentation_edit_enabled` (default false).
-- [ ] `_parse_edit_spec` + validazione UUID `presentation_file_id` (`_is_files_api_id`; rifiuto se manca — §5.1 #1A).
-- [ ] `async def edit_presentation(self, content: str, ...)` — specchio pattern `generate_slides` (emitter, user, request).
-- [ ] Riutilizzo download: `_load_reference_pptx(presentation_file_id, ...)`.
-- [ ] `_apply_edit_operations` + dispatch `set_text` | `shrink_font`; fail totale prima op invalida (§5.1 #8A).
-- [ ] Lookup shape via **`_shape_by_id_recursive`** (§5.1 #3A).
-- [ ] `_shrink_shape_font` (helper **solo edit**, §5.1 #9B) mutando `a:rPr/@sz`; rispettare valve `min_pt` / `step_pt`.
-- [ ] `_text_fits_shape_heuristic` v1 (caratteri × stima vs `shape.width/height`).
-- [ ] `_save` output + `_emit_link`.
-- [ ] Docstring tool con schema JSON esempio.
-- [ ] Messaggio errore se valve disabilitata.
+- [x] Valve `presentation_edit_enabled` (default false).
+- [x] `_parse_edit_spec` + validazione UUID `presentation_file_id` (`_is_files_api_id`; rifiuto se manca — §5.1 #1A).
+- [x] `async def edit_presentation(self, content: str, ...)` — specchio pattern `generate_slides` (emitter, user, request).
+- [x] Riutilizzo download: `_load_reference_pptx(presentation_file_id, ...)`.
+- [x] `_apply_edit_operations` + dispatch `set_text` | `shrink_font`; fail totale prima op invalida (§5.1 #8A).
+- [x] Lookup shape via **`_shape_by_id_recursive`** (§5.1 #3A).
+- [x] `_shrink_shape_font` (helper **solo edit**, §5.1 #9B) mutando `a:rPr/@sz`; rispettare valve `min_pt` / `step_pt`.
+- [x] `_text_fits_shape_heuristic` v1 (caratteri × stima vs `shape.width/height`).
+- [x] `_save` output + `_emit_link`.
+- [x] Docstring tool con schema JSON esempio.
+- [x] Messaggio errore se valve disabilitata.
 
 **Deliverable:** edit manuale via JSON funzionante **con Files API** (UUID obbligatorio — §5.1 #1A).
 
@@ -479,10 +480,10 @@ examples/
 
 **Obiettivo:** regressione automatica.
 
-- [ ] `examples/edit_presentation_smoke.py`: costruisce o usa pptx fixture (textbox piccolo + testo lungo), applica shrink, assert `sz` diminuito.
-- [ ] Estendere fixture reuse local / Marketing: opzionale assert post-edit su una slide.
-- [ ] Registrare smoke in `examples/run_production_checks.py`.
-- [ ] Eseguire battery template esistente (nessuna regressione).
+- [x] `examples/edit_presentation_smoke.py`: costruisce o usa pptx fixture (textbox piccolo + testo lungo), applica shrink, assert `sz` diminuito.
+- [x] Estendere fixture reuse local / Marketing: opzionale assert post-edit su una slide.
+- [x] Registrare smoke in `examples/run_production_checks.py`.
+- [x] Eseguire battery template esistente (nessuna regressione).
 
 **Deliverable:** CI locale verde con edit smoke.
 
@@ -492,13 +493,15 @@ examples/
 
 **Obiettivo:** meno errori modello + split overlap + autofit PowerPoint.
 
-- [ ] **`enable_autofit`** — priorità §5.1 #4B; XML `a:bodyPr` / `normAutofit`.
-- [ ] **`replace_text_and_fit`** — §5.1 #2B (testo + shrink atomico).
-- [ ] **`split_text`** — obbligatorio in v2 §5.1 #5B; `first_paragraph` | `first_line` tra due `shape_id`.
-- [ ] **`resize_shape`** — opzionale §5.1 #5C; delta altezza textbox conservativo.
-- [ ] Tabelle: **`set_table_cell`** (6B) o refill parziale (6C) — una scelta in implementazione.
-- [ ] Test dedicati split + autofit (Indian/Marketing se disponibili).
-- [ ] (Opz.) Validazione inspect compatto su output reuse — se insufficiente, **10B** param inspect.
+- [x] **`enable_autofit`** — priorità §5.1 #4B; XML `a:bodyPr` / `normAutofit`.
+- [x] **`replace_text_and_fit`** — §5.1 #2B (testo + shrink atomico).
+- [x] **`split_text`** — obbligatorio in v2 §5.1 #5B; `first_paragraph` | `first_line` tra due `shape_id`.
+- [x] **`resize_shape`** — opzionale §5.1 #5C; delta altezza textbox conservativo.
+- [x] Tabelle: **`set_table_cell`** (6B) o refill parziale (6C) — una scelta in implementazione.
+- [x] Test dedicati split + autofit (Indian/Marketing se disponibili).
+- [x] (Opz.) Validazione inspect compatto su output reuse — se insufficiente, **10B** param inspect.
+
+**Nota Fase 3 (10B):** smoke su deck Marketing reuse — `_compact_inspect_payload` espone id+testo per ≥2 placeholder (10A sufficiente); param inspect dedicato non richiesto.
 
 **Deliverable:** casi overlap titolo/body e “adatta al riquadro” senza rigenerare.
 
@@ -508,13 +511,15 @@ examples/
 
 **Obiettivo:** produzione Neura.
 
-- [ ] `_emit` progress su deck molti slide / molte operazioni.
-- [ ] Valve `presentation_edit_min_font_pt` / default `step_pt`.
-- [ ] Metriche log: `edit_ms`, `ops_applied`, `ops_failed`.
-- [ ] (v2 opz.) Save parziale + report se batch ops (#8B).
-- [ ] (Opz. prod) Rifiuto `presentation_file_id` = template allegato (#7B).
-- [ ] Test ACL cross-user (stesso pattern reference).
-- [ ] Version bump `generate_slides.py` header + CHANGELOG voce edit.
+- [x] `_emit` progress su deck molti slide / molte operazioni.
+- [x] Valve `presentation_edit_min_font_pt` / default `step_pt`.
+- [x] Metriche log: `edit_ms`, `ops_applied`, `ops_failed`.
+- [x] (v2 opz.) Save parziale + report se batch ops (#8B).
+- [x] (Opz. prod) Rifiuto `presentation_file_id` = template allegato (#7B).
+- [x] Test ACL cross-user (stesso pattern reference).
+- [x] Version bump `generate_slides.py` header + CHANGELOG voce edit.
+
+**Nota Fase 4 (#8B):** save parziale **non implementato**; fail totale (#8A) invariato.
 
 **Deliverable:** pilot abilitabile con valve ON.
 
@@ -524,16 +529,18 @@ examples/
 
 **Obiettivo:** adozione senza confusione template mode.
 
-- [ ] Aggiornare system prompt: “fix visivo post-download → `edit_presentation`, non rigenerare”.
-- [ ] Esempi chat: titolo troppo grande; split slide 4.
-- [ ] Abilitare valve su workspace pilot.
-- [ ] Monitor log errori shape id / slide index (prime settimane).
+- [ ] Aggiornare system prompt: “fix visivo post-download → `edit_presentation`, non rigenerare”. *(repo: [neura-presentation-edit-hints.md](./neura-presentation-edit-hints.md) — one-liner + copy-paste; `[x]` dopo paste su workspace pilot Neura)*
+- [x] Esempi chat: titolo troppo grande; split slide 4. → [neura-presentation-edit-chat-examples.md](./neura-presentation-edit-chat-examples.md)
+- [ ] Abilitare valve su workspace pilot. *(runbook: [hints § Rollout pilot](./neura-presentation-edit-hints.md#rollout-pilot-neura-admin--ops); `[x]` dopo valve ON + PE7 OK)*
+- [ ] Monitor log errori shape id / slide index (prime settimane). *(stessa sezione log monitoring; `[x]` dopo prima review log settimana 1–2)*
 
 **Deliverable:** flusso utente descritto in §12 operativo in produzione.
 
 ---
 
 ## 12. Appendice: esempio end-to-end
+
+Vedi anche scenari checklist Fase 5 (slide 1 titolo grande, split slide 4): [neura-presentation-edit-chat-examples.md](./neura-presentation-edit-chat-examples.md).
 
 ### Premessa
 
@@ -595,14 +602,14 @@ Scarica la versione editata; eventuali ulteriori tweak → nuova chiamata edit s
 
 ## 13. Checklist pre-merge (produzione Neura)
 
-- [ ] Valve `presentation_edit_enabled` default **false** in repo.
-- [ ] Nessuna modifica al diagramma §4 di `template-mode-implementation-plan.md` (solo cross-link opzionale in README o in §1 di questo doc).
-- [ ] `examples/edit_presentation_smoke.py` PASS in Docker.
+- [x] Valve `presentation_edit_enabled` default **false** in repo.
+- [x] Nessuna modifica al diagramma §4 di `template-mode-implementation-plan.md` (solo cross-link opzionale in README o in §1 di questo doc).
+- [x] `examples/edit_presentation_smoke.py` PASS in Docker. *(2026-09-30 pre-pilot)*
 - [ ] Battery `run_production_checks` (escluso NF5 se golden noto) PASS.
-- [ ] Docstring `edit_presentation` esplicita: **non** sostituisce generate; **non** usa `reference_file_id`.
-- [ ] `doc/neura-presentation-edit-hints.md` pubblicato per team modello.
-- [ ] Tool registrato in UI Open WebUI (stesso plugin `generate_slides.py`).
-- [ ] CHANGELOG entry “Presentation Edit (opt-in)”.
+- [x] Docstring `edit_presentation` esplicita: **non** sostituisce generate; **non** usa `reference_file_id`.
+- [x] `doc/neura-presentation-edit-hints.md` pubblicato per team modello (+ chat examples + rollout runbook Fase 5).
+- [ ] Tool registrato in UI Open WebUI (stesso plugin `generate_slides.py`). *(deploy Neura)*
+- [x] CHANGELOG entry “Presentation Edit (opt-in)”.
 
 ---
 

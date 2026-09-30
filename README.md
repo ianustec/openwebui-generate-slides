@@ -117,6 +117,24 @@ Example spec: [`examples/template-deck-with-reference.json`](examples/template-d
 
 With **`template_mode_enabled=false`** (default), `reference_file_id` is ignored and a classic deck is generated (same behavior as v1.0.3).
 
+### Post-generate edit (optional)
+
+Separate from Template Mode’s 3-step workflow: after the user **opens** a deck from `generate_slides`, they may ask for small fixes (title too large, text overlap, split title vs body). Neura should call **`edit_presentation`** with a JSON `content` string — not rerun `generate_slides` for those tweaks.
+
+Flow: user feedback → Neura → optional `inspect_slides` on the **output** file UUID → `edit_presentation` with `presentation_file_id` + `operations[]` (`set_text`, `shrink_font`, …).
+
+Requires admin valve **`presentation_edit_enabled=true`** (default off; independent of `template_mode_enabled`). Input must be a Files API **UUID** from the last generate/edit response, not the template `reference_file_id`.
+
+Docs: [doc/presentation-edit-implementation-plan.md](doc/presentation-edit-implementation-plan.md) · Model hints: [doc/neura-presentation-edit-hints.md](doc/neura-presentation-edit-hints.md) · Chat examples: [doc/neura-presentation-edit-chat-examples.md](doc/neura-presentation-edit-chat-examples.md).
+
+Minimal payload shape:
+
+```json
+{ "presentation_file_id": "<uuid>", "operations": [{ "op": "set_text", "slide": 0, "shape_id": 1, "text": "..." }] }
+```
+
+v2 ops (same JSON): `enable_autofit`, `replace_text_and_fit`, `split_text` (`from_shape_id`, `to_shape_id`, `mode`), `resize_shape` (`delta_height_in`), `set_table_cell` (`row`, `col`, `text`).
+
 ### Themes
 `auto` (default, inferred from content) · `midnight` · `forest` · `ocean` · `coral`
 · `terracotta` · `teal` · `berry` · `sage` · `cherry` · `charcoal` · `slate`.
@@ -167,6 +185,10 @@ You can force the accent with `"accent": "#C99A3B"`.
 | `inspect_slides_enabled` | `true` | Allow the `inspect_slides` tool |
 | `inspect_extract_images` | `true` | Upload sidecar assets on inspect (`images[]` in JSON) |
 | `template_strict_mode` | `false` | Fail generate when reference `safe_zone` is not `computed` or is too small |
+| `presentation_edit_enabled` | `false` | Enable `edit_presentation` (post-generate fixes on an existing output UUID) |
+| `presentation_edit_min_font_pt` | `14` | Floor for `shrink_font` when op omits `min_pt` |
+| `presentation_edit_shrink_step_pt` | `2` | Step for `shrink_font` when op omits `step_pt` |
+| `presentation_edit_progress_every` | `5` | Emit progress every N ops (0 = off) |
 
 ### Roadmap (Fase 8+)
 
@@ -176,8 +198,9 @@ Deferred post-v1: auto-inject inspect on `.pptx` upload (Open WebUI/Neura integr
 
 - Keep **`template_mode_enabled=false`** on customer instances until Template Mode is explicitly rolled out.
 - Enable **`template_mode_enabled=true`** only on internal pilot workspaces.
+- **Presentation Edit (v1.2.0+):** keep **`presentation_edit_enabled=false`** by default; enable **`presentation_edit_enabled=true`** only on internal pilot workspaces where post-generate fixes are tested. Independent of template mode. Rollout checklist and log monitoring: [doc/neura-presentation-edit-hints.md — Rollout pilot Neura](doc/neura-presentation-edit-hints.md#rollout-pilot-neura-admin--ops).
 - After deploy: **Workspace → Tools** → paste the updated [`generate_slides.py`](generate_slides.py) and save (same Files API workflow as v1.0.3).
-- **Rollback:** turn the valve off instantly, or pin the previous tool version.
+- **Rollback:** turn the valve off instantly (`template_mode_enabled` and/or `presentation_edit_enabled`), or pin the previous tool version.
 
 ## How it works
 
