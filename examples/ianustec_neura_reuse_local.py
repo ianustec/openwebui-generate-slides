@@ -174,6 +174,24 @@ def main() -> None:
         f"\ncover blip embeds: marketing={mkt_cover_blips} output={cover_blips}"
     )
 
+    # Theme: reuse must materialize schemeClr (Office default theme on empty prs).
+    cover_xml = zipfile.ZipFile(BytesIO(data)).read("ppt/slides/slide1.xml").decode(
+        "utf-8", "replace"
+    )
+    cover_scheme = len(re.findall(r"<a:schemeClr\b", cover_xml))
+    print(f"cover schemeClr count={cover_scheme}")
+    if cover_scheme:
+        structure_fails.append(
+            f"slide 0: {cover_scheme} a:schemeClr left (theme not materialized)"
+        )
+    bg = re.search(r"<p:bg>.*?</p:bg>", cover_xml, re.DOTALL)
+    if bg is not None and "schemeClr" in bg.group(0):
+        lt1 = (pack.theme.get("lt1") or "").upper()
+        if lt1 and lt1 not in bg.group(0).upper():
+            structure_fails.append(
+                f"slide 0: p:bg scheme not materialized to lt1 {lt1}"
+            )
+
     # Slide 9: template table (id 2) refilled in place + title (id 9).
     tbl_shape = mod._shape_by_id(out.slides[9], 2)
     if tbl_shape is None or not tbl_shape.has_table:

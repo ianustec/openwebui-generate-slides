@@ -433,6 +433,8 @@ Altrimenti: pipeline classica v1.0.3.
 |------------|------------|
 | Nessun `reference_file_id` | Comportamento attuale: `_PALETTES` + `palette{}` / `accent` / `primary` |
 | Template Mode attivo | Colori/font da theme XML reference → `_derive_readable_colors(safe_zone_bg)` → merge; `theme: "midnight"` nel JSON **non** sovrascrive sfondo/decorazioni clonate |
+| Template Mode + slide `reuse` | L’output nasce da `Presentation()` (tema Office nel package); il clone copia `a:schemeClr`. A fine clone e dopo `_apply_reuse_text_map`, `_finalize_cloned_slide` risolve i token con il **master della slide sorgente** e scrive `a:srgbClr` nel XML clonato (approccio B). `_merge_theme_from_template()` resta per il renderer classico / mapping, non per OOXML reuse. |
+| Template Mode — sfondo pagina clonato | `_clone_background` appiattisce lo sfondo **effettivo** (slide → layout → master) su `p:bg` della slide output, con remap media dal part sorgente; così l’anteprima non dipende dal layout blank Office. Poi materialize su `cSld` come sopra. |
 | Template Mode + `palette{}` esplicito | Opzionale v1: `palette{}` può affinare **solo** ink testo, non le shape clonate |
 
 ### 6.9 Safe zone per slide reference (multi-mapping)
@@ -1051,6 +1053,8 @@ examples/
 - [ ] Thumbnail leggeri opzionali oltre asset full-res (Fase 3.1); mai base64 in JSON inspect (defer)
 - [ ] Supporto PNG/JPG come template (background mode — fase separata, defer)
 - [x] Metriche/log: tempo parse, tempo clone, slide count (`parse_ms`, `inspect_ms`, `build clone_ms`)
+- [x] **Materialize theme su reuse (Fase 8):** `_theme_color_map_for_source_slide`, `_materialize_scheme_colors`, `_finalize_cloned_slide` in `_clone_template_slide_to_prs` e `_render_reuse_slide`; parse theme via rel master se `theme_part` assente; test `examples/theme_materialize_smoke.py` (Indian Doctors + Marketing). **Fase 2 opzionale:** valve `template_output_package_seed` + `_strip_all_slides` (package seed, approccio C) — solo se restano gap post-materialize; default off.
+- [x] **Sfondo layout/master appiattito (Fase 8):** `_resolve_effective_background` + `_clone_background` (slide → layout → master, `_remap_media_rels` dal part corretto); regressione Indian slide 1 (bg solo su layout) in `theme_materialize_smoke.py`.
 
 **Deliverable:** production-hardening iterativo.
 

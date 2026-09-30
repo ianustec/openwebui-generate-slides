@@ -110,6 +110,7 @@ def main() -> None:
         ("clone_nested_group", ["examples/clone_nested_group.py"]),
         ("clone_blip_fill", ["examples/clone_blip_fill.py"]),
         ("reuse_slide_text", ["examples/reuse_slide_text.py"]),
+        ("theme_materialize_smoke", ["examples/theme_materialize_smoke.py"]),
         ("ianustec_neura_reuse_local", ["examples/ianustec_neura_reuse_local.py"]),
         ("template_strict_mode_test", ["examples/template_strict_mode_test.py"]),
         ("inspect_master_p1_smoke", ["examples/inspect_master_p1_smoke.py"]),

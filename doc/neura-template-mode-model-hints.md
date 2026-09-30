@@ -17,7 +17,7 @@ When the user wants a presentation **using their PowerPoint template** (.pptx):
    - **Preferred (multi-slide templates):** on each output slide, `reuse`:
      - `slide`: template slide index (same as inspect `slides[].index`, 0-based)
      - `text`: `{ "<id>": "New title" }` using ids from inspect `slides[].text`. Table ids from `slides[].tables` take `{ "headers": [...], "rows": [[...]] }`. Omit `keep_ids`: decorations are not listed in inspect and are cloned automatically.
-     - When `reuse` is set, do **not** rely on `layout: cover` / `title_bullets` to redraw that slide — only `text` updates template boxes
+     - When `reuse` is set, do **not** rely on `layout: cover` / `title_bullets` to redraw that slide — only `text` updates template boxes. Slide background and title colors come from the **template clone** (theme materialized at save), not from JSON `theme` / `accent` on that slide.
    - **Fallback:** `template_mapping` + semantic `slides[]` when not using per-slide `reuse`. Explicit layout keys (`"table": 9`, `"team": 7`, …) are honoured; otherwise the coarse roles cover/section/closing/content apply
    - `template_edits` for global clone policy or per-template-slide `drop_ids` when not using `reuse` on every slide
 

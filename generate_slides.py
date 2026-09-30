@@ -1816,28 +1816,138 @@ def _theme_color_from_element(el) -> Optional[str]:
     return None
 
 
+# clrScheme slots used when resolving a:schemeClr on cloned slide XML.
+_THEME_CLR_SCHEME_SLOTS: tuple[tuple[str, str], ...] = (
+    ("dk1", "a:dk1"),
+    ("lt1", "a:lt1"),
+    ("dk2", "a:dk2"),
+    ("lt2", "a:lt2"),
+    ("accent1", "a:accent1"),
+    ("accent2", "a:accent2"),
+    ("accent3", "a:accent3"),
+    ("accent4", "a:accent4"),
+    ("accent5", "a:accent5"),
+    ("accent6", "a:accent6"),
+    ("hlink", "a:hlink"),
+    ("folHlink", "a:folHlink"),
+)
+
+
+def _theme_color_map_from_theme_element(root) -> dict[str, str]:
+    """Map scheme token names to RGB hex from a theme element (a:theme)."""
+    out: dict[str, str] = {}
+    try:
+        clr_scheme = root.find(".//" + qn("a:clrScheme"))
+        if clr_scheme is None:
+            return out
+        for key, tag in _THEME_CLR_SCHEME_SLOTS:
+            node = clr_scheme.find(qn(tag))
+            val = _theme_color_from_element(node)
+            if val:
+                out[key] = val
+    except Exception as exc:
+        log.debug("[template] clrScheme read: %s", exc)
+    return out
+
+
+def _theme_element_from_slide_master_part(master_part):
+    """Return the a:theme root for a slide master (python-pptx or rel fallback)."""
+    if master_part is None:
+        return None
+    try:
+        theme_part = getattr(master_part, "theme_part", None)
+        if theme_part is not None:
+            return theme_part.element
+    except Exception:
+        pass
+    try:
+        from pptx.opc.constants import RELATIONSHIP_TYPE as RT  # type: ignore
+        from pptx.oxml import parse_xml  # type: ignore
+
+        for rel in master_part.rels.values():
+            if rel.reltype == RT.THEME:
+                return parse_xml(rel.target_part.blob)
+    except Exception as exc:
+        log.debug("[template] theme rel read: %s", exc)
+    return None
+
+
+def _theme_color_map_for_source_slide(
+    source_slide,
+    theme_fallback: Optional[dict] = None,
+) -> dict[str, str]:
+    """Color map for the slide master chain of a template slide."""
+    try:
+        master_part = source_slide.slide_layout.slide_master.part
+        root = _theme_element_from_slide_master_part(master_part)
+        if root is not None:
+            mapped = _theme_color_map_from_theme_element(root)
+            if mapped:
+                return mapped
+    except Exception as exc:
+        log.debug("[template] theme map for source slide: %s", exc)
+    if isinstance(theme_fallback, dict):
+        out = {
+            k: str(v).upper()
+            for k, v in theme_fallback.items()
+            if k in {s[0] for s in _THEME_CLR_SCHEME_SLOTS} and v
+        }
+        if out:
+            return out
+    return {"dk1": "1A1A1A", "lt1": "FFFFFF", "accent1": "4472C4"}
+
+
+def _materialize_scheme_colors(element, color_map: dict[str, str]) -> None:
+    """Replace a:schemeClr with a:srgbClr using resolved theme hex values.
+
+    Only touches schemeClr nodes inside cloned target XML. phClr, sysClr, and
+    gradFill stops are left unchanged. Child modifiers on schemeClr (lumMod,
+    tint, …) are dropped when materializing to a fixed sRGB.
+    """
+    if not color_map:
+        return
+    scheme_tag = qn("a:schemeClr")
+    srgb_tag = qn("a:srgbClr")
+    for el in element.iter():
+        if el.tag != scheme_tag:
+            continue
+        token = (el.get("val") or "").strip()
+        if not token:
+            continue
+        hex_val = color_map.get(token)
+        if not hex_val:
+            log.debug("[template] schemeClr token %r not in theme map", token)
+            continue
+        for child in list(el):
+            el.remove(child)
+        el.tag = srgb_tag
+        el.set("val", hex_val.upper())
+
+
+def _finalize_cloned_slide(
+    target_slide,
+    source_slide,
+    theme_fallback: Optional[dict] = None,
+) -> None:
+    """Resolve theme scheme colors on a cloned output slide."""
+    if not _HAS_PPTX:
+        return
+    try:
+        color_map = _theme_color_map_for_source_slide(source_slide, theme_fallback)
+        _materialize_scheme_colors(target_slide.element.cSld, color_map)
+    except Exception as exc:
+        log.warning("[template] finalize cloned slide theme: %s", exc)
+
+
 def _extract_theme_from_prs(prs) -> dict:
-    theme = {
-        "dk1": None,
-        "lt1": None,
-        "accent1": None,
+    theme: dict = {
         "major_font": "Calibri",
         "minor_font": "Calibri",
     }
     try:
-        theme_part = prs.slide_master.part.theme_part
-        root = theme_part.element
-        clr_scheme = root.find(".//" + qn("a:clrScheme"))
-        if clr_scheme is not None:
-            for key, tag in (
-                ("dk1", "a:dk1"),
-                ("lt1", "a:lt1"),
-                ("accent1", "a:accent1"),
-            ):
-                node = clr_scheme.find(qn(tag))
-                val = _theme_color_from_element(node)
-                if val:
-                    theme[key] = val
+        root = _theme_element_from_slide_master_part(prs.slide_master.part)
+        if root is not None:
+            theme.update(_theme_color_map_from_theme_element(root))
         font_scheme = root.find(".//" + qn("a:fontScheme"))
         if font_scheme is not None:
             for font_key, tag in (("major_font", "a:majorFont"), ("minor_font", "a:minorFont")):
@@ -2992,12 +3102,50 @@ def _copy_table_styles(element, source_part, ctx: _CloneContext) -> None:
         log.debug("[template] table styles copy skipped: %s", exc)
 
 
+def _bg_element_meaningful(bg_el) -> bool:
+    """True when p:bg carries a direct fill (not bgRef-only or empty)."""
+    if bg_el is None:
+        return False
+    try:
+        bg_pr = bg_el.find(qn("p:bgPr"))
+        if bg_pr is None:
+            if bg_el.find(qn("p:bgRef")) is not None:
+                log.debug("[template] p:bgRef-only background skipped for clone flatten")
+            return False
+        if bg_pr.find(qn("a:noFill")) is not None:
+            return False
+        for tag in ("a:solidFill", "a:blipFill", "a:gradFill"):
+            if bg_pr.find(qn(tag)) is not None:
+                return True
+    except Exception as exc:
+        log.debug("[template] bg meaningful check: %s", exc)
+    return False
+
+
+def _resolve_effective_background(source_slide):
+    """Effective page background: slide cSld, then layout, then master."""
+    if not _HAS_PPTX:
+        return None, None, ""
+    try:
+        chain = [("slide", source_slide.element.cSld, source_slide.part)]
+        layout = source_slide.slide_layout
+        chain.append(("layout", layout.element.cSld, layout.part))
+        master = layout.slide_master
+        chain.append(("master", master.element.cSld, master.part))
+        for origin, c_sld, part in chain:
+            bg = c_sld.find(qn("p:bg"))
+            if _bg_element_meaningful(bg):
+                return bg, part, origin
+    except Exception as exc:
+        log.debug("[template] resolve effective background: %s", exc)
+    return None, None, ""
+
+
 def _clone_background(target_slide, source_slide, ctx: Optional[_CloneContext] = None) -> None:
     try:
-        src_cSld = source_slide.element.cSld
         tgt_cSld = target_slide.element.cSld
-        src_bg = src_cSld.find(qn("p:bg"))
-        if src_bg is None:
+        src_bg, source_part, origin = _resolve_effective_background(source_slide)
+        if src_bg is None or source_part is None:
             return
         tgt_bg = tgt_cSld.find(qn("p:bg"))
         if tgt_bg is not None:
@@ -3005,7 +3153,8 @@ def _clone_background(target_slide, source_slide, ctx: Optional[_CloneContext] =
         new_bg = deepcopy(src_bg)
         tgt_cSld.insert(0, new_bg)
         if ctx is not None:
-            _remap_media_rels(new_bg, source_slide.part, ctx)
+            _remap_media_rels(new_bg, source_part, ctx)
+        log.debug("[template] clone background from %s", origin or "unknown")
     except Exception as exc:
         log.debug("[template] clone background: %s", exc)
 
@@ -3097,6 +3246,7 @@ def _clone_template_slide_to_prs(
     )
     _clone_background(target_slide, source_slide, ctx)
     _clone_decorations(target_slide, source_slide, decorations, ctx)
+    _finalize_cloned_slide(target_slide, source_slide, pack.theme)
     return target_slide
 
 
@@ -3633,8 +3783,11 @@ def _render_reuse_slide(
         part_cache=deck.media_part_cache,
     )
     deck.template_clone_ms += (time.monotonic() - t_clone) * 1000.0
+    source_slide = deck.source_prs.slides[reuse.slide_index]
     if reuse.text:
         _apply_reuse_text_map(target_slide, reuse.text, st)
+    # Text/table refill reintroduces schemeClr in a:rPr; materialize again.
+    _finalize_cloned_slide(target_slide, source_slide, pack.theme)
 
 
 # --- Template mode: deck frame + mapping (§5.1 dual path) --------------------
