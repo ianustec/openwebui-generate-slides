@@ -2,6 +2,23 @@
 
 All notable changes to the Generate Slides Open WebUI tool.
 
+## [1.2.1] — Presentation Edit (font fixes)
+
+**Compatibility:** Default `shrink_font` behavior unchanged (`mode=fit`). No change to generate/template paths.
+
+### Added
+
+- **`set_font_pt`** — set absolute `font_pt` or relative `font_pt_delta` on text shapes.
+- **`shrink_font` / `fit_text` modes:** `fit` (default), `to_min`, `target` (+ `target_pt`).
+- **`_edit_shape_font_pt_effective`** — reads run `sz` plus paragraph `endParaRPr` / `defRPr` fallbacks.
+- Log field **`ops_mutated`** (distinct from `ops_applied`).
+- Valve **`presentation_edit_warn_noop`** (default `false`) — optional status when no op mutated the deck.
+
+### Tests
+
+- Smoke: endParaRPr effective font, `set_font_pt`, PE1b `to_min`.
+- `examples/montessori_edit_font_regression.py` (skip-safe if fixture deck missing targets).
+
 ## [1.2.0] — Presentation Edit
 
 **Compatibility:** No change to `generate_slides` / Template Mode when `presentation_edit_enabled=false` (default) and when `edit_presentation` is not called.
@@ -60,7 +77,7 @@ All notable changes to the Generate Slides Open WebUI tool.
 
 - [Template Mode implementation plan](doc/template-mode-implementation-plan.md)
 - [Example spec with reference](examples/template-deck-with-reference.json)
-- [Model workflow hints (Neura)](doc/neura-template-mode-model-hints.md)
+- [Model hints (Neura)](doc/neura-template-mode-model-hints.md)
 
 ## [1.0.3] — Files API baseline
 

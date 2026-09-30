@@ -21,7 +21,7 @@ Model hints: [neura-presentation-edit-hints.md](./neura-presentation-edit-hints.
 
 ### Model (reasoning, no tool yet)
 
-1. User slide **1** → JSON `"slide": 0` (0-based).
+1. User slide **1** → JSON `"slide": 1` (PowerPoint numbering; `EDIT_SLIDE_INDEX_ORIGIN=1` in `generate_slides.py`).
 2. `presentation_file_id` = UUID from the **last** `generate_slides` or `edit_presentation` response — copy verbatim.
 3. **Do not** call `generate_slides` or use `reference_file_id` from template inspect.
 4. Optional: `inspect_slides` with **`presentation_file_id`** (output deck) to find title vs subtitle `shape_id` values. Do not paste full inspect JSON to the user.
@@ -37,7 +37,7 @@ Example with **`replace_text_and_fit`** (preferred when only the title size must
   "operations": [
     {
       "op": "replace_text_and_fit",
-      "slide": 0,
+      "slide": 1,
       "shape_id": 783,
       "text": "Shorter main title"
     }
@@ -53,13 +53,13 @@ Alternative (explicit shrink after setting text):
   "operations": [
     {
       "op": "set_text",
-      "slide": 0,
+      "slide": 1,
       "shape_id": 783,
       "text": "Shorter main title"
     },
     {
       "op": "shrink_font",
-      "slide": 0,
+      "slide": 1,
       "shape_id": 783,
       "min_pt": 18,
       "step_pt": 2
@@ -108,13 +108,13 @@ Shape id **783** is **illustrative** — take ids from inspect on the **generate
   "operations": [
     {
       "op": "set_text",
-      "slide": 3,
+      "slide": 4,
       "shape_id": 801,
       "text": "SECTION TITLE"
     },
     {
       "op": "set_text",
-      "slide": 3,
+      "slide": 4,
       "shape_id": 802,
       "text": "Body paragraph stays in the lower box. Edit only wording if the user asked for text changes."
     }
@@ -130,14 +130,14 @@ Shape id **783** is **illustrative** — take ids from inspect on the **generate
   "operations": [
     {
       "op": "split_text",
-      "slide": 3,
+      "slide": 4,
       "from_shape_id": 801,
       "to_shape_id": 802,
       "mode": "first_paragraph"
     },
     {
       "op": "resize_shape",
-      "slide": 3,
+      "slide": 4,
       "shape_id": 801,
       "delta_height_in": -0.15
     }
@@ -158,10 +158,49 @@ This validates the generate → edit → edit chain in production (manual smoke 
 
 ---
 
+## Scenario C — Many titles smaller (Montessori-style)
+
+### User (chat)
+
+> Sulle slide 2, 3, 5, 11, 14 e 19 riduci i titoli. Sulle slide 8, 16, … riduci i sottotitoli verde acqua.
+
+### Model
+
+- Use **`set_font_pt`** (or `shrink_font` with `"mode": "to_min"`) — **not** default `shrink_font` alone (no-op when text already fits).
+- One op per `(slide, shape_id)` from inspect on the **output** UUID; verify each id exists on that slide.
+
+```json
+{
+  "presentation_file_id": "<uuid>",
+  "operations": [
+    { "op": "set_font_pt", "slide": 2, "shape_id": 1100, "font_pt": 28 },
+    { "op": "set_font_pt", "slide": 3, "shape_id": 1105, "font_pt": 28 },
+    { "op": "set_font_pt", "slide": 5, "shape_id": 1462, "font_pt": 28 }
+  ]
+}
+```
+
+Alternative for the same shapes:
+
+```json
+{
+  "op": "shrink_font",
+  "slide": 2,
+  "shape_id": 1100,
+  "mode": "to_min",
+  "min_pt": 22,
+  "step_pt": 2
+}
+```
+
+---
+
 ## Quick mapping (user language → JSON)
 
-| User says | JSON `slide` |
-|-----------|----------------|
-| slide 1 | 0 |
-| slide 4 | 3 |
-| slide 12 | 11 |
+| User says (PowerPoint) | JSON `slide` (origin=1) |
+|------------------------|-------------------------|
+| slide 1 | 1 |
+| slide 4 | 4 |
+| slide 12 | 12 |
+
+From inspect: JSON `slide` = `slides[].index + 1` when origin is 1.

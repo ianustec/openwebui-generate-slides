@@ -35,7 +35,7 @@ When the user has **downloaded or opened** a presentation you already generated 
 
 3. **Optional inspect on the output deck** — If you need `shape_id` or current text on the **generated** file, call `inspect_slides` with **`presentation_file_id`** (the output UUID), **not** the template id. Do not paste the full inspect JSON to the user. Reuse the same inspect tool as template mode; the file being inspected is different.
 
-4. **Slide numbers** — User “slide 1” → JSON `"slide": 0` (0-based). User “slide 4” → `"slide": 3`.
+4. **Slide numbers** — In `edit_presentation` JSON, use the **same number as PowerPoint / LibreOffice** (slide 1 → `"slide": 1`, slide 4 → `"slide": 4`). The tool maps this via `EDIT_SLIDE_INDEX_ORIGIN` in `generate_slides.py` (currently **1**). **Do not subtract 1** when the user quotes UI slide numbers. `inspect_slides` still reports `slides[].index` **0-based**; for edit JSON use **`index + 1`** when origin is 1.
 
 5. **Build edit JSON** — Single JSON string in `content` for `edit_presentation`:
 
@@ -46,13 +46,13 @@ When the user has **downloaded or opened** a presentation you already generated 
   "operations": [
     {
       "op": "set_text",
-      "slide": 0,
+      "slide": 1,
       "shape_id": 783,
       "text": "Shorter title"
     },
     {
       "op": "shrink_font",
-      "slide": 0,
+      "slide": 1,
       "shape_id": 783,
       "min_pt": 18,
       "step_pt": 2
@@ -61,13 +61,23 @@ When the user has **downloaded or opened** a presentation you already generated 
 }
 ```
 
-6. **Same shape: text + fit** — Prefer **`replace_text_and_fit`** (one op) instead of `set_text` then `shrink_font`. For “adatta al riquadro / come PowerPoint”, use **`enable_autofit`** on that `shape_id` (PowerPoint adjusts on open).
+6. **Font size intent** — Do **not** use default **`shrink_font`** when the user only wants text **smaller** but it already fits in the box (typical after template reuse):
 
-7. **Split title / body** — If the template has **two** placeholders, use two `set_text` ops with two ids from inspect on the **output** file. If **one** shape holds title+body, use **`split_text`** with `from_shape_id`, `to_shape_id`, and `mode`: `first_line` or `first_paragraph`. Optional **`resize_shape`** with `delta_height_in` for small vertical overlap (conservative cap). Tables: **`set_table_cell`** with `row`, `col`, `text` (0-based).
+   | User intent | Operation |
+   |-------------|-----------|
+   | Overlap / text does not fit | `shrink_font` (default `mode`: **fit**) or `replace_text_and_fit` |
+   | “Titolo/sottotitolo più piccolo” (aesthetic) | **`set_font_pt`** with `font_pt` (e.g. 28 / 14), or **`shrink_font`** with `"mode": "to_min"` |
+   | Shrink to a specific size | `shrink_font` with `"mode": "target"` and `target_pt` |
 
-8. **After edit** — Use the **new** `file_id` from the edit tool response for any further edits in the same chat.
+   **`shape_id` must be on the same PowerPoint slide number** as in JSON (`inspect.slides[].index + 1` when `EDIT_SLIDE_INDEX_ORIGIN=1`).
 
-9. **When edit is unavailable** — If the tool is missing from the workspace, say edit is not installed yet. If the tool exists but **`presentation_edit_enabled` is false**, say an admin must enable the valve on this workspace; do **not** silently rerun `generate_slides` for a layout tweak. Only use `generate_slides` when the user clearly wants a **new** deck.
+7. **Same shape: text + fit** — Prefer **`replace_text_and_fit`** (one op) instead of `set_text` then `shrink_font`. For “adatta al riquadro / come PowerPoint”, use **`enable_autofit`** on that `shape_id` (PowerPoint adjusts on open).
+
+8. **Split title / body** — If the template has **two** placeholders, use two `set_text` ops with two ids from inspect on the **output** file. If **one** shape holds title+body, use **`split_text`** with `from_shape_id`, `to_shape_id`, and `mode`: `first_line` or `first_paragraph`. Optional **`resize_shape`** with `delta_height_in` for small vertical overlap (conservative cap). Tables: **`set_table_cell`** with `row`, `col`, `text` (0-based).
+
+9. **After edit** — Use the **new** `file_id` from the edit tool response for any further edits in the same chat.
+
+10. **When edit is unavailable** — If the tool is missing from the workspace, say edit is not installed yet. If the tool exists but **`presentation_edit_enabled` is false**, say an admin must enable the valve on this workspace; do **not** silently rerun `generate_slides` for a layout tweak. Only use `generate_slides` when the user clearly wants a **new** deck.
 
 ---
 
@@ -88,6 +98,7 @@ When the user has **downloaded or opened** a presentation you already generated 
 - Using `reference_file_id` or template inspect id as `presentation_file_id`.
 - Calling `inspect_slides` on the template when the user is editing the **output** deck.
 - Using `set_text` / `shrink_font` on table shapes — use `set_table_cell` instead.
+- Using only `shrink_font` (fit) for “make titles smaller” on many slides — use `set_font_pt` or `mode: to_min`.
 - Trying to split across one shape without `split_text` when two placeholders do not exist.
 
 ---

@@ -6,7 +6,7 @@ funding_url: https://github.com/ianustec
 description: Generate high-quality native PowerPoint (.pptx) presentations from a JSON spec - layered graphics, native charts, icons, rich layouts. With an attached .pptx used as base/template, ALWAYS call inspect_slides first, then generate_slides with reference_file_id + per-slide reuse.
 requirements: python-pptx, pillow
 required_open_webui_version: 0.4.0
-version: 1.2.0
+version: 1.2.1
 license: MIT
 """
 
@@ -103,6 +103,12 @@ _REFERENCE_PPTX_MAX_BYTES = 25 * 1024 * 1024
 _INSPECT_MEDIA_WARN_BYTES = 50 * 1024 * 1024
 _INSPECT_MEDIA_WARN_COUNT = 200
 _PPTX_EXTENSIONS = (".pptx", ".potx")
+
+# Presentation edit — `operations[].slide` in JSON (not template reuse / inspect).
+# 0 = 0-based (first slide is 0; matches inspect slides[].index and python-pptx).
+# 1 = 1-based (first slide is 1; matches PowerPoint / LibreOffice slide labels).
+EDIT_SLIDE_INDEX_ORIGIN = 1
+
 # Open WebUI Files API ids are UUIDs. Anything else (a bare number, a
 # filename, a slide index) was invented by the model and must be rejected
 # before download, with the real attachment id when the chat has one.
@@ -3619,6 +3625,43 @@ _EDIT_PROGRESS_OPS_EVERY = 5
 _EDIT_LARGE_DECK_SLIDES = 10
 
 
+def _edit_slide_json_to_internal(slide_json: int) -> int:
+    """Map JSON operations[].slide to 0-based python-pptx slide index."""
+    origin = EDIT_SLIDE_INDEX_ORIGIN
+    if origin == 1:
+        if slide_json < 1:
+            raise ValueError(
+                "slide must be >= 1 (EDIT_SLIDE_INDEX_ORIGIN=1, same numbering "
+                "as PowerPoint / LibreOffice)."
+            )
+        return slide_json - 1
+    if origin == 0:
+        if slide_json < 0:
+            raise ValueError(
+                "slide must be >= 0 (EDIT_SLIDE_INDEX_ORIGIN=0, 0-based index)."
+            )
+        return slide_json
+    raise ValueError(
+        f"EDIT_SLIDE_INDEX_ORIGIN must be 0 or 1, got {origin!r}."
+    )
+
+
+def _edit_slide_internal_to_json(slide_internal: int) -> int:
+    """User-facing slide number for error messages."""
+    if EDIT_SLIDE_INDEX_ORIGIN == 1:
+        return slide_internal + 1
+    return slide_internal
+
+
+def _edit_slide_range_hint(deck_slide_count: int) -> str:
+    n = deck_slide_count
+    if EDIT_SLIDE_INDEX_ORIGIN == 1:
+        return f"valid slides 1..{n}" if n else "deck has no slides"
+    if n <= 0:
+        return "deck has no slides"
+    return f"valid slides 0..{n - 1}"
+
+
 def _presentation_id_is_template_attachment(file_id: str, messages: Any) -> bool:
     attached = _find_pptx_attachment(messages)
     fid = (file_id or "").strip()
@@ -3667,6 +3710,7 @@ def _parse_edit_json_content(content: Any) -> dict:
 
 _EDIT_KNOWN_OPS = (
     "set_text",
+    "set_font_pt",
     "shrink_font",
     "fit_text",
     "enable_autofit",
@@ -3675,6 +3719,8 @@ _EDIT_KNOWN_OPS = (
     "resize_shape",
     "set_table_cell",
 )
+
+_EDIT_SHRINK_MODES = ("fit", "to_min", "target")
 
 
 def _edit_shrink_params(op: dict, i: int, valves: Any) -> tuple[float, float, int]:
@@ -3688,6 +3734,30 @@ def _edit_shrink_params(op: dict, i: int, valves: Any) -> tuple[float, float, in
     return float(min_pt), float(step_pt), int(max_iter)
 
 
+def _edit_shrink_mode(op: dict, i: int) -> str:
+    mode = (op.get("mode") or "fit").strip()
+    if mode not in _EDIT_SHRINK_MODES:
+        raise ValueError(
+            f"operations[{i}] shrink mode must be one of: "
+            + ", ".join(_EDIT_SHRINK_MODES)
+            + "."
+        )
+    return mode
+
+
+def _edit_apply_shrink_fields(entry: dict, op: dict, i: int, valves: Any) -> None:
+    min_pt, step_pt, max_iter = _edit_shrink_params(op, i, valves)
+    entry["min_pt"] = min_pt
+    entry["step_pt"] = step_pt
+    entry["max_iterations"] = max_iter
+    mode = _edit_shrink_mode(op, i)
+    entry["shrink_mode"] = mode
+    if mode == "target":
+        if op.get("target_pt") is None:
+            raise ValueError(f"operations[{i}] shrink mode target requires target_pt.")
+        entry["target_pt"] = float(op["target_pt"])
+
+
 def _normalize_edit_op(op: dict, i: int, valves: Any) -> dict:
     if not isinstance(op, dict):
         raise ValueError(f"operations[{i}] must be an object.")
@@ -3695,9 +3765,13 @@ def _normalize_edit_op(op: dict, i: int, valves: Any) -> dict:
     if not name:
         raise ValueError(f"operations[{i}] missing op.")
     try:
-        slide_idx = int(op["slide"])
+        slide_json = int(op["slide"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"operations[{i}] requires integer slide.") from exc
+    try:
+        slide_idx = _edit_slide_json_to_internal(slide_json)
+    except ValueError as exc:
+        raise ValueError(f"operations[{i}]: {exc}") from exc
 
     if name == "split_text":
         try:
@@ -3752,21 +3826,31 @@ def _normalize_edit_op(op: dict, i: int, valves: Any) -> dict:
         if "text" not in op or not isinstance(op["text"], str):
             raise ValueError(f"operations[{i}] set_text requires text.")
         entry["text"] = op["text"]
+    elif name == "set_font_pt":
+        has_pt = op.get("font_pt") is not None
+        has_delta = op.get("font_pt_delta") is not None
+        if has_pt and has_delta:
+            raise ValueError(
+                f"operations[{i}] set_font_pt: use font_pt or font_pt_delta, not both."
+            )
+        if not has_pt and not has_delta:
+            raise ValueError(
+                f"operations[{i}] set_font_pt requires font_pt or font_pt_delta."
+            )
+        if has_pt:
+            entry["font_pt"] = float(op["font_pt"])
+        else:
+            entry["font_pt_delta"] = float(op["font_pt_delta"])
     elif name in ("shrink_font", "fit_text"):
-        min_pt, step_pt, max_iter = _edit_shrink_params(op, i, valves)
-        entry["min_pt"] = min_pt
-        entry["step_pt"] = step_pt
-        entry["max_iterations"] = max_iter
+        _edit_apply_shrink_fields(entry, op, i, valves)
     elif name == "enable_autofit":
         pass
     elif name == "replace_text_and_fit":
         if "text" not in op or not isinstance(op["text"], str):
             raise ValueError(f"operations[{i}] replace_text_and_fit requires text.")
         entry["text"] = op["text"]
-        min_pt, step_pt, max_iter = _edit_shrink_params(op, i, valves)
-        entry["min_pt"] = min_pt
-        entry["step_pt"] = step_pt
-        entry["max_iterations"] = max_iter
+        _edit_apply_shrink_fields(entry, op, i, valves)
+        entry["shrink_mode"] = "fit"
     elif name == "resize_shape":
         delta_emu = op.get("delta_height_emu")
         delta_in = op.get("delta_height_in")
@@ -3821,26 +3905,48 @@ def _edit_txBody_runs(txBody):
             yield r
 
 
-def _edit_shape_font_pt_max(shape) -> float:
-    """Largest run font size in points, or 18.0 default."""
+def _edit_rPr_sz_centipoints(r_pr) -> int:
+    if r_pr is None:
+        return 0
+    sz = r_pr.get("sz")
+    if sz is None:
+        return 0
+    try:
+        return max(0, int(sz))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _edit_shape_font_pt_effective(shape) -> float:
+    """Largest font size (pt) from runs, else paragraph defaults; else 18.0."""
     if not getattr(shape, "has_text_frame", False):
         return 18.0
     tx_body = shape.text_frame._txBody
     max_sz = 0
     for r in _edit_txBody_runs(tx_body):
-        rPr = r.find(qn("a:rPr"))
-        if rPr is None:
-            continue
-        sz = rPr.get("sz")
-        if sz is None:
-            continue
-        try:
-            max_sz = max(max_sz, int(sz))
-        except (TypeError, ValueError):
-            continue
+        max_sz = max(max_sz, _edit_rPr_sz_centipoints(r.find(qn("a:rPr"))))
+    if max_sz <= 0:
+        paras = tx_body.findall(qn("a:p"))
+        if paras:
+            first_p = paras[0]
+            max_sz = max(
+                max_sz,
+                _edit_rPr_sz_centipoints(first_p.find(qn("a:endParaRPr"))),
+            )
+            p_pr = first_p.find(qn("a:pPr"))
+            if p_pr is not None:
+                max_sz = max(
+                    max_sz,
+                    _edit_rPr_sz_centipoints(p_pr.find(qn("a:defRPr"))),
+                )
     if max_sz <= 0:
         return 18.0
     return max_sz / 100.0
+
+
+def _edit_shape_font_pt_max(shape) -> float:
+    """Alias for effective font size (edit engine)."""
+    return _edit_shape_font_pt_effective(shape)
 
 
 def _edit_set_all_runs_sz_pt(shape, pt: float) -> None:
@@ -3866,7 +3972,7 @@ def _text_fits_shape_heuristic(shape) -> bool:
     h_emu = int(getattr(shape, "height", 0) or 0)
     if w_emu <= 0 or h_emu <= 0:
         return True
-    font_pt = _edit_shape_font_pt_max(shape)
+    font_pt = _edit_shape_font_pt_effective(shape)
     pt_emu = 914400.0 / 72.0
     line_h = font_pt * 1.25 * pt_emu
     char_w = max(font_pt * 0.55 * pt_emu, 1.0)
@@ -3884,23 +3990,56 @@ def _shrink_shape_font(
     min_pt: float,
     step_pt: float,
     max_iterations: int,
+    mode: str = "fit",
+    target_pt: Optional[float] = None,
 ) -> bool:
-    """Reduce a:rPr/@sz until heuristic fit or min_pt (edit-only helper)."""
+    """Reduce (or adjust to target) a:rPr/@sz — edit-only helper."""
     if not getattr(shape, "has_text_frame", False):
         raise ValueError(f"shape {shape.shape_id} has no text frame")
+    shrink_mode = mode or "fit"
+    if shrink_mode not in _EDIT_SHRINK_MODES:
+        raise ValueError(f"unsupported shrink mode {shrink_mode!r}.")
+    if shrink_mode == "target" and target_pt is None:
+        raise ValueError("shrink mode target requires target_pt.")
     changed = False
     for _ in range(max(1, max_iterations)):
-        if _text_fits_shape_heuristic(shape):
+        cur = _edit_shape_font_pt_effective(shape)
+        if shrink_mode == "fit":
+            if _text_fits_shape_heuristic(shape):
+                break
+            if cur <= min_pt:
+                break
+            new_pt = max(min_pt, cur - step_pt)
+        elif shrink_mode == "to_min":
+            if cur <= min_pt:
+                break
+            new_pt = max(min_pt, cur - step_pt)
+        else:
+            tgt = float(target_pt)
+            if abs(cur - tgt) < 0.05:
+                break
+            if cur > tgt:
+                new_pt = max(tgt, min_pt, cur - step_pt)
+            else:
+                new_pt = min(tgt, cur + step_pt)
+        if new_pt >= cur and shrink_mode in ("fit", "to_min"):
             break
-        cur = _edit_shape_font_pt_max(shape)
-        if cur <= min_pt:
-            break
-        new_pt = max(min_pt, cur - step_pt)
-        if new_pt >= cur:
+        if abs(new_pt - cur) < 0.05:
             break
         _edit_set_all_runs_sz_pt(shape, new_pt)
         changed = True
     return changed
+
+
+def _edit_set_shape_font_pt(shape, pt: float) -> bool:
+    """Set all runs to pt; return True if effective size changed."""
+    if not getattr(shape, "has_text_frame", False):
+        raise ValueError(f"shape {shape.shape_id} has no text frame")
+    before = _edit_shape_font_pt_effective(shape)
+    pt = max(1.0, float(pt))
+    _edit_set_all_runs_sz_pt(shape, pt)
+    after = _edit_shape_font_pt_effective(shape)
+    return abs(after - before) > 0.05 or abs(after - pt) < 0.05
 
 
 def _resolve_edit_shape(
@@ -3912,13 +4051,19 @@ def _resolve_edit_shape(
 ):
     n = len(prs.slides)
     if slide_idx < 0 or slide_idx >= n:
+        shown = _edit_slide_internal_to_json(slide_idx)
         raise ValueError(
-            f"slide index {slide_idx} out of range (deck has {n} slide(s), 0-based)."
+            f"slide {shown} out of range (deck has {n} slide(s); "
+            f"{_edit_slide_range_hint(n)}; EDIT_SLIDE_INDEX_ORIGIN="
+            f"{EDIT_SLIDE_INDEX_ORIGIN})."
         )
     slide = prs.slides[slide_idx]
     shape = _shape_by_id_recursive(slide, shape_id)
     if shape is None:
-        raise ValueError(f"shape_id {shape_id} not found on slide {slide_idx}.")
+        slide_label = _edit_slide_internal_to_json(slide_idx)
+        raise ValueError(
+            f"shape_id {shape_id} not found on slide {slide_label}."
+        )
     if getattr(shape, "has_table", False) and not allow_table:
         raise ValueError(
             f"shape_id {shape_id} is a table; use set_table_cell for tables."
@@ -3926,7 +4071,7 @@ def _resolve_edit_shape(
     return shape
 
 
-def _edit_enable_norm_autofit(shape) -> None:
+def _edit_enable_norm_autofit(shape) -> bool:
     """Set a:bodyPr normAutofit so PowerPoint shrinks text on open (edit-only)."""
     from lxml import etree  # type: ignore
 
@@ -3937,11 +4082,13 @@ def _edit_enable_norm_autofit(shape) -> None:
     if body is None:
         body = etree.Element(qn("a:bodyPr"))
         tx_body.insert(0, body)
+    had_norm = body.find(qn("a:normAutofit")) is not None
     for tag in ("a:noAutofit", "a:spAutoFit"):
         for el in list(body.findall(qn(tag))):
             body.remove(el)
     if body.find(qn("a:normAutofit")) is None:
         etree.SubElement(body, qn("a:normAutofit"))
+    return not had_norm or body.find(qn("a:noAutofit")) is None
 
 
 def _replace_text_and_fit(
@@ -3951,17 +4098,21 @@ def _replace_text_and_fit(
     min_pt: float,
     step_pt: float,
     max_iterations: int,
-) -> None:
+) -> bool:
+    before = (shape.text or "") if getattr(shape, "has_text_frame", False) else ""
     _set_shape_text_preserve_font(shape, text)
-    _shrink_shape_font(
+    text_changed = (shape.text or "") != before
+    shrunk = _shrink_shape_font(
         shape,
         min_pt=min_pt,
         step_pt=step_pt,
         max_iterations=max_iterations,
+        mode="fit",
     )
+    return text_changed or shrunk
 
 
-def _edit_split_text(from_shape, to_shape, mode: str) -> None:
+def _edit_split_text(from_shape, to_shape, mode: str) -> bool:
     if not getattr(from_shape, "has_text_frame", False):
         raise ValueError(f"shape {from_shape.shape_id} has no text frame")
     if not getattr(to_shape, "has_text_frame", False):
@@ -3996,12 +4147,13 @@ def _edit_split_text(from_shape, to_shape, mode: str) -> None:
     existing = (to_shape.text or "").strip()
     dest = f"{existing}\n{move}" if existing else move
     _set_shape_text_preserve_font(to_shape, dest)
+    return True
 
 
 _EDIT_MAX_HEIGHT_DELTA_FRAC = 0.20
 
 
-def _edit_resize_shape_height(prs, shape, delta_emu: int) -> None:
+def _edit_resize_shape_height(prs, shape, delta_emu: int) -> bool:
     max_delta = int(prs.slide_height * _EDIT_MAX_HEIGHT_DELTA_FRAC)
     if abs(delta_emu) > max_delta:
         raise ValueError(
@@ -4013,9 +4165,10 @@ def _edit_resize_shape_height(prs, shape, delta_emu: int) -> None:
     if new_h < min_h:
         raise ValueError("resize_shape would make the shape too small.")
     shape.height = new_h
+    return True
 
 
-def _edit_set_table_cell(shape, row: int, col: int, text: str) -> None:
+def _edit_set_table_cell(shape, row: int, col: int, text: str) -> bool:
     if not getattr(shape, "has_table", False):
         raise ValueError(f"shape {shape.shape_id} is not a table")
     tbl = shape.table
@@ -4027,25 +4180,25 @@ def _edit_set_table_cell(shape, row: int, col: int, text: str) -> None:
             f"({n_rows}x{n_cols})."
         )
     cell = tbl.cell(row, col)
+    before = (cell.text or "").strip()
     _replace_txBody_text(cell.text_frame._txBody, text)
+    return (cell.text or "").strip() != before
 
 
-def _apply_edit_op(prs, op: dict, valves: Any, op_index: int) -> None:
+def _apply_edit_op(prs, op: dict, valves: Any, op_index: int) -> bool:
     name = op["op"]
     if name == "split_text":
         from_sh = _resolve_edit_shape(
             prs, op["slide"], op["from_shape_id"]
         )
         to_sh = _resolve_edit_shape(prs, op["slide"], op["to_shape_id"])
-        _edit_split_text(from_sh, to_sh, op["mode"])
-        return
+        return _edit_split_text(from_sh, to_sh, op["mode"])
 
     if name == "set_table_cell":
         shape = _resolve_edit_shape(
             prs, op["slide"], op["shape_id"], allow_table=True
         )
-        _edit_set_table_cell(shape, op["row"], op["col"], op["text"])
-        return
+        return _edit_set_table_cell(shape, op["row"], op["col"], op["text"])
 
     shape = _resolve_edit_shape(prs, op["slide"], op["shape_id"])
     if name == "set_text":
@@ -4053,40 +4206,51 @@ def _apply_edit_op(prs, op: dict, valves: Any, op_index: int) -> None:
             raise ValueError(
                 f"shape_id {op['shape_id']} has no text frame (set_text)."
             )
+        before = shape.text or ""
         _set_shape_text_preserve_font(shape, op["text"])
-        return
+        return (shape.text or "") != before
+    if name == "set_font_pt":
+        if not getattr(shape, "has_text_frame", False):
+            raise ValueError(
+                f"shape_id {op['shape_id']} has no text frame (set_font_pt)."
+            )
+        if "font_pt" in op:
+            return _edit_set_shape_font_pt(shape, op["font_pt"])
+        cur = _edit_shape_font_pt_effective(shape)
+        return _edit_set_shape_font_pt(shape, cur + float(op["font_pt_delta"]))
     if name in ("shrink_font", "fit_text"):
-        _shrink_shape_font(
+        return _shrink_shape_font(
             shape,
             min_pt=op["min_pt"],
             step_pt=op["step_pt"],
             max_iterations=op["max_iterations"],
+            mode=op.get("shrink_mode", "fit"),
+            target_pt=op.get("target_pt"),
         )
-        return
     if name == "enable_autofit":
-        _edit_enable_norm_autofit(shape)
-        return
+        return _edit_enable_norm_autofit(shape)
     if name == "replace_text_and_fit":
-        _replace_text_and_fit(
+        return _replace_text_and_fit(
             shape,
             op["text"],
             min_pt=op["min_pt"],
             step_pt=op["step_pt"],
             max_iterations=op["max_iterations"],
         )
-        return
     if name == "resize_shape":
-        _edit_resize_shape_height(prs, shape, op["delta_height_emu"])
-        return
+        return _edit_resize_shape_height(prs, shape, op["delta_height_emu"])
     raise ValueError(f"unsupported op {name!r}.")
 
 
-def _apply_edit_operations(prs, operations: list, valves: Any) -> None:
+def _apply_edit_operations(prs, operations: list, valves: Any) -> int:
+    mutated = 0
     for i, op in enumerate(operations):
         try:
-            _apply_edit_op(prs, op, valves, i)
+            if _apply_edit_op(prs, op, valves, i):
+                mutated += 1
         except ValueError as exc:
             raise ValueError(f"operations[{i}]: {exc}") from exc
+    return mutated
 
 
 def _fill_table_preserve_format(shape, data: _ReuseTable) -> None:
@@ -5690,6 +5854,13 @@ class Tools:
                 "per-op progress; large decks still get one summary emit)."
             ),
         )
+        presentation_edit_warn_noop: bool = Field(
+            default=False,
+            description=(
+                "Presentation edit: emit a status hint when all operations "
+                "completed but none mutated the deck (e.g. shrink_font fit no-op)."
+            ),
+        )
 
     # -- status / link helpers -------------------------------------------
     async def _emit(self, emitter, desc, *, done=False):
@@ -6098,13 +6269,13 @@ class Tools:
           "operations": [
             {
               "op": "set_text",
-              "slide": 0,
+              "slide": 1,
               "shape_id": 783,
               "text": "Shorter title"
             },
             {
               "op": "shrink_font",
-              "slide": 0,
+              "slide": 1,
               "shape_id": 783,
               "min_pt": 18,
               "step_pt": 2
@@ -6112,13 +6283,16 @@ class Tools:
           ]
         }
 
-        Slide indices are 0-based (`slide 1` → `"slide": 0`). On the same shape,
+        Slide field in operations follows EDIT_SLIDE_INDEX_ORIGIN at top of this
+        file (1 = PowerPoint/LibreOffice numbering; 0 = 0-based / inspect index).
+        On the same shape,
         prefer `replace_text_and_fit` over `set_text` + `shrink_font`. For
         "fit like PowerPoint", use `enable_autofit`. Split one textbox across
         two placeholders with `split_text`. Tables: `set_table_cell` only.
 
         v2 ops: enable_autofit, replace_text_and_fit, split_text, resize_shape,
-        set_table_cell. See doc/neura-presentation-edit-hints.md.
+        set_table_cell, set_font_pt. shrink_font optional mode: fit (default),
+        to_min, target (requires target_pt). See doc/neura-presentation-edit-hints.md.
         """
         if not self.valves.presentation_edit_enabled:
             return self._edit_error(
@@ -6130,6 +6304,7 @@ class Tools:
 
         t_edit = time.monotonic()
         ops_applied = 0
+        ops_mutated = 0
         ops_failed = 0
 
         try:
@@ -6190,7 +6365,8 @@ class Tools:
         total_ops = len(ops)
         try:
             for i, op in enumerate(ops):
-                _apply_edit_op(prs, op, self.valves, i)
+                if _apply_edit_op(prs, op, self.valves, i):
+                    ops_mutated += 1
                 ops_applied += 1
                 if progress_every > 0 and (
                     (i + 1) % progress_every == 0 or (i + 1) == total_ops
@@ -6205,14 +6381,27 @@ class Tools:
             edit_ms = (time.monotonic() - t_edit) * 1000.0
             log.warning(
                 "[edit_presentation] edit_ms=%.1f file_id=%s ops_applied=%s "
-                "ops_failed=%s slides=%s",
+                "ops_mutated=%s ops_failed=%s slides=%s",
                 edit_ms,
                 fid,
                 ops_applied,
+                ops_mutated,
                 ops_failed,
                 n_slides,
             )
             return self._edit_error(str(exc))
+
+        if (
+            self.valves.presentation_edit_warn_noop
+            and ops_applied > 0
+            and ops_mutated == 0
+        ):
+            await self._emit(
+                __event_emitter__,
+                "No visible edits applied (try set_font_pt or shrink_font "
+                "mode to_min).",
+                done=False,
+            )
 
         buf = BytesIO()
         try:
@@ -6234,10 +6423,11 @@ class Tools:
         edit_ms = (time.monotonic() - t_edit) * 1000.0
         log.info(
             "[edit_presentation] edit_ms=%.1f file_id=%s ops_applied=%s "
-            "ops_failed=%s slides=%s",
+            "ops_mutated=%s ops_failed=%s slides=%s",
             edit_ms,
             fid,
             ops_applied,
+            ops_mutated,
             ops_failed,
             n_slides,
         )

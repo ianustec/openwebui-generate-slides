@@ -35,6 +35,12 @@ class _ValvesStub:
     presentation_edit_shrink_step_pt = 2.0
 
 
+def _edit_json_slide(internal_index: int = 0) -> int:
+    """`operations[].slide` as in edit_presentation JSON (see EDIT_SLIDE_INDEX_ORIGIN)."""
+    origin = getattr(mod, "EDIT_SLIDE_INDEX_ORIGIN", 0)
+    return internal_index + (1 if origin == 1 else 0)
+
+
 def _build_overflow_fixture() -> tuple[bytes, int]:
     prs = Presentation()
     slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -155,7 +161,12 @@ def _test_parse_and_apply_errors(mod) -> None:
             {
                 "presentation_file_id": "not-a-uuid",
                 "operations": [
-                    {"op": "set_text", "slide": 0, "shape_id": 1, "text": "x"}
+                    {
+                        "op": "set_text",
+                        "slide": _edit_json_slide(0),
+                        "shape_id": 1,
+                        "text": "x",
+                    }
                 ],
             },
             v,
@@ -210,7 +221,12 @@ async def _test_edit_tool_guards(mod) -> None:
             {
                 "presentation_file_id": VALID_UUID,
                 "operations": [
-                    {"op": "set_text", "slide": 0, "shape_id": 1, "text": "x"}
+                    {
+                        "op": "set_text",
+                        "slide": _edit_json_slide(0),
+                        "shape_id": 1,
+                        "text": "x",
+                    }
                 ],
             }
         )
@@ -366,7 +382,7 @@ def _test_v2_ops(mod) -> None:
     resize_op = mod._normalize_edit_op(
         {
             "op": "resize_shape",
-            "slide": 0,
+            "slide": _edit_json_slide(0),
             "shape_id": sid4,
             "delta_height_in": 0.2,
         },
@@ -434,6 +450,97 @@ def _test_marketing_autofit_and_inspect(mod) -> None:
     print("OK: Marketing reuse enable_autofit (v2)")
 
 
+def _build_endpara_sz_fixture() -> tuple[bytes, int]:
+    """Text shape with font size only on a:endParaRPr (no run sz)."""
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    tb = slide.shapes.add_textbox(Inches(2), Inches(1), Inches(5), Inches(1.2))
+    tb.text_frame.paragraphs[0].text = "TITLE FROM ENDPARA"
+    tx = tb.text_frame._txBody
+    p = tx.findall(mod.qn("a:p"))[0]
+    for r in list(p.findall(mod.qn("a:r"))):
+        r_pr = r.find(mod.qn("a:rPr"))
+        if r_pr is not None and r_pr.get("sz") is not None:
+            r_pr.attrib.pop("sz", None)
+    end = p.find(mod.qn("a:endParaRPr"))
+    if end is None:
+        from lxml import etree
+
+        end = etree.SubElement(p, mod.qn("a:endParaRPr"))
+    end.set("sz", "3600")
+    buf = BytesIO()
+    prs.save(buf)
+    return buf.getvalue(), tb.shape_id
+
+
+def _test_endpara_effective_and_to_min(mod) -> None:
+    data, sid = _build_endpara_sz_fixture()
+    prs = Presentation(BytesIO(data))
+    shape = mod._shape_by_id_recursive(prs.slides[0], sid)
+    assert shape is not None
+    eff = mod._edit_shape_font_pt_effective(shape)
+    assert eff >= 35.0, f"expected endParaRPr 36pt effective, got {eff}"
+    mutated = mod._apply_edit_operations(
+        prs,
+        [
+            {
+                "op": "shrink_font",
+                "slide": 0,
+                "shape_id": sid,
+                "shrink_mode": "to_min",
+                "min_pt": 20,
+                "step_pt": 2,
+                "max_iterations": 20,
+            }
+        ],
+        _ValvesStub(),
+    )
+    assert mutated == 1
+    after = mod._edit_shape_font_pt_effective(shape)
+    assert after <= 20.5, f"to_min expected ~20pt, got {after}"
+    print(f"OK: endParaRPr effective + shrink to_min ({eff}pt -> {after}pt)")
+
+
+def _test_set_font_pt(mod) -> None:
+    data, sid = _build_spc_fixture()[0:2]
+    prs = Presentation(BytesIO(data))
+    mod._apply_edit_operations(
+        prs,
+        [{"op": "set_font_pt", "slide": 0, "shape_id": sid, "font_pt": 14}],
+        _ValvesStub(),
+    )
+    shape = mod._shape_by_id_recursive(prs.slides[0], sid)
+    assert mod._edit_shape_font_pt_effective(shape) == 14.0
+    print("OK: set_font_pt (absolute)")
+
+
+def _test_shrink_pe1b_to_min_fits(mod) -> None:
+    data, sid = _build_spc_fixture()[0:2]
+    prs = Presentation(BytesIO(data))
+    shape = mod._shape_by_id_recursive(prs.slides[0], sid)
+    before = mod._edit_shape_font_pt_effective(shape)
+    assert mod._text_fits_shape_heuristic(shape)
+    changed = mod._apply_edit_operations(
+        prs,
+        [
+            {
+                "op": "shrink_font",
+                "slide": 0,
+                "shape_id": sid,
+                "shrink_mode": "to_min",
+                "min_pt": 10,
+                "step_pt": 2,
+                "max_iterations": 20,
+            }
+        ],
+        _ValvesStub(),
+    )
+    assert changed == 1
+    after = mod._edit_shape_font_pt_effective(shape)
+    assert after < before
+    print(f"OK: shrink_font to_min when fit (PE1b) {before}pt -> {after}pt")
+
+
 def main() -> None:
     global mod
     mod = _load_mod()
@@ -444,6 +551,9 @@ def main() -> None:
     _test_marketing_reuse_post_edit(mod)
     _test_v2_ops(mod)
     _test_marketing_autofit_and_inspect(mod)
+    _test_endpara_effective_and_to_min(mod)
+    _test_set_font_pt(mod)
+    _test_shrink_pe1b_to_min_fits(mod)
     print("edit_presentation_smoke: all checks passed")
 
 

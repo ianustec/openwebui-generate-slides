@@ -233,7 +233,7 @@ Ogni elemento di `operations`:
 | Campo | Tipo | Note |
 |-------|------|------|
 | `op` | string | Nome operazione (vedi §6.3) |
-| `slide` | int | Indice slide **0-based** |
+| `slide` | int | Slide index in JSON: **`EDIT_SLIDE_INDEX_ORIGIN`** in `generate_slides.py` (`1` = PowerPoint/LibreOffice labels; `0` = inspect `slides[].index`) |
 
 Altri campi dipendono da `op`.
 
@@ -268,9 +268,18 @@ Altri campi dipendono da `op`.
 }
 ```
 
-- Legge `a:rPr/@sz` (centesimi di punto); riduce finché euristica “testo entra in bbox” o `min_pt`.
+- Legge `a:rPr/@sz` (centesimi di punto); riduce finché euristica “testo entra in bbox” o `min_pt` (**mode `fit`**, default).
+- **`mode`:** `fit` | `to_min` | `target` (+ `target_pt`) — v1.2.1; use `to_min` / **`set_font_pt`** for aesthetic “smaller title” when text already fits.
 - Euristica v1: rapporto lunghezza testo vs area shape (EMU) + numero righe `\n`; **non** layout engine PowerPoint (§5.1 #4A).
 - Rispettare `min_pt` da op o valve `presentation_edit_min_font_pt` (§5.1 #4C).
+
+#### `set_font_pt` (v2.1)
+
+```json
+{ "op": "set_font_pt", "slide": 3, "shape_id": 1105, "font_pt": 28 }
+```
+
+Or `"font_pt_delta": -4` (mutually exclusive with `font_pt`).
 
 #### `fit_text` (v1 alias)
 
@@ -424,6 +433,7 @@ examples/
 ### Funzionali
 
 - [x] **PE1** — Dato un pptx reuse con titolo lungo, `shrink_font` riduce `sz` e il testo non supera grossolanamente il bbox (test fixture).
+- [x] **PE1b** — `shrink_font` `mode=to_min` riduce font anche quando l’euristica fit è già soddisfatta (smoke).
 - [x] **PE2** — `set_text` su shape id valido cambia solo testo, preserva colore/grassetto/`spc` del primo run template.
 - [ ] **PE3** — `presentation_file_id` invalido → errore, nessun file.
 - [x] **PE4** — Valve off → tool rifiuta con messaggio admin.
@@ -513,7 +523,7 @@ examples/
 
 - [x] `_emit` progress su deck molti slide / molte operazioni.
 - [x] Valve `presentation_edit_min_font_pt` / default `step_pt`.
-- [x] Metriche log: `edit_ms`, `ops_applied`, `ops_failed`.
+- [x] Metriche log: `edit_ms`, `ops_applied`, `ops_mutated`, `ops_failed` (v1.2.1).
 - [x] (v2 opz.) Save parziale + report se batch ops (#8B).
 - [x] (Opz. prod) Rifiuto `presentation_file_id` = template allegato (#7B).
 - [x] Test ACL cross-user (stesso pattern reference).

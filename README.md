@@ -130,10 +130,10 @@ Docs: [doc/presentation-edit-implementation-plan.md](doc/presentation-edit-imple
 Minimal payload shape:
 
 ```json
-{ "presentation_file_id": "<uuid>", "operations": [{ "op": "set_text", "slide": 0, "shape_id": 1, "text": "..." }] }
+{ "presentation_file_id": "<uuid>", "operations": [{ "op": "set_text", "slide": 1, "shape_id": 1, "text": "..." }] }
 ```
 
-v2 ops (same JSON): `enable_autofit`, `replace_text_and_fit`, `split_text` (`from_shape_id`, `to_shape_id`, `mode`), `resize_shape` (`delta_height_in`), `set_table_cell` (`row`, `col`, `text`).
+v2 ops (same JSON): `enable_autofit`, `replace_text_and_fit`, `split_text` (`from_shape_id`, `to_shape_id`, `mode`), `resize_shape` (`delta_height_in`), `set_table_cell` (`row`, `col`, `text`), **`set_font_pt`** (`font_pt` or `font_pt_delta`). **`shrink_font`** optional `"mode"`: `fit` (default), `to_min`, `target` (+ `target_pt`). JSON `"slide"` uses PowerPoint numbering when `EDIT_SLIDE_INDEX_ORIGIN=1` in `generate_slides.py`.
 
 ### Themes
 `auto` (default, inferred from content) · `midnight` · `forest` · `ocean` · `coral`
@@ -189,6 +189,7 @@ You can force the accent with `"accent": "#C99A3B"`.
 | `presentation_edit_min_font_pt` | `14` | Floor for `shrink_font` when op omits `min_pt` |
 | `presentation_edit_shrink_step_pt` | `2` | Step for `shrink_font` when op omits `step_pt` |
 | `presentation_edit_progress_every` | `5` | Emit progress every N ops (0 = off) |
+| `presentation_edit_warn_noop` | `false` | Status hint when all ops complete but none mutated the deck |
 
 ### Roadmap (Fase 8+)
 

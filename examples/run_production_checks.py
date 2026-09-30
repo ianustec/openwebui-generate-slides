@@ -111,6 +111,10 @@ def main() -> None:
         ("clone_blip_fill", ["examples/clone_blip_fill.py"]),
         ("reuse_slide_text", ["examples/reuse_slide_text.py"]),
         ("edit_presentation_smoke", ["examples/edit_presentation_smoke.py"]),
+        (
+            "montessori_edit_font_regression",
+            ["examples/montessori_edit_font_regression.py"],
+        ),
         ("edit_presentation_acl_smoke", ["examples/edit_presentation_acl_smoke.py"]),
         ("theme_materialize_smoke", ["examples/theme_materialize_smoke.py"]),
         ("ianustec_neura_reuse_local", ["examples/ianustec_neura_reuse_local.py"]),
