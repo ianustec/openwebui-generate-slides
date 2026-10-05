@@ -6,7 +6,7 @@ funding_url: https://github.com/ianustec
 description: Generate high-quality native PowerPoint (.pptx) presentations from a JSON spec - layered graphics, native charts, icons, rich layouts. With an attached .pptx used as base/template, ALWAYS call inspect_slides first, then generate_slides with reference_file_id + per-slide reuse.
 requirements: python-pptx, pillow
 required_open_webui_version: 0.4.0
-version: 1.2.1
+version: 1.0.4
 license: MIT
 """
 

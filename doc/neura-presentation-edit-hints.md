@@ -8,7 +8,7 @@ Technical plan: [presentation-edit-implementation-plan.md](./presentation-edit-i
 
 **Tool name (Open WebUI):** `edit_presentation` only. Do **not** use `edit_slides` (deprecated alias).
 
-**Admin:** `presentation_edit_enabled=true` is required on pilot workspaces once the tool is deployed (v1.2.0+). Independent of `template_mode_enabled`.
+**Admin:** `presentation_edit_enabled=true` is required on pilot workspaces once the tool is deployed (v1.0.4). Independent of `template_mode_enabled`.
 
 **Chat examples (training):** [neura-presentation-edit-chat-examples.md](./neura-presentation-edit-chat-examples.md) — slide 1 title too large; split slide 4.
 
@@ -109,7 +109,7 @@ Use this checklist when enabling Presentation Edit on an **internal pilot** work
 
 ### Pre-deploy (repo / CI)
 
-1. Plugin version **≥ 1.2.0** ([`generate_slides.py`](../generate_slides.py)).
+1. Plugin version **≥ 1.0.4** ([`generate_slides.py`](../generate_slides.py)).
 2. `examples/edit_presentation_smoke.py` PASS (Docker):  
    `docker run --rm -v "$PWD:/w" -w /w python:3.12-slim bash -lc 'pip install -q -r examples/requirements-dev.txt && python examples/edit_presentation_smoke.py'`
 3. Review [§13 checklist pre-merge](./presentation-edit-implementation-plan.md#13-checklist-pre-merge-produzione-neura) in the implementation plan.

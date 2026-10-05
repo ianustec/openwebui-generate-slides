@@ -27,7 +27,7 @@ fallback) and a clickable **download link** appears in the chat.
 - **Curated themes** + custom accent (`theme:"auto"` infers the theme from the content).
 - **Lucide-style icons** bundled in the file (no network dependency for icons).
 - **Optional images** from Unsplash (with a key) or generated via Open WebUI.
-- **Template Mode** (v1.1.0): build a deck by cloning shapes from a user `.pptx` template and overlaying content in the template safe zone.
+- **Template Mode**: build a deck by cloning shapes from a user `.pptx` template and overlaying content in the template safe zone.
 - **`inspect_slides`**: JSON inventory of template shapes, safe zones, and optional embedded images (for `drop_ids` and mapping).
 - **Single-file**: one self-contained `.py`, ready to paste into the Tools registry.
 
@@ -199,7 +199,7 @@ Deferred post-v1: auto-inject inspect on `.pptx` upload (Open WebUI/Neura integr
 
 - Keep **`template_mode_enabled=false`** on customer instances until Template Mode is explicitly rolled out.
 - Enable **`template_mode_enabled=true`** only on internal pilot workspaces.
-- **Presentation Edit (v1.2.0+):** keep **`presentation_edit_enabled=false`** by default; enable **`presentation_edit_enabled=true`** only on internal pilot workspaces where post-generate fixes are tested. Independent of template mode. Rollout checklist and log monitoring: [doc/neura-presentation-edit-hints.md — Rollout pilot Neura](doc/neura-presentation-edit-hints.md#rollout-pilot-neura-admin--ops).
+- **Presentation Edit:** keep **`presentation_edit_enabled=false`** by default; enable **`presentation_edit_enabled=true`** only on internal pilot workspaces where post-generate fixes are tested. Independent of template mode. Rollout checklist and log monitoring: [doc/neura-presentation-edit-hints.md — Rollout pilot Neura](doc/neura-presentation-edit-hints.md#rollout-pilot-neura-admin--ops).
 - After deploy: **Workspace → Tools** → paste the updated [`generate_slides.py`](generate_slides.py) and save (same Files API workflow as v1.0.3).
 - **Rollback:** turn the valve off instantly (`template_mode_enabled` and/or `presentation_edit_enabled`), or pin the previous tool version.
 
