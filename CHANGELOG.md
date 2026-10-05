@@ -2,34 +2,28 @@
 
 All notable changes to the Generate Slides Open WebUI tool.
 
-## [1.0.4] — Inspect slides
+## [1.0.4] — Templates and presentation edit
 
-**Compatibility:** No behavior change when `template_mode_enabled=false` and `presentation_edit_enabled=false` (both default) and when the JSON spec has no `reference_file_id`. Classic deck generation matches the v1.0.3 path.
+With the new valves left at their defaults, `generate_slides` still builds a deck from scratch, as in v1.0.3.
 
-### Added
+### Templates
 
-- **`inspect_slides`** — factual inventory JSON for an uploaded template `.pptx` (shape ids, bbox, `safe_zone`, `text_verbatim`, optional `images[]`). Call it before `generate_slides` when a `.pptx` is the base.
-- **Template Mode in `generate_slides`** — clone decorative shapes from a reference file and overlay semantic content in the reference safe zone.
-- Spec fields: `reference_file_id`, `template_mapping`, `template_edits` (including `drop_ids` from inspect).
-- Admin valves: `template_mode_enabled` (default `false`), `inspect_slides_enabled`, `inspect_extract_images`.
-- **`edit_presentation`** — post-generate edits on an existing `.pptx` via `presentation_file_id` (Files API UUID) and `operations[]`.
-- Operations: `set_text`, `shrink_font`, `fit_text`, `enable_autofit`, `replace_text_and_fit`, `split_text`, `resize_shape`, `set_table_cell`, `set_font_pt`.
-- **`shrink_font` / `fit_text` modes:** `fit` (default), `to_min`, `target` (+ `target_pt`).
-- Admin valves: `presentation_edit_enabled` (default `false`), `presentation_edit_min_font_pt`, `presentation_edit_shrink_step_pt`, `presentation_edit_progress_every`, `presentation_edit_warn_noop` (default `false`).
+Attach a `.pptx` and produce a new deck in that file's look. Backgrounds, logos and layout come from the template. The new copy replaces the text and the tables.
 
-### Behavior
+- **`inspect_slides`** reads the uploaded file and returns a short inventory: the file id, and on each slide the text boxes and tables that can be rewritten. Decorative shapes are left out of that list and cloned unchanged. On by default (`inspect_slides_enabled`).
+- **`generate_slides`** writes the deck. The id from inspect is passed as `reference_file_id`. Each output slide can reuse one template slide and set the new text and table content. Cloning stays off until an admin sets `template_mode_enabled`.
 
-- Valve **ON** + invalid or inaccessible reference → clear error, **no** output `.pptx`.
-- Valve **OFF** + `reference_file_id` in JSON → classic deck; reference ignored with a visible note.
-- **`generate_slides` does not** auto-detect chat attachments for templates; only an explicit `reference_file_id` applies Template Mode.
-- Edit requires an explicit UUID (`presentation_file_id`); cache-only URLs are rejected. The whole batch fails on the first invalid operation.
-- Font size reads the run `sz` plus paragraph `endParaRPr` / `defRPr` fallbacks.
+### Edits on a deck already generated
+
+**`edit_presentation`** changes a file the tool has already saved. It does not call `generate_slides` again, so a correction does not discard the template clone or the deck the user just opened.
+
+It takes the generated file (`presentation_file_id`) and a batch of operations: replace text, set or shrink the font size, fit text to the box, PowerPoint autofit, split one text box into a title and a body, resize a shape, edit a table cell. The tool saves a new `.pptx`. The template id is not a valid target. If one operation is invalid, the batch is rejected and nothing is saved.
+
+Off by default (`presentation_edit_enabled`), independent of template mode.
 
 ### Docs and tests
 
-- [Template Mode implementation plan](doc/template-mode-implementation-plan.md)
-- [Model hints (Neura)](doc/neura-template-mode-model-hints.md)
-- [Presentation edit plan](doc/presentation-edit-implementation-plan.md)
+- [Template Mode hints](doc/neura-template-mode-model-hints.md)
 - [Presentation edit hints](doc/neura-presentation-edit-hints.md)
 - `examples/edit_presentation_smoke.py`, `examples/edit_presentation_acl_smoke.py`
 
