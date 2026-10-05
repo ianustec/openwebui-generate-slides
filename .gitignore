@@ -8,3 +8,4 @@ examples/output/
 doc/online_templates/inspect_output/
 .venv/
 .DS_Store
+.~lock.*
