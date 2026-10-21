@@ -2,6 +2,13 @@
 
 All notable changes to the Generate Slides Open WebUI tool.
 
+## [2.0.2] — Never return an empty deck
+
+- **Fix:** if a model called `generate_slides` with `meta` / `theme` / `slides` as separate arguments, Open WebUI dropped them (undeclared parameters), the tool received `{}` and saved an **empty .pptx**. `generate_slides` and `validate_deck` now declare these optional parameters and merge them into the deck.
+- **Fix:** a call with no slides now returns a "call again with the full deck" result instead of creating a file.
+- `source` written on a row or block is moved up to the slide (models often put it there).
+- 34 more Font Awesome icons (tags, invoice, percent, boxes, credit card, briefcase, calculator, microchip, …) and matching aliases.
+
 ## [2.0.1] — Sturdier JSON repair, content warnings
 
 - **Structural bracket repair** for model-written decks: fixes doubled `{{`, wrong-kind closers (`]` for `}`), wrong-kind openers, and slides accidentally nested inside the previous slide's row. In fuzz tests on the example decks (one corrupted bracket each), ~79% of single-bracket mistakes rebuild the exact deck, about 6% give a valid deck with a block shifted, and the rest return a precise error for the model.
