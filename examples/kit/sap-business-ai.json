@@ -1,0 +1,112 @@
+{
+  "meta": { "title": "SAP Business AI — Executive Brief (October 2026)", "author": "Ashish Pareek" },
+  "theme": "midnight_violet",
+  "slides": [
+    {
+      "dark": true,
+      "kicker": "SAP Business AI | Executive brief | October 2026",
+      "title": "SAP Business AI has moved from copilot to “Autonomous Enterprise”: one governed platform, 50+ Joule Assistants and 200+ agents now entering production",
+      "rows": [
+        { "h": 0.8, "blocks": [ { "type": "kpis", "items": [
+          { "value": "50+", "label": "domain-specific Joule Assistants in SAP Autonomous Suite", "icon": "assistant" },
+          { "value": "200+", "label": "specialized Joule Agents orchestrated by those assistants", "icon": "robot" },
+          { "value": "7M+", "label": "data fields mapped by SAP Knowledge Graph", "icon": "graph" },
+          { "value": "70+", "label": "AI models selectable in Joule Studio", "icon": "ai" },
+          { "value": "11,800+", "label": "pre-built business accelerators in Joule Studio", "icon": "modules" },
+          { "value": "20%", "label": "productivity gain at SAP (110,000 employees on Joule Work)", "icon": "growth" }
+        ] } ] },
+        { "h": 1.05, "blocks": [ { "type": "timeline", "heading": "EVOLUTION — FROM COPILOT TO AUTONOMOUS ENTERPRISE", "items": [
+          { "date": "2023", "title": "Joule launched", "text": "Generative AI copilot embedded in SAP cloud applications." },
+          { "date": "Feb 2025", "title": "Business Data Cloud", "text": "Harmonized data foundation across SAP and non-SAP sources." },
+          { "date": "Q1 2026", "title": "Agents at scale", "text": "30+ Joule Agents, 2,500+ Joule Skills; agent-to-agent protocol." },
+          { "date": "May 2026", "title": "Platform unified", "text": "BTP, BDC and Business AI unified as SAP Business AI Platform." },
+          { "date": "Oct 2026", "title": "Into production", "text": "Joule Work rollout; AI Agent Hub GA; SAP Reltio GA in BDC.", "highlight": true }
+        ] } ] },
+        { "h": 0.85, "blocks": [ { "type": "cards", "heading": "WHAT IT MEANS FOR THE C-SUITE", "columns": 4, "items": [
+          { "icon": "layers", "title": "AI is a platform decision", "text": "BTP, BDC and Business AI are one governed stack — architecture decides AI value." },
+          { "icon": "cloud", "title": "Cloud core is the entry ticket", "text": "New assistants and agents land in SAP cloud releases first." },
+          { "icon": "money", "title": "Spend shifts to consumption", "text": "Premium AI and agent runs are metered in AI Units." },
+          { "icon": "chart", "title": "Momentum is real", "text": "Q2 2026 current cloud backlog €22.9B, +27% (+26% cc)." }
+        ] } ] }
+      ],
+      "source": "SAP News Center (Sapphire May 12 2026; SAP Connect Oct 6 & 8 2026; Q1 2026 AI release highlights); SAP Q2 2026 quarterly statement",
+      "notes": "news.sap.com/2026/10/sap-connect-sap-puts-autonomous-enterprise-to-work/ ; news.sap.com/2026/10/joule-work-sap-business-ai-platform-power-next-generation-business-ai/ ; SEC 6-K Q2 2026"
+    },
+    {
+      "kicker": "Reference architecture",
+      "title": "Four tiers, one governed stack: Joule Work is the front door, the Autonomous Suite executes, and SAP Business AI Platform grounds every agent in business context",
+      "rows": [ { "blocks": [ { "type": "layers",
+        "tiers": [
+          { "label": "Experience", "sublabel": "Joule Work", "items": [
+            { "title": "Answer", "text": "Business questions across SAP + non-SAP data" }, { "title": "Act", "text": "Assistants execute inside the workflow" },
+            { "title": "Develop", "text": "Entry to Joule Studio to build and extend" }, { "title": "Connect", "text": "Third-party agents via Agent2Agent" } ] },
+          { "label": "Autonomous Suite", "sublabel": "50+ assistants, 200+ agents", "items": [
+            { "title": "Finance", "bullets": ["Financial Closing", "Accounts Receivable", "Billing"] }, { "title": "Spend", "bullets": ["Sourcing", "Supplier risk", "Invoices"] },
+            { "title": "Supply Chain", "bullets": ["Disruptions", "Planning", "Logistics"] }, { "title": "HCM", "bullets": ["Payroll", "Hiring", "Workforce"] },
+            { "title": "Customer Exp.", "bullets": ["Campaigns", "Quoting", "Service"] } ] },
+          { "label": "Business AI Platform", "sublabel": "BTP + BDC + Business AI", "items": [
+            { "title": "Joule Studio", "bullets": ["No-code → pro-code", "70+ AI models"] }, { "title": "AI models", "bullets": ["Frontier LLMs", "Tabular: RPT-1, TabPFN"] },
+            { "title": "SAP Knowledge Graph", "bullets": ["Core of the platform", "7M+ data fields"], "highlight": true }, { "title": "Business Data Cloud", "bullets": ["SAP + non-SAP data", "SAP Reltio MDM"] } ],
+            "base": "SAP Business Technology Platform — integration, extension, security and runtime" },
+          { "label": "Core systems", "sublabel": "SAP & non-SAP", "items": [ { "title": "SAP Cloud ERP" }, { "title": "SuccessFactors · SmartRecruiters" }, { "title": "Ariba · Fieldglass · Concur" }, { "title": "Non-SAP systems" } ] }
+        ],
+        "side": { "title": "Govern & trust", "subtitle": "Spans every tier", "icon": "shield", "items": [
+          { "title": "SAP AI Agent Hub (GA)", "text": "In SAP LeanIX: governs every agent, LLM and MCP server" },
+          { "title": "ISO/IEC 42001", "text": "Certified AI governance architecture" },
+          { "title": "Authorizations & audit", "text": "Agents inherit SAP roles and audit trails" },
+          { "title": "Signavio Agent Mining", "text": "Measures outcomes each agent delivers" },
+          { "title": "SAP WalkMe", "text": "Drives adoption of assistants and agents" } ] }
+      } ] } ],
+      "source": "SAP News Center — Sapphire (May 12 2026), SAP Connect (Oct 6/8 2026); Prior Labs & Dremio deals (May 2026). Assistants shown are SAP-named examples."
+    },
+    {
+      "kicker": "How agentic execution works — and what it delivers",
+      "title": "Assistants turn intent into governed action across SAP and non-SAP systems; early deployments report 20–90% gains in targeted processes",
+      "rows": [
+        { "h": 1.15, "blocks": [ { "type": "process", "highlight": 2, "steps": [
+          { "icon": "chat", "title": "Intent", "text": "User states the outcome in Joule Work" },
+          { "icon": "hierarchy", "title": "Orchestrate", "text": "Assistant delegates to specialized agents" },
+          { "icon": "graph", "title": "Ground", "text": "Knowledge Graph + BDC supply trusted context" },
+          { "icon": "ai", "title": "Reason", "text": "Best-fit model: LLM, tabular, domain, ABAP" },
+          { "icon": "settings", "title": "Act", "text": "Executes with authorizations and audit trail" },
+          { "icon": "shield", "title": "Govern & learn", "text": "Agent Hub + Signavio Agent Mining" } ] } ] },
+        { "h": 0.4, "blocks": [ { "type": "chevrons", "stages": [ { "title": "Inform", "text": "Answers & insights" }, { "title": "Recommend", "text": "Next-best action" }, { "title": "Act with approval", "text": "Human-in-the-loop" }, { "title": "Autonomous", "text": "Policy-bounded" } ] } ] },
+        { "h": 1.45, "blocks": [
+          { "type": "chart", "heading": "Reported impact in early deployments (%)", "chart_type": "bar", "categories": ["KNAPP — issue resolution time ↓", "KNAPP — documentation & training ↓", "Intl. Trade Assistant — effort ↓ (up to)", "SAP internal — productivity ↑"], "series": [ { "name": "Impact", "values": [90, 80, 50, 20] } ], "unit": "%" },
+          { "type": "cards", "columns": 2, "items": [
+            { "title": "Nestlé", "tag": "Finance · AR Assistant", "text": "Prioritizes collections by risk on an S/4HANA core spanning 140 countries." },
+            { "title": "Novartis", "tag": "Procurement · Sourcing Assistant", "text": "Co-developed pilot; agents take the manual heavy lifting." },
+            { "title": "PwC", "tag": "Finance · Billing Assistant", "text": "Flags billing issues earlier in an error-prone process." },
+            { "title": "KNAPP", "tag": "Supply chain · Joule Studio", "text": "Custom assistant removes the expert bottleneck." } ] }
+        ] }
+      ],
+      "source": "SAP Connect press release (Oct 6 2026) and SAP News feature (Oct 8 2026). Figures customer/SAP-reported, not audited. Autonomy levels are an illustrative framing."
+    },
+    {
+      "kicker": "Commercial model, adoption roadmap and risks",
+      "title": "Capture value in phases: secure the cloud core and data foundation, scale SAP-delivered assistants, then differentiate with custom agents",
+      "rows": [
+        { "h": 1.3, "blocks": [
+          { "type": "pyramid", "w": 0.75, "heading": "How SAP Business AI is licensed", "levels": [ { "title": "Joule Agents & custom agents", "text": "Consumption-metered in AI Units" }, { "title": "Premium AI", "text": "Joule Premium per LoB; per user / month" }, { "title": "Base AI", "text": "Included with SAP cloud applications" } ] },
+          { "type": "gantt", "w": 1.6, "heading": "Recommended adoption roadmap (months)", "periods": { "start": 0, "end": 18, "step": 3, "prefix": "M" }, "phases": [
+            { "label": "Mobilize", "start": 0, "end": 3, "text": "Value hypotheses, AI-unit baseline, Agent Hub set-up" },
+            { "label": "Foundation", "start": 0, "end": 6, "text": "Clean core, BDC data products, master data" },
+            { "label": "Activate", "start": 3, "end": 9, "text": "Base AI everywhere; 2–3 Premium assistants in one LoB" },
+            { "label": "Scale", "start": 6, "end": 15, "text": "Joule Work rollout; WalkMe-led adoption; AI FinOps", "color": "primary" },
+            { "label": "Differentiate", "start": 9, "end": 18, "text": "Custom agents in Joule Studio; A2A with third parties", "color": "dark" } ] }
+        ] },
+        { "h": 0.85, "blocks": [
+          { "type": "cards", "w": 0.75, "heading": "AI Units — the metering currency", "columns": 1, "style": "tinted", "items": [
+            { "icon": "users", "title": "Per user / month", "text": "Tiered 8 → 1 AI Units per user (e.g., Joule Premium for Finance)." },
+            { "icon": "invoice", "title": "Per transaction", "text": "e.g., Document Grounding at 0.005 AI Units per record." } ] },
+          { "type": "table", "w": 1.6, "heading": "Key risks and mitigations", "columns": ["Risk", "Exposure", "Mitigation"], "col_widths": [1.4, 0.8, 4], "rows": [
+            ["Cloud dependency", "High", "Assistants ship in SAP cloud releases — tie AI to the RISE/GROW plan"],
+            ["Data readiness", "High", "BDC data products and MDM before scaling agents"],
+            ["Consumption cost", "Medium", "Per-use-case business case, AI-unit budgets, monitoring"],
+            ["Trust & control", "Medium", "71% cite trust as top barrier (BCG) — Agent Hub, approvals, audit"] ] }
+        ] }
+      ],
+      "source": "sap.com AI packages & pricing; SAP News (Oct 2026); BCG (2026). Roadmap and risk ratings are an advisory view, not SAP guidance."
+    }
+  ]
+}

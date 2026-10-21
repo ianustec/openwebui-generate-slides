@@ -2,6 +2,32 @@
 
 All notable changes to the Generate Slides Open WebUI tool.
 
+## [2.0.0] — Deck Kit engine (v2 blocks format)
+
+Classic `layout` decks, Template Mode and `edit_presentation` behave exactly as in 1.0.4. The new engine is used only when a deck uses the blocks format.
+
+### New engine
+- The Deck Kit renderer, ported from pptxgenjs to python-pptx inside the single file: **44 components**, **14 theme presets** (incl. industry, print and high-contrast), cover/section/content/closing slide types, rows × blocks grid.
+- Measured auto-fit: text is sized from Calibri/Carlito metrics, and sibling items share one font size.
+- Native, editable charts including **combo** (columns + line on a secondary axis, still editable in PowerPoint's data sheet), radar, stacked and doughnut. Waterfall, bubble, mekko, Harvey balls, Gantt dependency arrows and journey emotion curves are drawn as native shapes.
+- Images and avatars from URLs, data URIs or an admin images folder (`kit_images_dir`).
+- 100 Font Awesome Free icons embedded (CC BY 4.0), with ~150 friendly aliases; the classic Lucide set is used as a fallback.
+
+### New tools
+- `get_deck_components(names)` — LLM-facing catalogue (overview, or fields + example per component).
+- `get_deck_template(name)` — 17 layout recipes plus a `full_deck` starter.
+- `validate_deck(content)` — schema + layout dry run without creating a file.
+
+### Model guardrails
+- JSON repair for one missing or extra bracket, code fences, surrounding prose and `{"deck": …}` wrappers (applies to classic decks too).
+- Schema validation with exact error paths, returned as a "call again" tool result.
+- Layout notes (overflow, rows too short, **new: blocks too narrow for their component**) returned with the link.
+
+### Docs and tests
+- `prompts/deck-builder-system-prompt.md` — system prompt for a "Deck Builder" model.
+- `examples/kit/` — the 35-slide component showcase and an SAP Business AI brief.
+- `examples/kit_engine_smoke.py` — added to `run_production_checks.py`.
+
 ## [1.0.4] — Templates and presentation edit
 
 With the new valves left at their defaults, `generate_slides` still builds a deck from scratch, as in v1.0.3.

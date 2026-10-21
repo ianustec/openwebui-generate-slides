@@ -2,8 +2,15 @@
 
 > Part of **[NEURA Office](https://github.com/ianustec/neura-office)**: native Word, PowerPoint and Excel for Open WebUI.
 
-A [Open WebUI](https://github.com/open-webui/open-webui) **Tool** that generates
+An [Open WebUI](https://github.com/open-webui/open-webui) **Tool** that generates
 **native PowerPoint (.pptx)** presentations from a JSON spec produced by the model.
+
+**v2.0** adds the **Deck Kit engine**: a "blocks" deck format with **44 consulting-grade
+components** (KPIs with sparklines, native charts including combo, layered architectures,
+Gantt with dependencies, SWOT, 2×2 matrix, Harvey-ball scorecards, waterfall, heatmaps,
+RACI, swimlanes, journey maps…), **14 theme presets**, measured auto-fit text, a schema
+validator that tells the model exactly what to fix, and 17 ready-made slide templates.
+It runs inside the single `.py` file. You don't need Node, Docker or an extra server.
 It doesn't export HTML or images: it builds the slides directly with `python-pptx`,
 with a coherent visual system, layered decorative shapes, **native charts**, icons
 inside circles and rich layouts.
@@ -18,6 +25,10 @@ fallback) and a clickable **download link** appears in the chat.
 *Slides generated from the example [`examples/deck.json`](examples/deck.json) → [`examples/demo_tech_deck.pptx`](examples/demo_tech_deck.pptx).*
 
 ## Features
+
+- **v2 blocks format (Deck Kit engine)**: 44 components, 14 themes, auto-fit text, layout
+  recipes, plus three new model tools: `get_deck_components`, `get_deck_template` and `validate_deck`.
+  See [v2 blocks format](#v2-blocks-format-deck-kit-engine).
 
 - **Native, editable .pptx** (text, charts and shapes are editable in PowerPoint/Keynote/LibreOffice).
 - **Native Office charts**: `bar`, `line`, `area`, `pie`, `doughnut`, `radar`, `stacked_bar`.
@@ -71,6 +82,79 @@ Minimal structure:
 ```
 
 See the full example in [`examples/deck.json`](examples/deck.json).
+
+## v2 blocks format (Deck Kit engine)
+
+![Deck Kit components](assets/kit-showcase.png)
+
+A deck uses this engine automatically when its slides use `type` / `rows` / `blocks`
+instead of `layout`. You can also force it with `"engine": "kit"`. Classic decks and
+Template Mode work exactly as before.
+
+```json
+{
+  "meta": { "title": "SAP Business AI", "author": "Strategy team", "footer": "Confidential" },
+  "theme": "azure_corporate",
+  "slides": [
+    { "type": "cover", "kicker": "Executive brief", "title": "…", "subtitle": "…",
+      "blocks": [ { "type": "kpis", "items": [ { "value": "50+", "label": "…", "icon": "assistant" } ] } ] },
+    { "type": "content", "kicker": "How it works", "title": "<one-sentence takeaway>",
+      "rows": [
+        { "h": 1.15, "blocks": [ { "type": "process", "steps": [ { "icon": "chat", "title": "Intent", "text": "…" } ] } ] },
+        { "h": 1.4,  "blocks": [
+            { "type": "chart", "heading": "Impact (%)", "chart_type": "bar", "categories": ["A","B"],
+              "series": [ { "name": "Impact", "values": [90, 50] } ], "unit": "%" },
+            { "type": "cards", "columns": 2, "items": [ { "title": "…", "text": "…" } ] } ] } ],
+      "source": "Publisher, date", "notes": "Speaker notes" },
+    { "type": "closing", "title": "Next steps",
+      "blocks": [ { "type": "checklist", "items": [ { "text": "…", "owner": "CFO", "due": "Nov 15" } ] } ] }
+  ]
+}
+```
+
+A content slide holds up to 4 rows, and each row holds up to 4 blocks side by side
+(`h` = relative row height, `w` = relative block width, `heading` = small label above a block).
+
+| Group | Components |
+|---|---|
+| Numbers | `kpis` (sparklines) · `rings` · `progress` · `callout` |
+| Charts (native, editable) | `chart`: bar, column, stacked, line, area, pie, doughnut, radar, **combo** (columns + line on a 2nd axis) · `waterfall` · `bubble` · `mekko` |
+| Flow and sequence | `process` · `timeline` · `chevrons` · `cycle` · `staircase` · `flow` · `swimlane` |
+| Structure | `layers` (side panel) · `concentric` · `value_chain` · `hub` · `tree` · `pyramid` · `funnel` · `venn` |
+| Strategy and decisions | `swot` · `matrix` · `scorecard` · `comparison` · `heatmap` · `maturity` · `risk_matrix` |
+| Plan and PMO | `gantt` (milestones, dependency arrows) · `status` · `board` · `checklist` · `raci` |
+| People and customers | `org_chart` · `profiles` · `persona` · `journey` |
+| Text and media | `cards` · `bullets` · `table` (auto RAG colours) · `agenda` · `image` |
+
+**Themes:** `midnight_violet` (default) · `graphite_gold` · `ocean_teal` · `forest_moss` · `crimson_navy` ·
+`mono_slate` · `azure_corporate` · `emerald_finance` · `civic_navy` · `clinic_teal` · `coral_energy` ·
+`royal_plum` · `print_mono` · `high_contrast`. Override any colour or font:
+`{"preset": "mono_slate", "primary": "1F4E79", "accent": "FFC000", "fonts": {"head": "Calibri", "body": "Calibri"}}`.
+
+**Tools the model gets in addition to `generate_slides`:**
+
+| Tool | Purpose |
+|---|---|
+| `get_deck_components(names)` | Overview (no names) or exact fields + example per component (`"kpis,gantt"`) |
+| `get_deck_template(name)` | 17 proven slide skeletons (`executive_summary`, `architecture`, `business_case`, `roadmap`, `risks`, …) or `full_deck` |
+| `validate_deck(content)` | Dry run: schema errors + layout warnings, no file |
+
+**Model guardrails built into the engine:**
+- Bracket slips in long JSON (one missing or extra `]`/`}`), code fences, prose around the JSON
+  and `{"deck": …}` wrappers are repaired automatically.
+- Schema errors come back as a "call again" result that names the exact item
+  (`slides[3].rows[1].blocks[0](chart).series[0].values: 3 values but 4 categories`).
+  When that happens, no file is produced.
+- Layout notes (text that had to shrink past its minimum, rows too short, blocks too narrow) are
+  returned to the model with the download link so it can offer a fix.
+
+**Images:** `image`, `profiles`, `org_chart` and `persona` accept `https://` URLs, data URIs, or a
+file name in the folder set by the `kit_images_dir` valve (default `/app/backend/data/deck-images`).
+
+**Recommended model setup:** use [`prompts/deck-builder-system-prompt.md`](prompts/deck-builder-system-prompt.md)
+as the model's system prompt. Turn native function calling on and allow a large context
+(32k or more). Example decks: [`examples/kit/showcase.json`](examples/kit/showcase.json) (35 slides, every component)
+and [`examples/kit/sap-business-ai.json`](examples/kit/sap-business-ai.json).
 
 ### Classic customization (no template)
 
@@ -190,6 +274,10 @@ You can force the accent with `"accent": "#C99A3B"`.
 | `presentation_edit_shrink_step_pt` | `2` | Step for `shrink_font` when op omits `step_pt` |
 | `presentation_edit_progress_every` | `5` | Emit progress every N ops (0 = off) |
 | `presentation_edit_warn_noop` | `false` | Status hint when all ops complete but none mutated the deck |
+| `kit_engine_enabled` | `true` | Use the v2 Deck Kit engine for decks in the blocks format |
+| `kit_default_theme` | `midnight_violet` | Theme for v2 decks that don't set one |
+| `kit_images_dir` | `/app/backend/data/deck-images` | Folder for logos/photos referenced by file name in v2 decks |
+| `kit_max_warnings` | `12` | Layout notes returned to the model after a v2 render (0 = none) |
 
 ### Roadmap (Fase 8+)
 
