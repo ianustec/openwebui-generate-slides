@@ -55,6 +55,10 @@ async def main() -> int:
     s = json.dumps(json.loads((KIT / "sap-business-ai.json").read_text()), separators=(",", ":"))
     spec, note, err = t._parse_content("```json\n" + s.replace("}]}", "}]", 1) + "\n```")
     check(spec is not None and note, "bracket repair")
+    for f in sorted((KIT / "regressions").glob("*.json")):
+        spec, note, err = t._parse_content(f.read_text())
+        ok = spec is not None and not mod._k_validate_deck(mod._k_normalize_deck(spec))[0] and len(spec["slides"]) == 4
+        check(ok, f"repair real model output: {f.name}")
     bad = {"slides": [{"type": "content", "title": "x", "rows": [{"blocks": [{"type": "chart", "chart_type": "bar",
            "categories": ["a", "b"], "series": [{"name": "s", "values": [1]}]}]}]}]}
     res = await t.generate_slides(json.dumps(bad))

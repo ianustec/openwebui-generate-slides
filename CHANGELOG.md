@@ -2,6 +2,13 @@
 
 All notable changes to the Generate Slides Open WebUI tool.
 
+## [2.0.1] — Sturdier JSON repair, content warnings
+
+- **Structural bracket repair** for model-written decks: fixes doubled `{{`, wrong-kind closers (`]` for `}`), wrong-kind openers, and slides accidentally nested inside the previous slide's row. In fuzz tests on the example decks (one corrupted bracket each), ~79% of single-bracket mistakes rebuild the exact deck, about 6% give a valid deck with a block shifted, and the rest return a precise error for the model.
+- **Content warnings** returned with the download link: figures without a `source` line (restored from the kit validator), single-block slides, thin slides (under ~45 words).
+- **More icon aliases** (`cog`, `gear`, `bolt`, `chart-line`, `trending-up`, `dollar`, `cpu`, `workflow`, …) so common names don't fall back to a dot.
+- Regression fixtures from real model output in `examples/kit/regressions/`.
+
 ## [2.0.0] — Deck Kit engine (v2 blocks format)
 
 Classic `layout` decks, Template Mode and `edit_presentation` behave exactly as in 1.0.4. The new engine is used only when a deck uses the blocks format.

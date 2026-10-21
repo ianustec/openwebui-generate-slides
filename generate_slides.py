@@ -6,7 +6,7 @@ funding_url: https://github.com/ianustec
 description: Generate native, editable PowerPoint (.pptx) decks from JSON. v2 blocks format with 44 consulting components (KPIs, native charts incl. combo, layers, gantt, swot, matrix, waterfall, heatmap, RACI, journey...), 14 themes and auto-fit text; classic layouts and Template Mode kept. With an attached .pptx used as base/template, ALWAYS call inspect_slides first, then generate_slides with reference_file_id + per-slide reuse.
 requirements: python-pptx, pillow
 required_open_webui_version: 0.4.0
-version: 2.0.0
+version: 2.0.1
 license: MIT
 """
 
@@ -9276,6 +9276,15 @@ def _k_validate_deck(deck):
                     _k_validate_block(blk, f"{p}.rows[{ri}].blocks[{bi}]", errs, warns)
             if nb > 6:
                 warns.append(f"{p}: {nb} blocks is very dense — max ~5 recommended")
+            full_width = {"agenda", "layers", "journey", "persona", "swimlane", "gantt", "risk_matrix", "org_chart", "status"}
+            types_ = [blk.get("type") for r in s["rows"] if isinstance(r, dict) for blk in _list(r.get("blocks")) if isinstance(blk, dict)]
+            if nb == 1 and not (set(types_) & full_width):
+                warns.append(f"{p}: only one block — add a second block (chart, callout, kpis or table) so the slide carries evidence, not just a list")
+            words = len(re.findall(r"[A-Za-z0-9€$%]+", json.dumps(s.get("rows"), ensure_ascii=False).replace('"type"', "")))
+            if nb and words < 45:
+                warns.append(f"{p}: thin content (~{words} words) — add specifics (figures with sources, names, dates, mechanisms)")
+            if re.search(r"\d", json.dumps(s.get("rows"), ensure_ascii=False)) and not s.get("source"):
+                warns.append(f"{p}: contains figures but no 'source' line — every number needs a source; drop numbers you cannot source")
         if ty in ("cover", "closing") and isinstance(s.get("blocks"), list):
             for bi, blk in enumerate(s["blocks"]):
                 _k_validate_block(blk, f"{p}.blocks[{bi}]", errs, warns)
@@ -9324,6 +9333,23 @@ def _k_catalogue(names=None) -> dict:
         "legend": "* = required. Content slide = title + rows[]; each row = blocks[] side by side; each block = {type:<component>, heading?, w?, ...fields}.",
     }
 
+
+# extra icon aliases (Lucide / common names models use)
+_KIT_ICON_ALIASES.update({
+    "cog": "FaCogs", "cogs": "FaCogs", "gear": "FaCogs", "gears": "FaCogs", "bolt": "FaBolt", "lightning": "FaBolt", "zap": "FaBolt",
+    "chart_line": "FaChartLine", "line_chart": "FaChartLine", "trending_up": "FaChartLine", "trend": "FaChartLine", "bar_chart": "FaChartBar",
+    "chart_bar": "FaChartBar", "chart_pie": "FaChartPie", "pie_chart": "FaChartPie", "dollar": "FaCoins", "dollar_sign": "FaCoins",
+    "euro": "FaCoins", "revenue": "FaCoins", "check_circle": "FaCheckCircle", "shield_check": "FaShieldAlt", "lightbulb": "FaLightbulb",
+    "bulb": "FaLightbulb", "file": "FaFileAlt", "file_text": "FaFileAlt", "mail": "FaEnvelope", "phone": "FaMobileAlt", "home": "FaBuilding",
+    "company": "FaBuilding", "clipboard": "FaClipboardCheck", "sitemap": "FaSitemap", "org": "FaSitemap", "layer_group": "FaLayerGroup",
+    "stack": "FaLayerGroup", "cpu": "FaBrain", "chip": "FaBrain", "message": "FaComments", "message_circle": "FaComments",
+    "workflow": "FaProjectDiagram", "process": "FaProjectDiagram", "alert": "FaExclamationTriangle", "alert_triangle": "FaExclamationTriangle",
+    "x_circle": "FaTimesCircle", "error": "FaTimesCircle", "calendar_alt": "FaCalendarAlt", "date": "FaCalendarAlt", "clock_o": "FaClock",
+    "user_tie": "FaUserTie", "executive": "FaUserTie", "graduation_cap": "FaGraduationCap", "education": "FaGraduationCap",
+    "heartbeat": "FaHeartbeat", "medical": "FaHeartbeat", "industry": "FaIndustry", "shopping_cart": "FaShoppingCart", "ecommerce": "FaShoppingCart",
+    "exchange": "FaExchangeAlt", "swap": "FaExchangeAlt", "random": "FaRandom", "magic": "FaMagic", "wand": "FaMagic", "star_o": "FaStar",
+    "trophy_alt": "FaTrophy", "medal": "FaAward", "verified": "FaCheckCircle", "approval": "FaCheckCircle", "plug": "FaPlug", "connector": "FaPlug",
+})
 
 # ------------------------------------------------------- layout recipes ----
 # Proven content-slide skeletons ("templates"). The model copies one, then
@@ -9676,6 +9702,95 @@ def _k_shape_score(d):
     return sc - 5 * _k_mixed_lists(d)
 
 
+_K_SLIDE_START = re.compile(r'\{\s*"type"\s*:\s*"(?:cover|content|section|closing)"')
+_K_PAIR = {"{": "}", "[": "]"}
+
+
+_K_KEY_AHEAD = re.compile(r'\s*"(?:[^"\\]|\\.)*"\s*:')
+_K_VAL_AHEAD = re.compile(r'\s*(?:"(?:[^"\\]|\\.)*"\s*[,\]]|-?\d|true|false|null|\[)')
+
+
+def _k_rebalance(s: str, prefer_missing: bool = True):
+    """Structural bracket repair for model-written decks. Tracks the open brackets outside strings and:
+    drops a doubled '{{', fixes a closer of the wrong kind (inserting a missing closer when the one below
+    matches), closes everything back to the slides list when a new slide object starts too deep, drops
+    surplus closers and appends missing ones at the end. Returns the repaired text or None."""
+    out, st = [], []
+    ins = esc = False
+    i, n, changed = 0, len(s), False
+    while i < n:
+        ch = s[i]
+        if ins:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                ins = False
+            i += 1
+            continue
+        if ch == '"':
+            ins = True
+            out.append(ch)
+        elif ch == "[" and _K_KEY_AHEAD.match(s, i + 1):
+            st.append("{")  # '[' followed by "key": is really '{'
+            out.append("{")
+            changed = True
+        elif ch == "{" and not _K_KEY_AHEAD.match(s, i + 1) and _K_VAL_AHEAD.match(s, i + 1):
+            st.append("[")  # '{' followed by a plain value is really '['
+            out.append("[")
+            changed = True
+        elif ch == "{":
+            j = i + 1
+            while j < n and s[j] in " \t\r\n":
+                j += 1
+            if j < n and s[j] == "{":  # '{{' is never valid JSON
+                changed = True
+                i += 1
+                continue
+            if _K_SLIDE_START.match(s, i) and len(st) > 2 and st[0] == "{" and st[1] == "[":
+                # a slide starts while a previous slide is still open: close back to the slides list
+                k = len(out) - 1
+                while k >= 0 and out[k] in " \t\r\n":
+                    k -= 1
+                closers = "".join(_K_PAIR[b] for b in reversed(st[2:]))
+                if k >= 0 and out[k] == ",":
+                    out.insert(k, closers)
+                else:
+                    out.append(closers + ",")
+                del st[2:]
+                changed = True
+            st.append("{")
+            out.append(ch)
+        elif ch == "[":
+            st.append("[")
+            out.append(ch)
+        elif ch in "}]":
+            if not st:
+                changed = True  # surplus closer
+            elif _K_PAIR[st[-1]] == ch:
+                st.pop()
+                out.append(ch)
+            elif prefer_missing and len(st) >= 2 and _K_PAIR[st[-2]] == ch:
+                out.append(_K_PAIR[st.pop()])  # a closer is missing before this one
+                st.pop()
+                out.append(ch)
+                changed = True
+            else:
+                out.append(_K_PAIR[st.pop()])  # wrong kind of closer
+                changed = True
+        else:
+            out.append(ch)
+        i += 1
+    if ins:
+        return None
+    if st:
+        out.append("".join(_K_PAIR[b] for b in reversed(st)))
+        changed = True
+    return "".join(out) if changed else None
+
+
 def _k_repair_json(s: str):
     """Fix the bracket slips models make in long nested JSON. Returns (obj, note) or raises JSONDecodeError."""
     s = s.strip()
@@ -9688,12 +9803,29 @@ def _k_repair_json(s: str):
         return json.loads(s), None
     except json.JSONDecodeError as err:
         first = err
-    if len(s) > 200_000:
+    if len(s) > 400_000:
         raise first
-    mask = _k_outside_strings(s)
     best = None
+    for pm in (True, False):
+        rb = _k_rebalance(s, pm)
+        if rb is None:
+            continue
+        try:
+            obj = json.loads(rb)
+        except json.JSONDecodeError:
+            continue
+        sc = _k_shape_score(obj)
+        if sc >= 0 and isinstance(obj, dict) and isinstance(obj.get("slides"), list):
+            try:
+                if not _k_validate_deck(_k_normalize_deck(obj))[0]:
+                    sc += 1000  # prefer the candidate that passes the schema
+            except Exception:
+                pass
+        if sc >= 0 and (best is None or sc > best[0]):
+            best = (sc, obj, "rebalanced brackets (structure repaired)")
+    mask = _k_outside_strings(s)
     limit = first.pos if "Extra data" in first.msg else len(s)
-    for i in range(min(limit, len(s))):
+    for i in (range(min(limit, len(s))) if best is None and len(s) <= 200_000 else ()):
         if s[i] not in "]}" or not mask[i]:
             continue
         for n in (1, 2, 3):
