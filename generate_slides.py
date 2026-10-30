@@ -1127,18 +1127,55 @@ async def _ai_image(prompt: str, request, user_dict) -> Optional[bytes]:
     return None
 
 
-async def _resolve_one_image(item, valves, request, user_dict, ratio=1.4):
-    """item may be a dict (image spec) or a string (url / base64 / hint)."""
+def _template_media_map(reference_bytes: Optional[bytes]) -> dict[str, bytes]:
+    """ppt/media/* blobs of the reference .pptx, keyed like inspect images[].ref."""
+    if not reference_bytes:
+        return {}
+    try:
+        with ZipFile(BytesIO(reference_bytes)) as zf:
+            return {
+                name: zf.read(name)
+                for name in zf.namelist()
+                if name.startswith("ppt/media/")
+            }
+    except Exception as exc:
+        log.warning("[generate_slides] reference media read failed: %s", exc)
+        return {}
+
+
+async def _resolve_one_image(item, valves, request, user_dict, ratio=1.4, *,
+                             template_media: Optional[dict] = None,
+                             missing: Optional[list] = None):
+    """item may be a dict (image spec) or a string (url / base64 / hint / ppt/media ref).
+
+    `template_media` maps inspect images[].ref to bytes of the reference
+    .pptx; a requested ref that yields no image is appended to `missing`.
+    """
     if isinstance(item, str):
-        item = {"url": item} if item.startswith(("http", "data:")) else {"hint": item}
+        if item.strip().lstrip("/").startswith("ppt/media/"):
+            item = {"template_media": item.strip()}
+        else:
+            item = {"url": item} if item.startswith(("http", "data:")) else {"hint": item}
     if not isinstance(item, dict):
         return None
-    raw = None
-    for k in ("base64", "b64", "data", "image_base64"):
-        if item.get(k):
-            raw = _decode_data_image(item[k])
-            if raw:
-                break
+    ref = item.get("template_media")
+    ref = _normalize_media_path(ref) if isinstance(ref, str) and ref.strip() else None
+    out = await _resolve_one_image_bytes(item, valves, request, user_dict, ratio,
+                                         ref=ref, template_media=template_media)
+    if ref and out is None and missing is not None:
+        missing.append(ref)
+    return out
+
+
+async def _resolve_one_image_bytes(item, valves, request, user_dict, ratio, *,
+                                   ref, template_media):
+    raw = (template_media or {}).get(ref) if ref else None
+    if not raw:
+        for k in ("base64", "b64", "data", "image_base64"):
+            if item.get(k):
+                raw = _decode_data_image(item[k])
+                if raw:
+                    break
     if not raw:
         url = _first(item, "url", "src", "image_url", "href", default="")
         if url:
@@ -1197,6 +1234,9 @@ _CONTENT_KINDS = frozenset({"table"})
 _INSPECT_TABLE_MAX_ROWS = 8
 _INSPECT_TABLE_MAX_COLS = 8
 _INSPECT_TABLE_CELL_CHARS = 40
+
+# Max images[] entries in the model-facing inspect JSON (most used first).
+_INSPECT_MODEL_MAX_IMAGES = 60
 
 
 def _shape_cloneable(kind: str) -> bool:
@@ -1274,7 +1314,7 @@ class _TemplatePack:
 @dataclass
 class _MediaUsage:
     slide_index: int
-    source: str  # "shape" | "background"
+    source: str  # "shape" | "background" | "layout" | "master"
     shape_id: Optional[int] = None
     name: Optional[str] = None
 
@@ -1387,8 +1427,33 @@ def _collect_blips_from_element(
         out.setdefault(path, []).append(usage)
 
 
+def _container_media_refs(container) -> list[tuple[str, int, Optional[str]]]:
+    """(media path, shape id, shape name) for non-placeholder shapes of a layout/master."""
+    out: list[tuple[str, int, Optional[str]]] = []
+    for shape, _z in _iter_shapes(container, flatten_groups=True):
+        if _shape_is_placeholder(shape):
+            continue
+        sid = int(getattr(shape, "shape_id", 0) or 0)
+        sname = str(getattr(shape, "name", "") or "") or None
+        found: dict[str, list[_MediaUsage]] = {}
+        try:
+            _collect_blips_from_element(
+                shape.element, container.part, 0, "", sid, sname, found
+            )
+        except Exception as exc:
+            log.debug("[inspect_slides] media layout/master shape id=%s: %s", sid, exc)
+            continue
+        for path in found:
+            out.append((path, sid, sname))
+    return out
+
+
 def _extract_referenced_media(data: bytes, pack: _TemplatePack) -> list[_InspectImage]:
-    """Referenced ppt/media parts from slide shapes (flatten) + slide background blips.
+    """Referenced ppt/media parts visible on each slide.
+
+    Slide shapes (groups flattened), the effective background (slide, else
+    layout, else master) and the non-placeholder shapes of the slide's layout
+    and master (e.g. a logo on every slide).
 
     Inspect-only: generate_slides still clones graphics from reference_file_id (§1).
     """
@@ -1413,22 +1478,49 @@ def _extract_referenced_media(data: bytes, pack: _TemplatePack) -> list[_Inspect
         log.warning("[inspect_slides] media parse failed: %s", exc)
         return []
 
+    container_refs: dict[str, list[tuple[str, int, Optional[str]]]] = {}
+
     for idx, slide in enumerate(prs.slides):
         slide_index = idx
         if idx < len(pack.slides):
             slide_index = pack.slides[idx].index
 
-        bg_el = slide.element.find(qn("p:bg"))
-        if bg_el is not None:
+        # p:bg lives under p:cSld; the effective one may come from layout/master.
+        bg_el, bg_part, _bg_origin = _resolve_effective_background(slide)
+        if bg_el is not None and bg_part is not None:
             _collect_blips_from_element(
                 bg_el,
-                slide.part,
+                bg_part,
                 slide_index,
                 "background",
                 None,
                 None,
                 usages_by_path,
             )
+
+        try:
+            layout = slide.slide_layout
+            containers = (("layout", layout), ("master", layout.slide_master))
+        except Exception as exc:
+            log.debug("[inspect_slides] layout/master lookup slide=%s: %s", slide_index, exc)
+            containers = ()
+        for source, container in containers:
+            key = str(container.part.partname)
+            if key not in container_refs:
+                try:
+                    container_refs[key] = _container_media_refs(container)
+                except Exception as exc:
+                    log.debug("[inspect_slides] media scan %s: %s", key, exc)
+                    container_refs[key] = []
+            for path, sid, sname in container_refs[key]:
+                usages_by_path.setdefault(path, []).append(
+                    _MediaUsage(
+                        slide_index=slide_index,
+                        source=source,
+                        shape_id=sid,
+                        name=sname,
+                    )
+                )
 
         for shape, _z in _iter_shapes(slide, flatten_groups=True):
             sid = int(getattr(shape, "shape_id", 0) or 0)
@@ -2599,41 +2691,106 @@ def _retry_tool_result(message: str) -> str:
     )
 
 
+def _compact_inspect_images(images: Any) -> tuple[list[dict], int]:
+    """Model-facing images[]: ref + size + where, no Files API ids or URLs.
+
+    Cache URLs carry one UUID each; listing them next to `file_id` is what
+    makes the model swap ids, so only the in-package path is exposed. Returns
+    (entries, omitted count).
+    """
+    out: list[dict] = []
+    for im in _as_list(images):
+        if not isinstance(im, dict) or not im.get("internal_path"):
+            continue
+        usages = [u for u in _as_list(im.get("usages")) if isinstance(u, dict)]
+        slides = sorted(
+            {int(u["slide_index"]) for u in usages if u.get("slide_index") is not None}
+        )
+        on = sorted({str(u.get("source")) for u in usages if u.get("source")})
+        out.append(
+            {
+                "ref": im["internal_path"],
+                "mime": im.get("mime"),
+                "w_px": im.get("w_px"),
+                "h_px": im.get("h_px"),
+                "slides": slides,
+                "on": on,
+            }
+        )
+    out.sort(key=lambda e: (-len(e["slides"]), e["ref"]))
+    omitted = max(0, len(out) - _INSPECT_MODEL_MAX_IMAGES)
+    return out[:_INSPECT_MODEL_MAX_IMAGES], omitted
+
+
+def _compact_picture_refs(images: Any) -> dict[int, dict[int, str]]:
+    """slide index -> {slide shape id -> media ref} for pictures on the slide itself."""
+    out: dict[int, dict[int, str]] = {}
+    for im in _as_list(images):
+        if not isinstance(im, dict) or not im.get("internal_path"):
+            continue
+        for u in _as_list(im.get("usages")):
+            if not isinstance(u, dict) or u.get("source") != "shape":
+                continue
+            if u.get("shape_id") is None or u.get("slide_index") is None:
+                continue
+            per_slide = out.setdefault(int(u["slide_index"]), {})
+            per_slide.setdefault(int(u["shape_id"]), im["internal_path"])
+    return out
+
+
 def _compact_inspect_payload(payload: dict) -> dict:
-    """Model-facing inventory: text and tables only.
+    """Model-facing inventory: text, tables and images only.
 
     A Slidesgo slide can contain hundreds of decorative autoshapes. Listing
     them makes the model lose `file_id` and invent another one. Decorations
     are cloned automatically when `reuse` omits `keep_ids`, so the model only
-    needs the ids it must rewrite.
+    needs the ids it must rewrite, the picture ids it may drop, and the
+    template images it may place on new slides.
     """
     if not payload.get("ok"):
         return payload
+    picture_refs = _compact_picture_refs(payload.get("images"))
     slides = []
     for st in payload.get("slides") or []:
         texts = []
         tables = []
+        listed_ids: set = set()
         for sh in st.get("shapes") or []:
             if sh.get("kind") == "table" or sh.get("table"):
                 entry = {"id": sh.get("id")}
                 if isinstance(sh.get("table"), dict):
                     entry.update(sh["table"])
                 tables.append(entry)
+                listed_ids.add(sh.get("id"))
                 continue
             text = (sh.get("text") or "").strip()
             if sh.get("has_text") and text:
                 texts.append({"id": sh.get("id"), "text": sh.get("text")})
-        listed = len(texts) + len(tables)
-        slides.append(
-            {
-                "index": st.get("index"),
-                "text": texts,
-                "tables": tables,
-                "decoration_count": max(0, int(st.get("shape_count") or 0) - listed),
-            }
-        )
+                listed_ids.add(sh.get("id"))
+        pictures = []
+        try:
+            slide_refs = picture_refs.get(int(st.get("index")), {})
+        except (TypeError, ValueError):
+            slide_refs = {}
+        for sh in st.get("shapes") or []:
+            sid = sh.get("id")
+            if sid in listed_ids or sid not in slide_refs:
+                continue
+            pictures.append({"id": sid, "ref": slide_refs[sid]})
+            listed_ids.add(sid)
+        listed = len(texts) + len(tables) + len(pictures)
+        entry = {
+            "index": st.get("index"),
+            "text": texts,
+            "tables": tables,
+        }
+        if pictures:
+            entry["pictures"] = pictures
+        entry["decoration_count"] = max(0, int(st.get("shape_count") or 0) - listed)
+        slides.append(entry)
+    images, images_omitted = _compact_inspect_images(payload.get("images"))
     file_id = payload.get("file_id") or ""
-    return {
+    out = {
         "ok": True,
         "file_id": file_id,
         "filename": payload.get("filename"),
@@ -2641,17 +2798,25 @@ def _compact_inspect_payload(payload: dict) -> dict:
         "slide_height_in": payload.get("slide_height_in"),
         "slide_count": payload.get("slide_count"),
         "slides": slides,
-        "next": (
-            "Call generate_slides exactly once. "
-            f'reference_file_id must be "{file_id}" copied character for '
-            "character. For every template slide you fill, emit one output "
-            'slide {"reuse": {"slide": <index>, "text": {"<id>": "new text"}}}. '
-            "Table ids take {\"headers\": [...], \"rows\": [[...]]}. "
-            "Omit keep_ids so decorations clone automatically. "
-            "Do not call inspect_slides again. Do not invent a file_id. "
-            "Do not fall back to classic layouts."
-        ),
     }
+    if images:
+        out["images"] = images
+    if images_omitted:
+        out["images_omitted"] = images_omitted
+    out["next"] = (
+        "Call generate_slides exactly once. "
+        f'reference_file_id must be "{file_id}" copied character for '
+        "character. For every template slide you fill, emit one output "
+        'slide {"reuse": {"slide": <index>, "text": {"<id>": "new text"}}}. '
+        "Table ids take {\"headers\": [...], \"rows\": [[...]]}. "
+        "Omit keep_ids so decorations and pictures clone automatically; "
+        "put a slides[].pictures id in drop_ids to remove that picture. "
+        "To place a template image on a new image slide, set "
+        '"image": {"template_media": "<images[].ref>"}. '
+        "Do not call inspect_slides again. Do not invent a file_id. "
+        "Do not fall back to classic layouts."
+    )
+    return out
 
 
 def _inspect_tool_result(payload: dict) -> str:
@@ -5817,7 +5982,10 @@ class Tools:
         )
         inspect_extract_images: bool = Field(
             default=True,
-            description="Upload referenced template images on inspect (images[] JSON).",
+            description=(
+                "Upload referenced template images to the Files API cache on "
+                "inspect. The images[] inventory is returned either way."
+            ),
         )
         template_strict_mode: bool = Field(
             default=False,
@@ -5997,7 +6165,9 @@ class Tools:
         "text_image_right": 1.06, "image_left_text_right": 1.06,
     }
 
-    async def _prefetch_images(self, slides, request, user_dict):
+    async def _prefetch_images(self, slides, request, user_dict, *,
+                               template_media: Optional[dict] = None,
+                               missing: Optional[list] = None):
         """Resolve image bytes for image layouts and stash into slide['_img']."""
         for s in slides:
             layout = _resolve_layout(s)
@@ -6010,8 +6180,9 @@ class Tools:
                 items = s.get("images") or s.get("items") or s.get("gallery") or []
                 out = []
                 for it in _as_list(items)[:4]:
-                    out.append(await _resolve_one_image(it, self.valves, request,
-                                                        user_dict, ratio))
+                    out.append(await _resolve_one_image(
+                        it, self.valves, request, user_dict, ratio,
+                        template_media=template_media, missing=missing))
                 s["_img"] = out
             else:
                 spec_item = _first(s, "image", "image_url", "img", "photo", "picture",
@@ -6020,11 +6191,13 @@ class Tools:
                     spec_item = {}
                     for k, dk in (("image_hint", "hint"), ("image_generate", "generate"),
                                   ("hint", "hint"), ("generate", "generate"),
-                                  ("url", "url"), ("base64", "base64")):
+                                  ("url", "url"), ("base64", "base64"),
+                                  ("template_media", "template_media")):
                         if s.get(k):
                             spec_item[dk] = s[k]
-                s["_img"] = await _resolve_one_image(spec_item, self.valves, request,
-                                                     user_dict, ratio)
+                s["_img"] = await _resolve_one_image(
+                    spec_item, self.valves, request, user_dict, ratio,
+                    template_media=template_media, missing=missing)
 
     # -- rendering pipeline ----------------------------------------------
     def _build(
@@ -6135,8 +6308,12 @@ class Tools:
     ) -> str:
         """MANDATORY FIRST STEP whenever a .pptx is attached or the user wants
         their own slides used as base/template/style. Returns a compact JSON
-        inventory: file_id, and per slide the text ids and table ids to
-        rewrite. Decorations are omitted on purpose (a template slide can
+        inventory: file_id, per slide the text ids and table ids to rewrite
+        and the picture ids (`pictures[]`, droppable via reuse drop_ids), and
+        `images[]`: the images inside the .pptx (slides, backgrounds,
+        layout/master logos) with a `ref` usable as
+        `"image": {"template_media": "<ref>"}` on new image slides.
+        Decorations are omitted on purpose (a template slide can
         have hundreds) and are cloned automatically. Then call
         `generate_slides` once, following the "next" field. Never call
         `generate_slides` for a template request before this tool has
@@ -6222,7 +6399,9 @@ class Tools:
                 data, pack, __request__, __user__
             )
         else:
-            log.debug("[inspect_slides] inspect_extract_images disabled")
+            # The valve gates the cache upload only; the inventory is still listed.
+            log.debug("[inspect_slides] inspect_extract_images disabled (no upload)")
+            images_json = _inspect_images_to_json(_extract_referenced_media(data, pack))
 
         payload = _serialize_inspect_payload(
             pack,
@@ -6599,8 +6778,11 @@ class Tools:
         - "alert":        title, level (info|tip|warning|danger), body or bullets[]
         - "table":        headers[], rows[] (lists or list of dicts)
         - "text_image_right"/"image_left_text_right": title, bullets[]/body,
-              image_hint ("stock query") or image_url or base64
-        - "image_full_caption": title, subtitle, image_hint/image_url
+              image_hint ("stock query") or image_url or base64, or an image
+              of the template: "image": {"template_media": "<inspect images[].ref>"}
+              (needs reference_file_id)
+        - "image_full_caption": title, subtitle, image_hint/image_url/image
+        - "image_grid": title, images[] (each like `image` above)
         - "closing":      title, eyebrow, takeaways[], contact
 
         DESIGN GUIDELINES (follow them):
@@ -6714,13 +6896,21 @@ class Tools:
                         return self._error(str(exc))
 
         await self._emit(__event_emitter__, "Generating presentation...", done=False)
+        missing_media: list[str] = []
         try:
             _pf = [s for s in _as_list(_first(spec, "slides", "sections", "pages",
                                               "deck", default=[])) if isinstance(s, dict)]
             if any(_resolve_layout(s) in ("image_full_caption", "image_grid",
                    "text_image_right", "image_left_text_right") for s in _pf):
                 await self._emit(__event_emitter__, "Fetching images...", done=False)
-                await self._prefetch_images(_pf, __request__, __user__)
+                wants_media = "ppt/media/" in json.dumps(_pf, ensure_ascii=False, default=str)
+                await self._prefetch_images(
+                    _pf, __request__, __user__,
+                    template_media=(
+                        _template_media_map(reference_bytes) if wants_media else None
+                    ),
+                    missing=missing_media,
+                )
             if template_pack is not None:
                 data, n = self._build(
                     spec,
@@ -6755,6 +6945,15 @@ class Tools:
                               kb=max(1, round(len(data) / 1024)),
                               file_id=file_id)
         await self._emit(__event_emitter__, "Presentation ready.", done=True)
+        if missing_media:
+            refs = ", ".join(sorted(set(missing_media)))
+            note = (
+                f"{len(missing_media)} template image(s) could not be placed "
+                f"({refs}) and show a placeholder. template_media needs "
+                "reference_file_id with template mode on and a ref from "
+                "inspect_slides images[]."
+            )
+            template_extra = f"{template_extra}\n\n{note}" if template_extra else note
         return self._success(fname, url, extra=template_extra)
 
 

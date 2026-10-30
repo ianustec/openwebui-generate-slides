@@ -28,7 +28,7 @@ fallback) and a clickable **download link** appears in the chat.
 - **Lucide-style icons** bundled in the file (no network dependency for icons).
 - **Optional images** from Unsplash (with a key) or generated via Open WebUI.
 - **Template Mode**: build a deck by cloning shapes from a user `.pptx` template and overlaying content in the template safe zone.
-- **`inspect_slides`**: JSON inventory of template shapes, safe zones, and optional embedded images (for `drop_ids` and mapping).
+- **`inspect_slides`**: JSON inventory of the template for the model: text, table and picture ids per slide, and every image inside the `.pptx` (slides, backgrounds, layout/master logos) with a `ref` the model can place on new slides.
 - **Single-file**: one self-contained `.py`, ready to paste into the Tools registry.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
@@ -97,7 +97,7 @@ Works on the standard theme engine (no `reference_file_id` required):
 
 Use this when the user attaches a **template `.pptx`** and wants the output to keep its look (backgrounds, logos, decorative shapes) while replacing slide content.
 
-1. **Step 1 — `inspect_slides`** — Pass the Files API `file_id` (or rely on chat attachment auto-detection **only in this tool**). Returns factual JSON: shape `"id"`, kind, bbox, `safe_zone`, verbatim text, optional `images[]`.
+1. **Step 1 — `inspect_slides`** — Pass the Files API `file_id` (or rely on chat attachment auto-detection **only in this tool**). Returns a compact JSON for the model: per slide the text, table and picture ids with their verbatim text, and `images[]` (`ref`, size, slides, `on`). Decorations, bbox and safe zones stay server-side: decorations are cloned and safe zones applied by the tool.
 2. **Step 2 — Model** — Builds the content JSON plus the **same** `reference_file_id`. Prefer per-slide **`reuse`** (`slide`, `keep_ids`, `drop_ids`, `text` from inspect shape `"id"`) when mirroring each template slide; otherwise `template_mapping` + `template_edits`.
 3. **Step 3 — `generate_slides(content)`** — Re-downloads the reference, clones allowed shapes, overlays layouts in the safe zone, saves the `.pptx`. Requires admin valve **`template_mode_enabled=true`**.
 
@@ -183,7 +183,7 @@ You can force the accent with `"accent": "#C99A3B"`.
 | `pptx_export_dir` | `/app/backend/data/cache/files` | Fallback directory for saving |
 | `template_mode_enabled` | `false` | Enable reference download + template clone in `generate_slides` |
 | `inspect_slides_enabled` | `true` | Allow the `inspect_slides` tool |
-| `inspect_extract_images` | `true` | Upload sidecar assets on inspect (`images[]` in JSON) |
+| `inspect_extract_images` | `true` | Upload the template images to the Files API cache on inspect (`images[]` is returned either way) |
 | `template_strict_mode` | `false` | Fail generate when reference `safe_zone` is not `computed` or is too small |
 | `presentation_edit_enabled` | `false` | Enable `edit_presentation` (post-generate fixes on an existing output UUID) |
 | `presentation_edit_min_font_pt` | `14` | Floor for `shrink_font` when op omits `min_pt` |
