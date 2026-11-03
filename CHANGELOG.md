@@ -2,6 +2,46 @@
 
 All notable changes to the Generate Slides Open WebUI tool.
 
+## [2.0.2] — Never return an empty deck
+
+- **Fix:** if a model called `generate_slides` with `meta` / `theme` / `slides` as separate arguments, Open WebUI dropped them (undeclared parameters), the tool received `{}` and saved an **empty .pptx**. `generate_slides` and `validate_deck` now declare these optional parameters and merge them into the deck.
+- **Fix:** a call with no slides now returns a "call again with the full deck" result instead of creating a file.
+- `source` written on a row or block is moved up to the slide (models often put it there).
+- 34 more Font Awesome icons (tags, invoice, percent, boxes, credit card, briefcase, calculator, microchip, …) and matching aliases.
+
+## [2.0.1] — Sturdier JSON repair, content warnings
+
+- **Structural bracket repair** for model-written decks: fixes doubled `{{`, wrong-kind closers (`]` for `}`), wrong-kind openers, and slides accidentally nested inside the previous slide's row. In fuzz tests on the example decks (one corrupted bracket each), ~79% of single-bracket mistakes rebuild the exact deck, about 6% give a valid deck with a block shifted, and the rest return a precise error for the model.
+- **Content warnings** returned with the download link: figures without a `source` line (restored from the kit validator), single-block slides, thin slides (under ~45 words).
+- **More icon aliases** (`cog`, `gear`, `bolt`, `chart-line`, `trending-up`, `dollar`, `cpu`, `workflow`, …) so common names don't fall back to a dot.
+- Regression fixtures from real model output in `examples/kit/regressions/`.
+
+## [2.0.0] — Deck Kit engine (v2 blocks format)
+
+Classic `layout` decks, Template Mode and `edit_presentation` behave exactly as in 1.0.4. The new engine is used only when a deck uses the blocks format.
+
+### New engine
+- The Deck Kit renderer, ported from pptxgenjs to python-pptx inside the single file: **44 components**, **14 theme presets** (incl. industry, print and high-contrast), cover/section/content/closing slide types, rows × blocks grid.
+- Measured auto-fit: text is sized from Calibri/Carlito metrics, and sibling items share one font size.
+- Native, editable charts including **combo** (columns + line on a secondary axis, still editable in PowerPoint's data sheet), radar, stacked and doughnut. Waterfall, bubble, mekko, Harvey balls, Gantt dependency arrows and journey emotion curves are drawn as native shapes.
+- Images and avatars from URLs, data URIs or an admin images folder (`kit_images_dir`).
+- 100 Font Awesome Free icons embedded (CC BY 4.0), with ~150 friendly aliases; the classic Lucide set is used as a fallback.
+
+### New tools
+- `get_deck_components(names)` — LLM-facing catalogue (overview, or fields + example per component).
+- `get_deck_template(name)` — 17 layout recipes plus a `full_deck` starter.
+- `validate_deck(content)` — schema + layout dry run without creating a file.
+
+### Model guardrails
+- JSON repair for one missing or extra bracket, code fences, surrounding prose and `{"deck": …}` wrappers (applies to classic decks too).
+- Schema validation with exact error paths, returned as a "call again" tool result.
+- Layout notes (overflow, rows too short, **new: blocks too narrow for their component**) returned with the link.
+
+### Docs and tests
+- `prompts/deck-builder-system-prompt.md` — system prompt for a "Deck Builder" model.
+- `examples/kit/` — the 35-slide component showcase and an SAP Business AI brief.
+- `examples/kit_engine_smoke.py` — added to `run_production_checks.py`.
+
 ## [1.0.4] — Templates and presentation edit
 
 With the new valves left at their defaults, `generate_slides` still builds a deck from scratch, as in v1.0.3.

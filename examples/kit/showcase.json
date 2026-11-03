@@ -1,0 +1,2486 @@
+{
+ "meta": {
+  "title": "Deck Kit — Component Showcase (44 components)",
+  "author": "Deck Kit",
+  "footer": "Illustrative data"
+ },
+ "theme": "midnight_violet",
+ "slides": [
+  {
+   "type": "cover",
+   "kicker": "Component showcase · illustrative data",
+   "title": "AI-led finance transformation: from pilots to a governed, scaled operating model",
+   "subtitle": "Every visual in this deck is a native, editable PowerPoint shape or chart generated from JSON",
+   "meta": "Deck Kit · Example deck",
+   "blocks": [
+    {
+     "type": "kpis",
+     "items": [
+      {
+       "value": "44",
+       "label": "components available to the model",
+       "icon": "modules"
+      },
+      {
+       "value": "14",
+       "label": "theme presets, overridable per deck",
+       "icon": "sparkles"
+      },
+      {
+       "value": "100%",
+       "label": "native shapes and charts — fully editable",
+       "icon": "check"
+      },
+      {
+       "value": "0",
+       "label": "images of text: everything stays editable",
+       "icon": "document"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "kicker": "Agenda",
+   "title": "This deck walks through every component the model can use, grouped by the job each one does",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "agenda",
+       "highlight": 1,
+       "items": [
+        {
+         "title": "Executive summary",
+         "text": "Headline numbers and the key message"
+        },
+        {
+         "title": "How it works",
+         "text": "Process, stages and architecture"
+        },
+        {
+         "title": "The numbers",
+         "text": "Charts, bridges and tables"
+        },
+        {
+         "title": "Making choices",
+         "text": "Scorecards and prioritization matrices"
+        },
+        {
+         "title": "Plan and track",
+         "text": "Roadmaps and progress"
+        },
+        {
+         "title": "Structure and ecosystem",
+         "text": "Hubs, trees, pyramids and funnels"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative data"
+  },
+  {
+   "type": "section",
+   "number": "01",
+   "title": "How it works",
+   "subtitle": "Process flows, maturity stages and layered architectures"
+  },
+  {
+   "kicker": "Process · chevrons · callout",
+   "title": "A six-step agentic loop turns user intent into governed action, with autonomy dialled per process",
+   "rows": [
+    {
+     "h": 1.5,
+     "blocks": [
+      {
+       "type": "process",
+       "highlight": 2,
+       "steps": [
+        {
+         "icon": "chat",
+         "title": "Intent",
+         "text": "User states the outcome in natural language"
+        },
+        {
+         "icon": "hierarchy",
+         "title": "Orchestrate",
+         "text": "Assistant plans and delegates to agents"
+        },
+        {
+         "icon": "graph",
+         "title": "Ground",
+         "text": "Knowledge graph and data products add context"
+        },
+        {
+         "icon": "ai",
+         "title": "Reason",
+         "text": "Best-fit model per task: LLM, tabular, domain"
+        },
+        {
+         "icon": "settings",
+         "title": "Act",
+         "text": "Executes with authorizations and audit trail"
+        },
+        {
+         "icon": "shield",
+         "title": "Govern",
+         "text": "Registry and outcome mining close the loop"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "h": 0.5,
+     "blocks": [
+      {
+       "type": "chevrons",
+       "heading": "Autonomy is set per process",
+       "stages": [
+        {
+         "title": "Inform",
+         "text": "Answers & insights"
+        },
+        {
+         "title": "Recommend",
+         "text": "Next-best action"
+        },
+        {
+         "title": "Act with approval",
+         "text": "Human-in-the-loop"
+        },
+        {
+         "title": "Autonomous",
+         "text": "Policy-bounded"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "h": 0.75,
+     "blocks": [
+      {
+       "type": "callout",
+       "w": 2,
+       "kind": "statement",
+       "icon": "idea",
+       "text": "Start with ‘recommend’ in finance; move to ‘act with approval’ only once accuracy is proven on live data.",
+       "attribution": "Illustrative recommendation"
+      },
+      {
+       "type": "callout",
+       "kind": "stat",
+       "tone": "dark",
+       "value": "4",
+       "text": "autonomy levels",
+       "attribution": "Illustrative framing"
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative data for component demonstration"
+  },
+  {
+   "kicker": "Layers with side panel",
+   "title": "Four tiers, one governed stack: experience on top, execution in the middle, data and context underneath",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "layers",
+       "tiers": [
+        {
+         "label": "Experience",
+         "sublabel": "Where people work",
+         "items": [
+          {
+           "title": "Answer",
+           "text": "Questions across all data"
+          },
+          {
+           "title": "Act",
+           "text": "Assistants execute in the flow"
+          },
+          {
+           "title": "Develop",
+           "text": "Build and extend agents"
+          },
+          {
+           "title": "Connect",
+           "text": "Third-party agents via A2A"
+          }
+         ]
+        },
+        {
+         "label": "Execution",
+         "sublabel": "Assistants and agents",
+         "items": [
+          {
+           "title": "Finance",
+           "bullets": [
+            "Closing",
+            "Receivables",
+            "Billing"
+           ]
+          },
+          {
+           "title": "Spend",
+           "bullets": [
+            "Sourcing",
+            "Invoices",
+            "Supplier risk"
+           ]
+          },
+          {
+           "title": "Supply chain",
+           "bullets": [
+            "Planning",
+            "Disruption",
+            "Logistics"
+           ]
+          },
+          {
+           "title": "People",
+           "bullets": [
+            "Hiring",
+            "Payroll",
+            "Upskilling"
+           ]
+          }
+         ]
+        },
+        {
+         "label": "Platform",
+         "sublabel": "Build · context · govern",
+         "items": [
+          {
+           "title": "Studio",
+           "bullets": [
+            "No-code → pro-code",
+            "Model choice"
+           ]
+          },
+          {
+           "title": "Models",
+           "bullets": [
+            "LLMs",
+            "Tabular models"
+           ]
+          },
+          {
+           "title": "Knowledge graph",
+           "bullets": [
+            "Entities",
+            "Processes"
+           ],
+           "highlight": true
+          },
+          {
+           "title": "Data cloud",
+           "bullets": [
+            "Data products",
+            "Master data"
+           ]
+          }
+         ],
+         "base": "Integration, extension, security and runtime foundation"
+        },
+        {
+         "label": "Core systems",
+         "sublabel": "Records",
+         "items": [
+          {
+           "title": "ERP"
+          },
+          {
+           "title": "HR & spend apps"
+          },
+          {
+           "title": "Non-SAP systems"
+          }
+         ]
+        }
+       ],
+       "side": {
+        "title": "Govern & trust",
+        "subtitle": "Spans every tier",
+        "icon": "shield",
+        "items": [
+         {
+          "title": "Agent registry",
+          "text": "Inventory of every agent, model and tool server"
+         },
+         {
+          "title": "AI management system",
+          "text": "ISO/IEC 42001-style controls"
+         },
+         {
+          "title": "Authorizations",
+          "text": "Agents inherit roles and audit trails"
+         },
+         {
+          "title": "Outcome mining",
+          "text": "Measures what each agent delivers"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative architecture"
+  },
+  {
+   "type": "section",
+   "number": "02",
+   "title": "The numbers",
+   "subtitle": "Native charts, a shape-drawn waterfall and auto-coloured tables"
+  },
+  {
+   "kicker": "Charts · cards",
+   "title": "Cloud ERP customers adopt AI twice as fast, and most spend shifts to consumption-based agent runs",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "chart",
+       "w": 1.3,
+       "heading": "AI adoption by deployment model (% of customers)",
+       "chart_type": "column",
+       "categories": [
+        "2024",
+        "2025",
+        "2026",
+        "2027e"
+       ],
+       "series": [
+        {
+         "name": "Cloud ERP",
+         "values": [
+          18,
+          34,
+          52,
+          68
+         ]
+        },
+        {
+         "name": "On-premise",
+         "values": [
+          7,
+          12,
+          19,
+          25
+         ]
+        }
+       ],
+       "unit": "%"
+      },
+      {
+       "type": "chart",
+       "heading": "AI spend mix 2026",
+       "chart_type": "doughnut",
+       "categories": [
+        "Included AI",
+        "Premium per user",
+        "Agent consumption",
+        "Build & extend"
+       ],
+       "series": [
+        {
+         "name": "Mix",
+         "values": [
+          20,
+          30,
+          35,
+          15
+         ]
+        }
+       ],
+       "unit": "%"
+      },
+      {
+       "type": "cards",
+       "w": 0.8,
+       "heading": "So what",
+       "columns": 1,
+       "style": "tinted",
+       "items": [
+        {
+         "icon": "cloud",
+         "title": "Cloud core first",
+         "text": "Adoption gap widens every year."
+        },
+        {
+         "icon": "money",
+         "title": "Budget for runs",
+         "text": "Agents drive most variable spend."
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative data"
+  },
+  {
+   "kicker": "Waterfall · table",
+   "title": "The business case nets €12.9M a year once licence and run costs are offset against automation savings",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "waterfall",
+       "w": 1.2,
+       "heading": "Annual value bridge (€M)",
+       "prefix": "€",
+       "unit": "M",
+       "steps": [
+        {
+         "label": "Collections uplift",
+         "value": 6.2
+        },
+        {
+         "label": "Close automation",
+         "value": 4.1
+        },
+        {
+         "label": "Procurement savings",
+         "value": 5.8
+        },
+        {
+         "label": "Licences & AI units",
+         "value": -2.3
+        },
+        {
+         "label": "Run & support",
+         "value": -0.9
+        },
+        {
+         "label": "Net annual value",
+         "value": 0,
+         "total": true
+        }
+       ]
+      },
+      {
+       "type": "table",
+       "heading": "Key risks",
+       "columns": [
+        "Risk",
+        "Exposure",
+        "Mitigation"
+       ],
+       "col_widths": [
+        1.6,
+        1,
+        3
+       ],
+       "rows": [
+        [
+         "Data readiness",
+         "High",
+         "Data products and MDM before scaling agents"
+        ],
+        [
+         "Consumption cost",
+         "Medium",
+         "AI-unit budgets and monthly usage review"
+        ],
+        [
+         "Adoption",
+         "Medium",
+         "Digital adoption tooling and champions"
+        ],
+        [
+         "Model accuracy",
+         "Low",
+         "Human approval until KPIs are stable"
+        ]
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative data"
+  },
+  {
+   "kicker": "Scorecard · matrix",
+   "title": "Option B wins on value and risk, and collections and close are the quick wins to start with",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "scorecard",
+       "heading": "Option assessment",
+       "show_total": true,
+       "options": [
+        "A: Point tools",
+        "B: Suite AI",
+        "C: Custom build"
+       ],
+       "criteria": [
+        {
+         "name": "Time to value",
+         "weight": 3,
+         "scores": [
+          3,
+          3,
+          1
+         ]
+        },
+        {
+         "name": "Process coverage",
+         "weight": 2,
+         "scores": [
+          1,
+          4,
+          3
+         ]
+        },
+        {
+         "name": "Governance & audit",
+         "weight": 3,
+         "scores": [
+          1,
+          4,
+          2
+         ]
+        },
+        {
+         "name": "Total cost (5 yrs)",
+         "weight": 2,
+         "scores": [
+          3,
+          2,
+          1
+         ]
+        },
+        {
+         "name": "Differentiation",
+         "weight": 1,
+         "scores": [
+          1,
+          2,
+          4
+         ]
+        }
+       ]
+      },
+      {
+       "type": "matrix",
+       "heading": "Use-case prioritization",
+       "highlight": 0,
+       "x_axis": {
+        "label": "Effort",
+        "low": "Low",
+        "high": "High"
+       },
+       "y_axis": {
+        "label": "Value",
+        "low": "Low",
+        "high": "High"
+       },
+       "quadrants": [
+        {
+         "title": "Quick wins",
+         "text": "Start in wave 1"
+        },
+        {
+         "title": "Strategic bets",
+         "text": "Plan for wave 2"
+        },
+        {
+         "title": "Fill-ins",
+         "text": "Opportunistic"
+        },
+        {
+         "title": "Deprioritize",
+         "text": "Revisit later"
+        }
+       ],
+       "points": [
+        {
+         "label": "AR collections",
+         "x": 0.2,
+         "y": 0.85
+        },
+        {
+         "label": "Close automation",
+         "x": 0.38,
+         "y": 0.7
+        },
+        {
+         "label": "Demand sensing",
+         "x": 0.78,
+         "y": 0.82
+        },
+        {
+         "label": "Expense audit",
+         "x": 0.25,
+         "y": 0.3
+        },
+        {
+         "label": "Custom pricing AI",
+         "x": 0.85,
+         "y": 0.22
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative assessment"
+  },
+  {
+   "kicker": "Gantt · progress",
+   "title": "An 18-month roadmap secures the foundation first, then scales assistants line of business by line of business",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "gantt",
+       "w": 1.7,
+       "heading": "Roadmap (months)",
+       "periods": {
+        "start": 0,
+        "end": 18,
+        "step": 3,
+        "prefix": "M"
+       },
+       "phases": [
+        {
+         "label": "Mobilize",
+         "start": 0,
+         "end": 3,
+         "text": "Value hypotheses, AI-unit baseline, governance"
+        },
+        {
+         "label": "Foundation",
+         "start": 0,
+         "end": 6,
+         "text": "Clean core, data products, master data"
+        },
+        {
+         "label": "Activate",
+         "start": 3,
+         "end": 9,
+         "text": "Two assistants in finance with KPIs"
+        },
+        {
+         "label": "Scale",
+         "start": 6,
+         "end": 15,
+         "text": "Multi-LoB rollout and adoption programme",
+         "color": "primary"
+        },
+        {
+         "label": "Differentiate",
+         "start": 9,
+         "end": 18,
+         "text": "Custom agents and third-party agent interop",
+         "color": "dark"
+        }
+       ],
+       "milestones": [
+        {
+         "at": 6,
+         "label": "Wave 1 live"
+        },
+        {
+         "at": 12,
+         "label": "Wave 2 live"
+        }
+       ]
+      },
+      {
+       "type": "progress",
+       "heading": "Readiness by function",
+       "items": [
+        {
+         "label": "Finance",
+         "value": 72,
+         "target": 85
+        },
+        {
+         "label": "Procurement",
+         "value": 55,
+         "target": 75
+        },
+        {
+         "label": "Supply chain",
+         "value": 41,
+         "target": 70
+        },
+        {
+         "label": "HR",
+         "value": 63,
+         "target": 70
+        },
+        {
+         "label": "Customer",
+         "value": 30,
+         "target": 60
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative plan"
+  },
+  {
+   "kicker": "Hub · tree",
+   "title": "The knowledge graph is the hub every function plugs into, and the value tree shows where the €40M comes from",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "hub",
+       "heading": "Ecosystem",
+       "center": {
+        "title": "Knowledge graph",
+        "text": "Shared business context"
+       },
+       "nodes": [
+        {
+         "title": "Finance",
+         "icon": "finance",
+         "text": "Close, AR, billing"
+        },
+        {
+         "title": "Procurement",
+         "icon": "handshake",
+         "text": "Sourcing, invoices"
+        },
+        {
+         "title": "Supply chain",
+         "icon": "truck",
+         "text": "Planning, logistics"
+        },
+        {
+         "title": "HR",
+         "icon": "hr",
+         "text": "Hiring, payroll"
+        },
+        {
+         "title": "Customer",
+         "icon": "customer",
+         "text": "Quotes, service"
+        },
+        {
+         "title": "Partners",
+         "icon": "partner",
+         "text": "Third-party agents"
+        }
+       ]
+      },
+      {
+       "type": "tree",
+       "heading": "Working-capital value tree",
+       "root": {
+        "title": "Release €40M working capital"
+       },
+       "branches": [
+        {
+         "title": "Receivables",
+         "items": [
+          "Risk-based collections",
+          "Faster dispute resolution",
+          "Credit limit automation"
+         ]
+        },
+        {
+         "title": "Payables",
+         "items": [
+          "Harmonized payment terms",
+          "Early-payment discounts"
+         ]
+        },
+        {
+         "title": "Inventory",
+         "items": [
+          "Demand sensing",
+          "Safety-stock optimization",
+          "Obsolescence alerts"
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative data"
+  },
+  {
+   "kicker": "Pyramid · funnel · comparison",
+   "title": "Licensing stacks in three tiers, only one in thirteen use cases reaches production, and the target model fixes that",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "pyramid",
+       "w": 0.9,
+       "heading": "Licensing tiers",
+       "levels": [
+        {
+         "title": "Agents",
+         "text": "Consumption-metered"
+        },
+        {
+         "title": "Premium AI",
+         "text": "Per user / month"
+        },
+        {
+         "title": "Base AI",
+         "text": "Included with cloud apps"
+        }
+       ]
+      },
+      {
+       "type": "funnel",
+       "w": 0.9,
+       "heading": "Use-case funnel",
+       "stages": [
+        {
+         "title": "Ideas logged",
+         "value": "120"
+        },
+        {
+         "title": "Positive case",
+         "value": "34"
+        },
+        {
+         "title": "Piloted",
+         "value": "17"
+        },
+        {
+         "title": "In production",
+         "value": "9"
+        }
+       ]
+      },
+      {
+       "type": "comparison",
+       "w": 1.5,
+       "heading": "Operating model",
+       "vs": true,
+       "columns": [
+        {
+         "title": "Today",
+         "subtitle": "Pilot sprawl",
+         "bullets": [
+          "Isolated pilots per team",
+          "No shared data products",
+          "Costs untracked"
+         ],
+         "footer": "9 of 120 ideas live"
+        },
+        {
+         "title": "Target",
+         "subtitle": "AI product office",
+         "highlight": true,
+         "bullets": [
+          "One intake and value gate",
+          "Shared data and agent registry",
+          "AI FinOps per use case"
+         ],
+         "footer": "3x faster to production"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative data"
+  },
+  {
+   "dark": true,
+   "kicker": "Timeline · bullets · quote (dark slide)",
+   "title": "Three release waves get finance live within a year, governed by four non-negotiable design principles",
+   "rows": [
+    {
+     "h": 1.1,
+     "blocks": [
+      {
+       "type": "timeline",
+       "items": [
+        {
+         "date": "Q1",
+         "title": "Mobilize",
+         "text": "Governance, baseline, data audit"
+        },
+        {
+         "date": "Q2",
+         "title": "Wave 1",
+         "text": "Receivables and close assistants"
+        },
+        {
+         "date": "Q3",
+         "title": "Wave 2",
+         "text": "Procurement and planning"
+        },
+        {
+         "date": "Q4",
+         "title": "Scale",
+         "text": "Custom agents, partner agents",
+         "highlight": true
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "h": 1,
+     "blocks": [
+      {
+       "type": "bullets",
+       "w": 1.4,
+       "heading": "Design principles",
+       "items": [
+        {
+         "lead": "Data first:",
+         "text": "no agent goes live without a certified data product."
+        },
+        {
+         "lead": "Human in the loop:",
+         "text": "approval until accuracy holds for 8 weeks."
+        },
+        {
+         "lead": "Measure outcomes:",
+         "text": "every agent has a KPI and an owner."
+        },
+        {
+         "lead": "Budget runs:",
+         "text": "AI-unit caps per use case."
+        }
+       ]
+      },
+      {
+       "type": "callout",
+       "kind": "quote",
+       "tone": "tint",
+       "text": "Our superpower will come from people on top of agents.",
+       "attribution": "CFO, consumer goods company (illustrative)"
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative plan"
+  },
+  {
+   "kicker": "Cards with stats · compact KPIs",
+   "title": "Early deployments report double-digit gains, which the programme must now prove on its own processes",
+   "rows": [
+    {
+     "h": 0.6,
+     "blocks": [
+      {
+       "type": "kpis",
+       "highlight": 0,
+       "items": [
+        {
+         "value": "€12.9M",
+         "label": "net annual value"
+        },
+        {
+         "value": "18 mo",
+         "label": "to full scale"
+        },
+        {
+         "value": "9",
+         "label": "use cases live"
+        },
+        {
+         "value": "3x",
+         "label": "faster to production"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "blocks": [
+      {
+       "type": "cards",
+       "columns": 3,
+       "items": [
+        {
+         "stat": "−90%",
+         "title": "Issue resolution",
+         "tag": "Warehouse · custom assistant",
+         "text": "Workers fix floor problems without waiting for an expert."
+        },
+        {
+         "stat": "−50%",
+         "title": "Trade classification",
+         "tag": "Finance · trade assistant",
+         "text": "Effort cut in early deployments."
+        },
+        {
+         "stat": "+20%",
+         "title": "Productivity",
+         "tag": "Internal rollout",
+         "text": "Across finance, HR and procurement."
+        },
+        {
+         "icon": "users",
+         "title": "People on top of agents",
+         "text": "Change management is the critical path, not the model."
+        },
+        {
+         "icon": "target",
+         "title": "Prove it locally",
+         "text": "Baseline every KPI before go-live."
+        },
+        {
+         "icon": "rocket",
+         "title": "Scale what works",
+         "text": "Two waves, then a factory model."
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative data"
+  },
+  {
+   "type": "section",
+   "number": "07",
+   "title": "Strategy frameworks",
+   "subtitle": "SWOT, Venn, cycles, value chains, onion diagrams, staircases and system flows"
+  },
+  {
+   "kicker": "SWOT · Venn",
+   "title": "The platform's strength is process data, and its value sits where data, process context and AI models overlap",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "swot",
+       "w": 1.35,
+       "heading": "Position assessment",
+       "strengths": [
+        "Largest ERP installed base",
+        "Deep process and master data",
+        "Certified governance"
+       ],
+       "weaknesses": [
+        "Most new AI is cloud-only",
+        "Consumption pricing is complex"
+       ],
+       "opportunities": [
+        "Agentic automation of finance and spend",
+        "Partner-built agents"
+       ],
+       "threats": [
+        "Hyperscaler copilots",
+        "Slow on-premise migration"
+       ]
+      },
+      {
+       "type": "venn",
+       "heading": "Where the value is",
+       "sets": [
+        {
+         "title": "Business data",
+         "text": "Clean, governed"
+        },
+        {
+         "title": "Process context",
+         "text": "How work flows"
+        },
+        {
+         "title": "AI models",
+         "text": "LLM + tabular"
+        }
+       ],
+       "overlap": {
+        "title": "Business AI",
+        "text": "Trusted outcomes"
+       }
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative assessment"
+  },
+  {
+   "kicker": "Cycle · value chain",
+   "title": "Usage feeds a data flywheel, and AI now touches every primary activity of the value chain",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "cycle",
+       "heading": "Data flywheel",
+       "center": {
+        "title": "Flywheel",
+        "text": "Compounding advantage"
+       },
+       "steps": [
+        {
+         "title": "Adopt",
+         "text": "Users work through assistants",
+         "icon": "users"
+        },
+        {
+         "title": "Capture",
+         "text": "Every action enriches data",
+         "icon": "database"
+        },
+        {
+         "title": "Learn",
+         "text": "Models improve on real outcomes",
+         "icon": "ai"
+        },
+        {
+         "title": "Improve",
+         "text": "Better answers and automation",
+         "icon": "growth"
+        },
+        {
+         "title": "Expand",
+         "text": "More processes join",
+         "icon": "rocket"
+        }
+       ]
+      },
+      {
+       "type": "value_chain",
+       "w": 1.3,
+       "heading": "AI across the value chain",
+       "support": [
+        {
+         "title": "Infrastructure",
+         "text": "Cloud ERP, data cloud, AI platform"
+        },
+        {
+         "title": "People",
+         "text": "AI skills, change management"
+        },
+        {
+         "title": "Technology",
+         "text": "Agents, knowledge graph, integration"
+        }
+       ],
+       "primary": [
+        {
+         "title": "Source",
+         "text": "Sourcing assistant"
+        },
+        {
+         "title": "Make",
+         "text": "Quality prediction"
+        },
+        {
+         "title": "Deliver",
+         "text": "Disruption response"
+        },
+        {
+         "title": "Sell",
+         "text": "AI quoting"
+        },
+        {
+         "title": "Service",
+         "text": "Case triage"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative framework"
+  },
+  {
+   "kicker": "Flow · concentric",
+   "title": "An invoice agent turns documents and ERP data into posted entries, inside a clean-core extension model",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "flow",
+       "w": 1.35,
+       "heading": "Agent system context",
+       "inputs": [
+        {
+         "title": "Supplier invoices",
+         "text": "PDF, e-invoice",
+         "icon": "invoice"
+        },
+        {
+         "title": "Purchase orders",
+         "text": "ERP",
+         "icon": "database"
+        },
+        {
+         "title": "Policies",
+         "text": "Tolerance rules",
+         "icon": "compliance"
+        }
+       ],
+       "core": {
+        "title": "Invoice agent",
+        "icon": "robot",
+        "text": "Runs inside governed workflows",
+        "bullets": [
+         "Extract and classify",
+         "Three-way match",
+         "Route exceptions"
+        ]
+       },
+       "outputs": [
+        {
+         "title": "Posted invoice",
+         "text": "Straight-through",
+         "icon": "check"
+        },
+        {
+         "title": "Exception queue",
+         "text": "Human review",
+         "icon": "warning"
+        },
+        {
+         "title": "Audit trail",
+         "text": "Every step logged",
+         "icon": "document"
+        }
+       ]
+      },
+      {
+       "type": "concentric",
+       "heading": "Clean-core layers",
+       "rings": [
+        {
+         "title": "Core",
+         "text": "Standard ERP, no modifications"
+        },
+        {
+         "title": "Extensions",
+         "text": "Side-by-side apps on the platform"
+        },
+        {
+         "title": "Agents",
+         "text": "Assistants and custom agents"
+        },
+        {
+         "title": "Ecosystem",
+         "text": "Partner and third-party agents via A2A"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative architecture"
+  },
+  {
+   "kicker": "Staircase · rings",
+   "title": "Ambition rises in four steps, and current adoption shows where the next push is needed",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "staircase",
+       "w": 1.3,
+       "heading": "Ambition path",
+       "steps": [
+        {
+         "label": "2025",
+         "title": "Copilot",
+         "text": "Answers and navigation"
+        },
+        {
+         "label": "H1 2026",
+         "title": "Assistants",
+         "text": "Task execution with approval"
+        },
+        {
+         "label": "H2 2026",
+         "title": "Agents",
+         "text": "Multi-step processes"
+        },
+        {
+         "label": "2027",
+         "title": "Autonomous",
+         "text": "Policy-bounded end to end"
+        }
+       ]
+      },
+      {
+       "type": "rings",
+       "heading": "Adoption today",
+       "items": [
+        {
+         "value": 72,
+         "label": "Users active",
+         "text": "Weekly"
+        },
+        {
+         "value": 45,
+         "label": "Processes in scope"
+        },
+        {
+         "value": 18,
+         "label": "Straight-through"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative data"
+  },
+  {
+   "type": "section",
+   "number": "08",
+   "title": "Assessment and data",
+   "subtitle": "Heatmaps, maturity grids, risk matrices, bubbles, Mekko, radar and combo charts"
+  },
+  {
+   "kicker": "Heatmap · maturity",
+   "title": "Finance is ready for agents today, while supply chain needs data and skills investment first",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "heatmap",
+       "heading": "AI readiness by function",
+       "rows": [
+        "Finance",
+        "Procurement",
+        "Supply chain",
+        "HR",
+        "Customer"
+       ],
+       "columns": [
+        "Data",
+        "Process",
+        "Skills",
+        "Tech",
+        "Sponsor"
+       ],
+       "scale_labels": [
+        "None",
+        "Low",
+        "Medium",
+        "High",
+        "Leading"
+       ],
+       "values": [
+        [
+         3,
+         4,
+         3,
+         3,
+         4
+        ],
+        [
+         3,
+         3,
+         2,
+         3,
+         3
+        ],
+        [
+         1,
+         2,
+         1,
+         2,
+         3
+        ],
+        [
+         2,
+         3,
+         2,
+         2,
+         2
+        ],
+        [
+         2,
+         2,
+         1,
+         3,
+         2
+        ]
+       ]
+      },
+      {
+       "type": "maturity",
+       "heading": "Capability maturity — current vs target",
+       "levels": [
+        "Initial",
+        "Managed",
+        "Defined",
+        "Measured",
+        "Optimized"
+       ],
+       "dimensions": [
+        {
+         "name": "Data governance",
+         "current": 2,
+         "target": 4
+        },
+        {
+         "name": "Process standardisation",
+         "current": 3,
+         "target": 4
+        },
+        {
+         "name": "AI operations",
+         "current": 1,
+         "target": 3
+        },
+        {
+         "name": "Security & compliance",
+         "current": 3,
+         "target": 5
+        },
+        {
+         "name": "Adoption & change",
+         "current": 2,
+         "target": 4
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative assessment"
+  },
+  {
+   "kicker": "Risk matrix",
+   "title": "Two risks sit in the red zone and need owners and mitigation before the first wave goes live",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "risk_matrix",
+       "risks": [
+        {
+         "label": "Master data quality below threshold",
+         "likelihood": 4,
+         "impact": 5,
+         "owner": "CDO"
+        },
+        {
+         "label": "AI-unit consumption above budget",
+         "likelihood": 4,
+         "impact": 3,
+         "owner": "CFO"
+        },
+        {
+         "label": "Low adoption in shared services",
+         "likelihood": 3,
+         "impact": 4,
+         "owner": "COO"
+        },
+        {
+         "label": "Regulatory change (EU AI Act)",
+         "likelihood": 2,
+         "impact": 4,
+         "owner": "Legal"
+        },
+        {
+         "label": "Integration delays to non-SAP systems",
+         "likelihood": 3,
+         "impact": 2,
+         "owner": "CIO"
+        },
+        {
+         "label": "Key-person dependency in the CoE",
+         "likelihood": 2,
+         "impact": 2,
+         "owner": "HR"
+        },
+        {
+         "label": "Vendor roadmap slips",
+         "likelihood": 2,
+         "impact": 3,
+         "owner": "PMO"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative risk register"
+  },
+  {
+   "kicker": "Bubble · Mekko",
+   "title": "Collections offer the most value for the least effort, in a market where incumbents hold half of every region",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "bubble",
+       "heading": "Use-case portfolio",
+       "x_axis": {
+        "label": "Effort (months)",
+        "min": 0,
+        "max": 12
+       },
+       "y_axis": {
+        "label": "Annual value (€M)",
+        "prefix": "€",
+        "min": 0,
+        "max": 8
+       },
+       "size_label": "users affected",
+       "bubbles": [
+        {
+         "label": "AR collections",
+         "x": 3,
+         "y": 6.2,
+         "size": 400
+        },
+        {
+         "label": "Close automation",
+         "x": 5,
+         "y": 4.1,
+         "size": 250
+        },
+        {
+         "label": "Sourcing",
+         "x": 7,
+         "y": 5.8,
+         "size": 600
+        },
+        {
+         "label": "Expense audit",
+         "x": 2,
+         "y": 1.5,
+         "size": 900
+        },
+        {
+         "label": "Demand sensing",
+         "x": 10,
+         "y": 6.9,
+         "size": 150
+        }
+       ]
+      },
+      {
+       "type": "mekko",
+       "heading": "Market share by region (size = market €B)",
+       "prefix": "€",
+       "unit": "B",
+       "part_names": [
+        "Vendor A",
+        "Vendor B",
+        "Vendor C",
+        "Others"
+       ],
+       "columns": [
+        {
+         "label": "Europe",
+         "width": 31,
+         "parts": [
+          {
+           "value": 46
+          },
+          {
+           "value": 18
+          },
+          {
+           "value": 12
+          },
+          {
+           "value": 24
+          }
+         ]
+        },
+        {
+         "label": "North America",
+         "width": 42,
+         "parts": [
+          {
+           "value": 34
+          },
+          {
+           "value": 28
+          },
+          {
+           "value": 15
+          },
+          {
+           "value": 23
+          }
+         ]
+        },
+        {
+         "label": "APAC",
+         "width": 22,
+         "parts": [
+          {
+           "value": 30
+          },
+          {
+           "value": 20
+          },
+          {
+           "value": 10
+          },
+          {
+           "value": 40
+          }
+         ]
+        },
+        {
+         "label": "MEA",
+         "width": 7,
+         "parts": [
+          {
+           "value": 40
+          },
+          {
+           "value": 15
+          },
+          {
+           "value": 10
+          },
+          {
+           "value": 35
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative data"
+  },
+  {
+   "kicker": "KPI sparklines · radar · combo",
+   "title": "Cloud backlog keeps compounding while AI attach rates rise, and the suite leads on four of six criteria",
+   "rows": [
+    {
+     "h": 0.8,
+     "blocks": [
+      {
+       "type": "kpis",
+       "items": [
+        {
+         "value": "€22.9B",
+         "label": "current cloud backlog (illustrative series)",
+         "trend": [
+          16.2,
+          17.1,
+          18.1,
+          18.2,
+          19.4,
+          21.9,
+          22.9
+         ],
+         "delta": "+27% YoY"
+        },
+        {
+         "value": "38%",
+         "label": "deals with AI attached",
+         "trend": [
+          12,
+          15,
+          19,
+          24,
+          29,
+          33,
+          38
+         ]
+        },
+        {
+         "value": "4.1x",
+         "label": "AI-unit consumption growth",
+         "trend": [
+          1,
+          1.4,
+          1.9,
+          2.6,
+          3.2,
+          4.1
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "h": 1.6,
+     "blocks": [
+      {
+       "type": "chart",
+       "heading": "Capability profile (0–10)",
+       "chart_type": "radar",
+       "categories": [
+        "Process depth",
+        "Data context",
+        "Model choice",
+        "Governance",
+        "Openness",
+        "Time to value"
+       ],
+       "series": [
+        {
+         "name": "Suite AI",
+         "values": [
+          9,
+          9,
+          7,
+          9,
+          6,
+          7
+         ]
+        },
+        {
+         "name": "Generic copilot",
+         "values": [
+          4,
+          3,
+          9,
+          5,
+          8,
+          8
+         ]
+        }
+       ]
+      },
+      {
+       "type": "chart",
+       "heading": "Cloud revenue (€B) and AI attach rate (%)",
+       "chart_type": "combo",
+       "categories": [
+        "Q1 25",
+        "Q2 25",
+        "Q3 25",
+        "Q4 25",
+        "Q1 26",
+        "Q2 26"
+       ],
+       "series": [
+        {
+         "name": "Cloud revenue",
+         "values": [
+          5.0,
+          5.1,
+          5.3,
+          5.6,
+          6.0,
+          6.3
+         ]
+        },
+        {
+         "name": "AI attach rate",
+         "type": "line",
+         "values": [
+          12,
+          15,
+          19,
+          24,
+          29,
+          33
+         ]
+        }
+       ],
+       "prefix": "€",
+       "unit": "B",
+       "decimals": 1,
+       "line_unit": "%"
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative data"
+  },
+  {
+   "type": "section",
+   "number": "09",
+   "title": "Organisation and delivery",
+   "subtitle": "Org charts, profiles, RACI, swimlanes, plans with dependencies, status and boards"
+  },
+  {
+   "kicker": "Gantt with dependencies",
+   "title": "The critical path runs through data readiness, so the foundation workstream gates every later wave",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "gantt",
+       "periods": {
+        "labels": [
+         "Q1 26",
+         "Q2 26",
+         "Q3 26",
+         "Q4 26",
+         "Q1 27",
+         "Q2 27"
+        ]
+       },
+       "phases": [
+        {
+         "label": "Mobilize",
+         "start": 0,
+         "end": 0,
+         "text": "Governance, value baseline, AI-unit budget"
+        },
+        {
+         "label": "Data foundation",
+         "start": 0,
+         "end": 2,
+         "text": "Data products, master data, quality KPIs",
+         "depends_on": 0
+        },
+        {
+         "label": "Wave 1 · Finance",
+         "start": 2,
+         "end": 3,
+         "text": "AR, close and billing assistants",
+         "depends_on": 1,
+         "color": "primary"
+        },
+        {
+         "label": "Wave 2 · Spend",
+         "start": 3,
+         "end": 4,
+         "text": "Sourcing and invoice agents",
+         "depends_on": 2,
+         "color": "info"
+        },
+        {
+         "label": "Adoption",
+         "start": 2,
+         "end": 5,
+         "text": "Champions, digital adoption, training",
+         "depends_on": 1,
+         "color": "secondary"
+        },
+        {
+         "label": "Custom agents",
+         "start": 4,
+         "end": 5,
+         "text": "Studio builds, partner agents",
+         "depends_on": [
+          2,
+          3
+         ],
+         "color": "dark"
+        }
+       ],
+       "milestones": [
+        {
+         "at": 2,
+         "label": "Data ready"
+        },
+        {
+         "at": 3,
+         "label": "Wave 1 live"
+        },
+        {
+         "at": 5,
+         "label": "Scale"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative plan"
+  },
+  {
+   "kicker": "Org chart",
+   "title": "A board-level steering committee with a design authority keeps business ownership and architecture aligned",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "org_chart",
+       "root": {
+        "name": "Steering Committee",
+        "role": "CFO (chair), CIO, COO"
+       },
+       "children": [
+        {
+         "name": "Design Authority",
+         "role": "Chief Architect",
+         "children": [
+          {
+           "name": "Data & AI lead",
+           "role": "Data products"
+          },
+          {
+           "name": "Security lead",
+           "role": "AI governance"
+          }
+         ]
+        },
+        {
+         "name": "Programme Office",
+         "role": "Programme Director",
+         "children": [
+          {
+           "name": "PMO lead",
+           "role": "Plan & risks"
+          },
+          {
+           "name": "FinOps lead",
+           "role": "AI-unit budget"
+          }
+         ]
+        },
+        {
+         "name": "Business Delivery",
+         "role": "Process owners",
+         "children": [
+          {
+           "name": "Finance",
+           "role": "Wave 1"
+          },
+          {
+           "name": "Procurement",
+           "role": "Wave 2"
+          },
+          {
+           "name": "Supply chain",
+           "role": "Wave 3"
+          }
+         ]
+        },
+        {
+         "name": "Change & Adoption",
+         "role": "Change lead",
+         "children": [
+          {
+           "name": "Champions network"
+          },
+          {
+           "name": "Training"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative governance model"
+  },
+  {
+   "kicker": "Profiles · image",
+   "title": "A four-person leadership team owns delivery, supported by a visual of the target experience",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "profiles",
+       "w": 1.4,
+       "heading": "Leadership team",
+       "columns": 2,
+       "people": [
+        {
+         "name": "Alex Morgan",
+         "role": "Programme Director",
+         "text": "Leads delivery across waves; 15 years in ERP programmes."
+        },
+        {
+         "name": "Sam Rivera",
+         "role": "Chief Architect",
+         "text": "Owns platform, data and agent architecture decisions.",
+         "photo": "sample-visual.jpg"
+        },
+        {
+         "name": "Jordan Lee",
+         "role": "Finance Process Owner",
+         "text": "Accountable for wave 1 value and KPIs."
+        },
+        {
+         "name": "Taylor Kim",
+         "role": "Change Lead",
+         "text": "Runs champions network and adoption analytics."
+        }
+       ]
+      },
+      {
+       "type": "image",
+       "heading": "Target experience",
+       "src": "sample-visual.jpg",
+       "fit": "cover",
+       "caption": "Sample image from the kit's images folder — replace with a screenshot or photo"
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative team"
+  },
+  {
+   "kicker": "RACI · checklist",
+   "title": "Clear accountability for each decision, and five actions to close before the steering committee",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "raci",
+       "w": 1.3,
+       "heading": "Decision rights",
+       "roles": [
+        "CFO",
+        "CIO",
+        "Design Auth.",
+        "PMO",
+        "Process owner"
+       ],
+       "activities": [
+        "Approve business case",
+        "Select use cases",
+        "Approve architecture",
+        "Set AI-unit budget",
+        "Accept go-live",
+        "Run adoption"
+       ],
+       "matrix": [
+        [
+         "A",
+         "C",
+         "C",
+         "R",
+         "C"
+        ],
+        [
+         "A",
+         "C",
+         "C",
+         "R",
+         "R"
+        ],
+        [
+         "I",
+         "A",
+         "R",
+         "I",
+         "C"
+        ],
+        [
+         "A",
+         "C",
+         "I",
+         "R",
+         "I"
+        ],
+        [
+         "C",
+         "C",
+         "C",
+         "R",
+         "A"
+        ],
+        [
+         "I",
+         "I",
+         "I",
+         "C",
+         "A/R"
+        ]
+       ]
+      },
+      {
+       "type": "checklist",
+       "heading": "Actions before steering committee",
+       "items": [
+        {
+         "text": "Confirm AI-unit budget envelope",
+         "status": "done",
+         "owner": "CFO",
+         "due": "Nov 15"
+        },
+        {
+         "text": "Baseline wave-1 KPIs",
+         "status": "in_progress",
+         "owner": "PMO",
+         "due": "Nov 22"
+        },
+        {
+         "text": "Data-quality sprint for customer master",
+         "status": "in_progress",
+         "owner": "CDO",
+         "due": "Dec 1"
+        },
+        {
+         "text": "Sign security assessment",
+         "status": "blocked",
+         "owner": "CISO",
+         "due": "Dec 5"
+        },
+        {
+         "text": "Nominate 20 champions",
+         "status": "todo",
+         "owner": "HR",
+         "due": "Dec 10"
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative governance"
+  },
+  {
+   "kicker": "Swimlane",
+   "title": "In the target process the agent handles matching and posting, and people only touch exceptions",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "swimlane",
+       "lanes": [
+        "Supplier",
+        "Invoice agent",
+        "AP clerk",
+        "ERP"
+       ],
+       "phases": [
+        "Receive",
+        "Extract",
+        "Match",
+        "Decide",
+        "Post",
+        "Pay"
+       ],
+       "steps": [
+        {
+         "lane": 0,
+         "col": 0,
+         "title": "Send invoice",
+         "text": "PDF / e-invoice"
+        },
+        {
+         "lane": 1,
+         "col": 1,
+         "title": "Extract data",
+         "text": "Header + lines",
+         "highlight": true
+        },
+        {
+         "lane": 1,
+         "col": 2,
+         "title": "3-way match",
+         "text": "PO, GR, invoice",
+         "highlight": true
+        },
+        {
+         "lane": 1,
+         "col": 3,
+         "title": "Within tolerance?",
+         "shape": "decision"
+        },
+        {
+         "lane": 2,
+         "col": 3,
+         "title": "Resolve exception",
+         "text": "Agent drafts fix"
+        },
+        {
+         "lane": 3,
+         "col": 4,
+         "title": "Post invoice",
+         "text": "Audit trail"
+        },
+        {
+         "lane": 3,
+         "col": 5,
+         "title": "Payment run"
+        }
+       ],
+       "links": [
+        [
+         0,
+         1
+        ],
+        [
+         1,
+         2
+        ],
+        [
+         2,
+         3
+        ],
+        [
+         3,
+         4
+        ],
+        [
+         3,
+         5
+        ],
+        [
+         4,
+         5
+        ],
+        [
+         5,
+         6
+        ]
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative process"
+  },
+  {
+   "kicker": "Status report · board",
+   "title": "Two of four workstreams are on track, and security sign-off is the one blocker to escalate this week",
+   "rows": [
+    {
+     "h": 1.45,
+     "blocks": [
+      {
+       "type": "status",
+       "heading": "Workstream status",
+       "items": [
+        {
+         "name": "Data foundation",
+         "status": "amber",
+         "trend": "up",
+         "owner": "CDO",
+         "comment": "Customer master at 94% quality, target 98% by Dec 1"
+        },
+        {
+         "name": "Wave 1 · Finance",
+         "status": "green",
+         "trend": "flat",
+         "owner": "Finance PO",
+         "comment": "AR assistant in UAT, 3 of 4 test cycles passed"
+        },
+        {
+         "name": "Security & compliance",
+         "status": "red",
+         "trend": "down",
+         "owner": "CISO",
+         "comment": "Assessment blocked on data-residency question"
+        },
+        {
+         "name": "Adoption",
+         "status": "green",
+         "trend": "up",
+         "owner": "Change lead",
+         "comment": "14 of 20 champions nominated"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "h": 1.2,
+     "blocks": [
+      {
+       "type": "board",
+       "heading": "Initiative board",
+       "columns": [
+        {
+         "title": "Now",
+         "color": "primary",
+         "cards": [
+          {
+           "title": "AR collections assistant",
+           "tag": "Finance"
+          },
+          {
+           "title": "Close automation",
+           "tag": "Finance"
+          }
+         ]
+        },
+        {
+         "title": "Next",
+         "color": "info",
+         "cards": [
+          {
+           "title": "Sourcing assistant",
+           "tag": "Spend"
+          },
+          {
+           "title": "Invoice agent",
+           "tag": "Spend"
+          }
+         ]
+        },
+        {
+         "title": "Later",
+         "color": "neutral",
+         "cards": [
+          {
+           "title": "Demand sensing",
+           "tag": "Supply chain"
+          },
+          {
+           "title": "Partner agents",
+           "tag": "Ecosystem"
+          }
+         ]
+        },
+        {
+         "title": "Done",
+         "color": "success",
+         "cards": [
+          {
+           "title": "AI governance model",
+           "tag": "PMO"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative status"
+  },
+  {
+   "type": "section",
+   "number": "10",
+   "title": "Customer and user",
+   "subtitle": "Personas and journey maps"
+  },
+  {
+   "kicker": "Persona",
+   "title": "The AP lead wants to close faster and stop chasing exceptions, which is exactly what the invoice agent targets",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "persona",
+       "name": "Priya Sharma",
+       "role": "Accounts Payable Lead",
+       "quote": "I spend most of my day chasing exceptions instead of improving the process.",
+       "attributes": [
+        {
+         "label": "Team",
+         "value": "12 FTE, shared services"
+        },
+        {
+         "label": "Volume",
+         "value": "40k invoices / month"
+        },
+        {
+         "label": "Tools",
+         "value": "ERP, email, Excel"
+        }
+       ],
+       "goals": [
+        "Close the month on day 3",
+        "Raise straight-through processing above 80%",
+        "Give suppliers faster answers"
+       ],
+       "pains": [
+        "Manual three-way matching",
+        "Exceptions arrive by email",
+        "No view of root causes"
+       ],
+       "needs": [
+        "Exception triage with suggested fixes",
+        "Real-time dashboard",
+        "Clear audit trail"
+       ],
+       "behaviours": [
+        "Checks queues every hour",
+        "Escalates via Teams",
+        "Trusts numbers, not promises"
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative persona"
+  },
+  {
+   "kicker": "Journey map",
+   "title": "Pain concentrates in matching and approval, where the agent can lift the experience from frustration to flow",
+   "rows": [
+    {
+     "blocks": [
+      {
+       "type": "journey",
+       "stages": [
+        {
+         "title": "Receive",
+         "actions": "Invoice arrives by email",
+         "touchpoints": "Shared mailbox",
+         "pains": "Scattered formats",
+         "opportunities": "Auto-capture",
+         "emotion": 0
+        },
+        {
+         "title": "Capture",
+         "actions": "Key data manually",
+         "touchpoints": "ERP screen",
+         "pains": "Typing errors",
+         "opportunities": "AI extraction",
+         "emotion": -1
+        },
+        {
+         "title": "Match",
+         "actions": "Check PO and receipt",
+         "touchpoints": "ERP, Excel",
+         "pains": "Mismatches, chasing buyers",
+         "opportunities": "Agent 3-way match",
+         "emotion": -2
+        },
+        {
+         "title": "Approve",
+         "actions": "Email approver",
+         "touchpoints": "Email",
+         "pains": "Delays, reminders",
+         "opportunities": "In-flow approval",
+         "emotion": -1
+        },
+        {
+         "title": "Post & pay",
+         "actions": "Post and pay",
+         "touchpoints": "ERP payment run",
+         "opportunities": "Straight-through",
+         "emotion": 1
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "source": "Illustrative journey"
+  },
+  {
+   "type": "closing",
+   "kicker": "Next steps",
+   "title": "Decide the wave-1 scope and budget at the next steering committee",
+   "subtitle": "Three decisions unlock delivery in Q1",
+   "contact": [
+    "Programme Office · pmo@example.com",
+    "Deck generated with Deck Kit"
+   ],
+   "blocks": [
+    {
+     "type": "cards",
+     "columns": 3,
+     "style": "tinted",
+     "items": [
+      {
+       "icon": "check",
+       "title": "Approve wave-1 scope",
+       "text": "AR, close and billing assistants"
+      },
+      {
+       "icon": "money",
+       "title": "Confirm budget",
+       "text": "AI-unit envelope and FinOps owner"
+      },
+      {
+       "icon": "shield",
+       "title": "Unblock security",
+       "text": "Data-residency decision by Dec 5"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

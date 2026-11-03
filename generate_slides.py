@@ -3,10 +3,10 @@ title: Generate Slides
 author: IANUSTEC
 author_url: https://ianustec.com
 funding_url: https://github.com/ianustec
-description: Generate high-quality native PowerPoint (.pptx) presentations from a JSON spec - layered graphics, native charts, icons, rich layouts. With an attached .pptx used as base/template, ALWAYS call inspect_slides first, then generate_slides with reference_file_id + per-slide reuse.
+description: Generate native, editable PowerPoint (.pptx) decks from JSON. v2 blocks format with 44 consulting components (KPIs, native charts incl. combo, layers, gantt, swot, matrix, waterfall, heatmap, RACI, journey...), 14 themes and auto-fit text; classic layouts and Template Mode kept. With an attached .pptx used as base/template, ALWAYS call inspect_slides first, then generate_slides with reference_file_id + per-slide reuse.
 requirements: python-pptx, pillow
 required_open_webui_version: 0.4.0
-version: 1.0.4
+version: 2.0.2
 license: MIT
 """
 
@@ -5941,6 +5941,4158 @@ def _r_icon_grid(deck, slide_dict, page, cols=3):
 # The Tools class (OpenWebUI native function calling) Valves
 # ============================================================================
 
+# >>> KIT ENGINE START
+
+# ============================================================================
+# DECK KIT ENGINE (v2 "blocks" format)
+# ----------------------------------------------------------------------------
+# A second rendering engine, ported from the Deck Kit renderer (pptxgenjs) to
+# python-pptx: 44 consulting-grade components, 14 theme presets, measured
+# auto-fit text (shared font size across sibling items), a schema validator
+# with precise, model-readable error paths and an LLM-facing catalogue.
+#
+# A deck uses this engine when its slides carry `rows` / `blocks` / `type`
+# (cover | section | content | closing) instead of the classic `layout` field,
+# or when the spec sets "engine": "kit".
+#
+# Icons: Font Awesome Free solid glyphs (CC BY 4.0, https://fontawesome.com/license/free)
+# pre-rendered to white PNGs, tinted at render time.
+# ============================================================================
+
+try:
+    from pptx.util import Emu as _KEmu  # type: ignore
+    from pptx.enum.text import MSO_AUTO_SIZE as _K_AUTO  # type: ignore
+    from pptx.enum.shapes import MSO_CONNECTOR as _K_CONN  # type: ignore
+    from pptx.enum.dml import MSO_LINE_DASH_STYLE as _K_DASH  # type: ignore
+    from pptx.oxml.ns import qn as _kqn  # type: ignore
+    from lxml import etree as _K_ET  # type: ignore
+except Exception:  # pragma: no cover
+    pass
+
+import math as _kmath
+
+_K_W, _K_H, _K_M = 13.333, 7.5, 0.45
+_K_CW = _K_W - 2 * _K_M
+_K_TOP, _K_BOTTOM, _K_ROW_GAP, _K_BLOCK_GAP, _K_HEAD_H = 1.5, 6.88, 0.28, 0.25, 0.32
+
+# ---------------------------------------------------------------- themes ----
+_K_PRESETS = {
+    "midnight_violet": {"label": "Midnight Violet — dark navy with violet/teal, gold highlights (tech, AI, strategy)",
+        "dark_bg": "0E1B33", "light_bg": "FFFFFF", "primary": "5B3DF5", "secondary": "0FA3A3", "accent": "F2A900",
+        "info": "2F6FD6", "success": "1E9E5A", "danger": "D64550", "neutral": "7A8599",
+        "text": "1A1F2B", "muted": "5F6B80", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "0E1B33"},
+    "graphite_gold": {"label": "Graphite Gold — charcoal with yellow accents (consulting, executive)",
+        "dark_bg": "2E2E38", "light_bg": "FFFFFF", "primary": "3D3D4D", "secondary": "747480", "accent": "FFD400",
+        "info": "1777CF", "success": "168736", "danger": "C4212F", "neutral": "9A9AA6",
+        "text": "1F1F28", "muted": "5E5E6B", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "1F1F28"},
+    "ocean_teal": {"label": "Ocean Teal — deep sea blue with teal and orange (operations, supply chain)",
+        "dark_bg": "062A3A", "light_bg": "FFFFFF", "primary": "0B7A75", "secondary": "1C6E9E", "accent": "F28C28",
+        "info": "2E86C1", "success": "2E9B5F", "danger": "C8443A", "neutral": "7D8B94",
+        "text": "13232C", "muted": "586973", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "062A3A"},
+    "forest_moss": {"label": "Forest Moss — green with moss and amber (sustainability, ESG, utilities)",
+        "dark_bg": "15291C", "light_bg": "FFFFFF", "primary": "2C6E3F", "secondary": "7E9A2F", "accent": "D9A21B",
+        "info": "3D7EA6", "success": "2C6E3F", "danger": "B5403A", "neutral": "7F8A80",
+        "text": "17231A", "muted": "5A675C", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "15291C"},
+    "crimson_navy": {"label": "Crimson Navy — navy with crimson and gold (finance, banking, risk)",
+        "dark_bg": "1B1F3B", "light_bg": "FFFFFF", "primary": "B3123E", "secondary": "2F4B8C", "accent": "F2B134",
+        "info": "2F6FD6", "success": "1E8C55", "danger": "B3123E", "neutral": "7C8195",
+        "text": "1A1C2E", "muted": "5C6079", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "1B1F3B"},
+    "mono_slate": {"label": "Mono Slate — restrained slate greys with one teal accent (board, audit, legal)",
+        "dark_bg": "1F2933", "light_bg": "FFFFFF", "primary": "3E4C59", "secondary": "7B8794", "accent": "0F9D8A",
+        "info": "2D6CDF", "success": "0F9D8A", "danger": "C2413A", "neutral": "9AA5B1",
+        "text": "1F2933", "muted": "616E7C", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "FFFFFF"},
+    "azure_corporate": {"label": "Azure Corporate — bright enterprise blue with sky and amber (ERP, IT, enterprise software)",
+        "dark_bg": "0A1F44", "light_bg": "FFFFFF", "primary": "0070F2", "secondary": "0FA3B1", "accent": "F5A623",
+        "info": "4A90E2", "success": "2E9E5A", "danger": "D0362B", "neutral": "7B8798",
+        "text": "14213D", "muted": "5A6578", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "0A1F44"},
+    "emerald_finance": {"label": "Emerald Finance — deep green with emerald and gold (banking, wealth, insurance)",
+        "dark_bg": "0D2B24", "light_bg": "FFFFFF", "primary": "0F7B5F", "secondary": "3A5A80", "accent": "C9A227",
+        "info": "3A7CA5", "success": "0F7B5F", "danger": "B23A3A", "neutral": "7A8A84",
+        "text": "13241F", "muted": "56675F", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "0D2B24"},
+    "civic_navy": {"label": "Civic Navy — sober navy with steel blue and red accent (public sector, government, multilaterals)",
+        "dark_bg": "13213C", "light_bg": "FFFFFF", "primary": "1F3F77", "secondary": "4F7CAC", "accent": "D9472B",
+        "info": "2B6CB0", "success": "2F855A", "danger": "C53030", "neutral": "8090A6",
+        "text": "1A2233", "muted": "5B6578", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "FFFFFF"},
+    "clinic_teal": {"label": "Clinic Teal — calm teal with soft blue and coral (healthcare, life sciences, pharma)",
+        "dark_bg": "0B2E33", "light_bg": "FFFFFF", "primary": "1A8C8C", "secondary": "3D6FB6", "accent": "F27C63",
+        "info": "3D8FD1", "success": "2E9B6A", "danger": "C94A4A", "neutral": "82979A",
+        "text": "132A2D", "muted": "58706F", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "0B2E33"},
+    "coral_energy": {"label": "Coral Energy — navy with coral and sunflower (marketing, retail, consumer, startups)",
+        "dark_bg": "1E2348", "light_bg": "FFFFFF", "primary": "E8505B", "secondary": "2F3C7E", "accent": "F9C74F",
+        "info": "4D7CFE", "success": "2BA36B", "danger": "C0392B", "neutral": "8A8FA8",
+        "text": "1E2348", "muted": "5E6385", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "1E2348"},
+    "royal_plum": {"label": "Royal Plum — plum with dusty rose and champagne (luxury, fashion, hospitality, premium brands)",
+        "dark_bg": "2A1530", "light_bg": "FFFFFF", "primary": "6D2E6B", "secondary": "A26769", "accent": "D8B26E",
+        "info": "5B6FB5", "success": "3C8D6A", "danger": "B5384B", "neutral": "8E8090",
+        "text": "24172A", "muted": "65586A", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "2A1530"},
+    "print_mono": {"label": "Print Mono — greyscale only, survives black-and-white printing and photocopies",
+        "dark_bg": "262626", "light_bg": "FFFFFF", "primary": "3A3A3A", "secondary": "7A7A7A", "accent": "A8A8A8",
+        "info": "5C5C5C", "success": "4A4A4A", "danger": "1A1A1A", "neutral": "9C9C9C",
+        "text": "1A1A1A", "muted": "555555", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "1A1A1A"},
+    "high_contrast": {"label": "High Contrast — WCAG-friendly black, white, cobalt and yellow (accessibility, large rooms, projectors)",
+        "dark_bg": "000000", "light_bg": "FFFFFF", "primary": "0038A8", "secondary": "006E5A", "accent": "FFD100",
+        "info": "0057D9", "success": "00703C", "danger": "B00020", "neutral": "595959",
+        "text": "000000", "muted": "333333", "on_primary": "FFFFFF", "on_secondary": "FFFFFF", "on_accent": "000000"},
+}
+# classic-engine theme names → closest kit preset (so "theme":"ocean" also works in v2 decks)
+_K_THEME_ALIASES = {
+    "midnight": "midnight_violet", "auto": "midnight_violet", "default": "midnight_violet",
+    "ocean": "ocean_teal", "teal": "ocean_teal", "forest": "forest_moss", "sage": "forest_moss",
+    "coral": "coral_energy", "terracotta": "coral_energy", "berry": "royal_plum", "cherry": "crimson_navy",
+    "charcoal": "graphite_gold", "slate": "mono_slate", "azure": "azure_corporate", "finance": "emerald_finance",
+    "public": "civic_navy", "healthcare": "clinic_teal", "print": "print_mono", "accessible": "high_contrast",
+}
+_K_HEX_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
+
+
+def _kmix(a: str, b: str, t: float) -> str:
+    ia, ib = int(a, 16), int(b, 16)
+    out = []
+    for s in (16, 8, 0):
+        x, y = (ia >> s) & 255, (ib >> s) & 255
+        out.append("%02X" % int(round(x * (1 - t) + y * t)))
+    return "".join(out)
+
+
+def _klum(h: str) -> float:
+    v = int(h, 16)
+    cs = []
+    for s in (16, 8, 0):
+        x = ((v >> s) & 255) / 255
+        cs.append(x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * cs[0] + 0.7152 * cs[1] + 0.0722 * cs[2]
+
+
+def _kread(bg: str, dark: str = "1A1F2B", light: str = "FFFFFF") -> str:
+    return dark if _klum(bg) > 0.32 else light
+
+
+def _k_resolve_theme(spec, warn) -> dict:
+    name, ov = "midnight_violet", {}
+    if isinstance(spec, str) and spec.strip():
+        name = spec.strip()
+    elif isinstance(spec, dict):
+        name = str(spec.get("preset") or name)
+        ov = spec
+    name = _K_THEME_ALIASES.get(name.lower(), name.lower()) if isinstance(name, str) else "midnight_violet"
+    if name not in _K_PRESETS:
+        warn(f"theme: unknown preset '{name}', using midnight_violet. Valid: {', '.join(_K_PRESETS)}")
+        name = "midnight_violet"
+    t = dict(_K_PRESETS[name])
+    for k, v in ov.items():
+        if k in ("preset", "fonts", "label"):
+            continue
+        if isinstance(v, str) and _K_HEX_RE.match(v.replace("#", "")):
+            t[k] = v.replace("#", "").upper()
+        elif k in t:
+            warn(f"theme.{k}: '{v}' is not a 6-digit hex color, ignored")
+    fonts = {"head": "Calibri", "body": "Calibri"}
+    if isinstance(ov.get("fonts"), dict):
+        fonts.update({k: str(v) for k, v in ov["fonts"].items() if k in ("head", "body") and v})
+    t["fonts"] = fonts
+    t["name"] = name
+    t["primary_tint"] = _kmix(t["primary"], "FFFFFF", 0.88)
+    t["secondary_tint"] = _kmix(t["secondary"], "FFFFFF", 0.87)
+    t["accent_tint"] = _kmix(t["accent"], "FFFFFF", 0.82)
+    t["danger_tint"] = _kmix(t["danger"], "FFFFFF", 0.86)
+    t["success_tint"] = _kmix(t["success"], "FFFFFF", 0.86)
+    t["light_surface"] = _kmix(t["dark_bg"], "FFFFFF", 0.955)
+    t["light_line"] = _kmix(t["dark_bg"], "FFFFFF", 0.82)
+    t["dark_surface"] = _kmix(t["dark_bg"], "FFFFFF", 0.09)
+    t["dark_surface2"] = _kmix(t["dark_bg"], "FFFFFF", 0.16)
+    t["dark_line"] = _kmix(t["dark_bg"], "FFFFFF", 0.26)
+    t["dark_text"] = "FFFFFF"
+    t["dark_muted"] = _kmix(t["dark_bg"], "FFFFFF", 0.72)
+    t["series"] = [t["primary"], t["secondary"], t["accent"], t["info"], t["neutral"], t["danger"]]
+    t["on_primary"] = t.get("on_primary") or _kread(t["primary"])
+    return t
+
+
+def _k_mode_colors(t: dict, dark: bool) -> dict:
+    if dark:
+        return {"bg": t["dark_bg"], "surface": t["dark_surface"], "surface2": t["dark_surface2"], "line": t["dark_line"],
+                "text": t["dark_text"], "muted": t["dark_muted"], "heading": t["accent"], "title": "FFFFFF",
+                "card": t["dark_surface"], "cardLine": t["dark_line"], "cardText": "FFFFFF", "cardMuted": t["dark_muted"],
+                "strong": t["accent"]}
+    return {"bg": t["light_bg"], "surface": t["light_surface"], "surface2": t["primary_tint"], "line": t["light_line"],
+            "text": t["text"], "muted": t["muted"], "heading": t["primary"], "title": t["dark_bg"], "card": "FFFFFF",
+            "cardLine": t["light_line"], "cardText": t["text"], "cardMuted": t["muted"], "strong": t["primary"]}
+
+
+def _k_role(t: dict, role, fallback: str) -> str:
+    if role and role != "dark" and isinstance(role, str) and role in t and isinstance(t[role], str):
+        return t[role]
+    return t["dark_bg"] if role == "dark" else fallback
+
+
+# ------------------------------------------------------------ text fit ----
+# Approximates Calibri/Carlito advance widths (em). Slightly conservative so
+# text that "fits" here also fits in PowerPoint.
+_K_CW_TABLE = {
+    " ": 0.226, "a": 0.479, "b": 0.525, "c": 0.423, "d": 0.525, "e": 0.498, "f": 0.305, "g": 0.471, "h": 0.525,
+    "i": 0.229, "j": 0.239, "k": 0.455, "l": 0.229, "m": 0.799, "n": 0.525, "o": 0.527, "p": 0.525, "q": 0.525,
+    "r": 0.349, "s": 0.391, "t": 0.335, "u": 0.525, "v": 0.452, "w": 0.715, "x": 0.433, "y": 0.453, "z": 0.395,
+    "A": 0.579, "B": 0.544, "C": 0.533, "D": 0.615, "E": 0.488, "F": 0.459, "G": 0.631, "H": 0.623, "I": 0.252,
+    "J": 0.319, "K": 0.52, "L": 0.42, "M": 0.855, "N": 0.646, "O": 0.662, "P": 0.517, "Q": 0.673, "R": 0.543,
+    "S": 0.459, "T": 0.487, "U": 0.642, "V": 0.567, "W": 0.89, "X": 0.519, "Y": 0.487, "Z": 0.468,
+    ".": 0.252, ",": 0.25, ":": 0.268, ";": 0.268, "'": 0.221, '"': 0.401, "!": 0.326, "?": 0.463, "-": 0.306,
+    "(": 0.303, ")": 0.303, "/": 0.386, "&": 0.682, "%": 0.715, "+": 0.498, "€": 0.507, "$": 0.507, "→": 0.9,
+    "—": 0.9, "–": 0.5, "·": 0.27,
+}
+
+
+def _k_char_w(ch: str) -> float:
+    w = _K_CW_TABLE.get(ch)
+    if w is not None:
+        return w
+    if "0" <= ch <= "9":
+        return 0.507
+    return 1.0 if ord(ch) > 0x2E80 else 0.55
+
+
+def _k_str_em(s: str, bold: bool = False) -> float:
+    return sum(_k_char_w(c) for c in str(s)) * (1.05 if bold else 1.0) * 1.03
+
+
+def _k_count_lines(text: str, size: float, width_in: float, bold: bool) -> int:
+    max_pt = width_in * 72
+    if max_pt <= 4:
+        return 99
+    lines = 0
+    sp = _k_char_w(" ") * size
+    for raw in str(text).split("\n"):
+        words = raw.split()
+        if not words:
+            lines += 1
+            continue
+        cur, n = 0.0, 1
+        for wd in words:
+            ww = _k_str_em(wd, bold) * size
+            if ww > max_pt:
+                n += 3
+                cur = max_pt
+                continue
+            if cur == 0:
+                cur = ww
+            elif cur + sp + ww <= max_pt:
+                cur += sp + ww
+            else:
+                n += 1
+                cur = ww
+        lines += n
+    return lines
+
+
+def _k_measure(paras: list, width_in: float, scale: float = 1.0) -> float:
+    h = 0.0
+    for i, p in enumerate(paras):
+        size = p["size"] * scale
+        indent = (size * 1.0) / 72 if p.get("bullet") else 0
+        n = _k_count_lines(p["text"], size, width_in - indent, p.get("bold"))
+        h += (n * size * 1.2) / 72
+        if i < len(paras) - 1:
+            sa = p.get("spaceAfter")
+            h += ((sa if sa is not None else 0) * scale) / 72
+    return h
+
+
+def _k_fit_scale(paras, width_in, height_in, min_size=9, max_scale=1.0):
+    smallest = min(p["size"] for p in paras)
+    min_scale = min(1.0, min_size / smallest)
+    s = max_scale
+    while s > min_scale and _k_measure(paras, width_in, s) > height_in:
+        s -= 0.03
+    if s < min_scale:
+        s = min_scale
+    need = _k_measure(paras, width_in, s)
+    return s, need <= height_in + 0.01, need
+
+
+def _k_single_line_size(text, width_in, max_size, bold=True):
+    em = _k_str_em(str(text), bold)
+    if em == 0:
+        return max_size
+    return max(8.0, min(max_size, (width_in * 72) / em))
+
+
+def _kfmt(v, d=0) -> str:
+    try:
+        return f"{float(v):,.{int(d)}f}"
+    except Exception:
+        return str(v)
+
+
+def _ks(v) -> str:
+    """JS-like String(v): 3.0 -> '3'."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return "" if v is None else str(v)
+
+
+def _knum(v, default=0.0) -> float:
+    try:
+        if isinstance(v, bool):
+            return float(default)
+        return float(v)
+    except Exception:
+        return float(default)
+
+
+# ----------------------------------------------------------------- icons ----
+_K_ICON_CACHE: dict = {}
+_K_UNKNOWN_ICONS: set = set()
+
+
+def _k_icon_key(name) -> Optional[str]:
+    if not name:
+        return None
+    key = str(name).strip()
+    if key in _KIT_ICON_PNG:
+        return key
+    a = _KIT_ICON_ALIASES.get(re.sub(r"[\s-]+", "_", key.lower()))
+    if a and a in _KIT_ICON_PNG:
+        return a
+    pas = "Fa" + re.sub(r"[_\s-]+(.)", lambda m: m.group(1).upper(), key)
+    pas = pas[:2] + pas[2:3].upper() + pas[3:]
+    if pas in _KIT_ICON_PNG:
+        return pas
+    return None
+
+
+def _k_icon_png(name, color: str) -> Optional[bytes]:
+    if not _HAS_PIL:
+        return None
+    ck = (str(name), color)
+    if ck in _K_ICON_CACHE:
+        return _K_ICON_CACHE[ck]
+    key = _k_icon_key(name)
+    b64 = _KIT_ICON_PNG.get(key) if key else None
+    if b64 is None:
+        # fall back to the classic engine's Lucide set (e.g. "rocket", "cpu")
+        try:
+            lname = _icon_name(str(name))
+            b64 = _ICON_PNG.get(lname)
+        except Exception:
+            b64 = None
+    if b64 is None:
+        if name:
+            _K_UNKNOWN_ICONS.add(str(name))
+        b64 = _KIT_ICON_PNG.get("FaCircle")
+    png = None
+    try:
+        glyph = Image.open(BytesIO(base64.b64decode(b64))).convert("RGBA")
+        r, g, b = int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+        solid = Image.new("RGBA", glyph.size, (r, g, b, 0))
+        solid.putalpha(glyph.split()[3])
+        out = BytesIO()
+        solid.save(out, format="PNG")
+        png = out.getvalue()
+    except Exception:
+        png = None
+    _K_ICON_CACHE[ck] = png
+    return png
+
+
+# ------------------------------------------------------------ primitives ----
+class _KCtx:
+    def __init__(self, prs, slide, t, dark, where, warnings, errors, valves=None):
+        self.prs, self.slide, self.t, self.dark = prs, slide, t, dark
+        self.c = _k_mode_colors(t, dark)
+        self.slide_where = where
+        self.where = where
+        self._warnings, self._errors = warnings, errors
+        self.dry = False
+        self.group_scales = None
+        self.valves = valves
+
+    def warn(self, m):
+        if not self.dry:
+            self._warnings.append(m)
+
+    def error(self, m):
+        self._errors.append(m)
+
+
+def _ke(v: float) -> int:
+    return int(round(v * 914400))
+
+
+_K_SHAPES = None
+
+
+def _k_shape_map():
+    global _K_SHAPES
+    if _K_SHAPES is None:
+        _K_SHAPES = {
+            "rect": MSO_SHAPE.RECTANGLE, "roundRect": MSO_SHAPE.ROUNDED_RECTANGLE, "ellipse": MSO_SHAPE.OVAL,
+            "homePlate": MSO_SHAPE.PENTAGON, "chevron": MSO_SHAPE.CHEVRON, "diamond": MSO_SHAPE.DIAMOND,
+            "pie": MSO_SHAPE.PIE, "donut": MSO_SHAPE.DONUT, "blockArc": MSO_SHAPE.BLOCK_ARC,
+            "rightArrow": MSO_SHAPE.RIGHT_ARROW,
+        }
+    return _K_SHAPES
+
+
+def _k_strip_style(shape):
+    st = shape._element.find(_kqn("p:style"))
+    if st is not None:
+        shape._element.remove(st)
+
+
+def _k_set_adj(shape, vals: dict):
+    """Set raw <a:gd> adjust values (OOXML integer units)."""
+    geom = shape._element.spPr.find(_kqn("a:prstGeom"))
+    if geom is None:
+        return
+    av = geom.find(_kqn("a:avLst"))
+    if av is None:
+        av = _K_ET.SubElement(geom, _kqn("a:avLst"))
+    for g in list(av):
+        av.remove(g)
+    for k, v in vals.items():
+        gd = _K_ET.SubElement(av, _kqn("a:gd"))
+        gd.set("name", k)
+        gd.set("fmla", f"val {int(round(v))}")
+
+
+def _k_shadow(shape):
+    sp = shape._element.spPr
+    old = sp.find(_kqn("a:effectLst"))
+    if old is not None:
+        sp.remove(old)
+    eff = _K_ET.SubElement(sp, _kqn("a:effectLst"))
+    sh = _K_ET.SubElement(eff, _kqn("a:outerShdw"))
+    sh.set("blurRad", "76200"); sh.set("dist", "19050"); sh.set("dir", "5400000")
+    sh.set("algn", "ctr"); sh.set("rotWithShape", "0")
+    clr = _K_ET.SubElement(sh, _kqn("a:srgbClr")); clr.set("val", "0E1B33")
+    al = _K_ET.SubElement(clr, _kqn("a:alpha")); al.set("val", "12000")
+
+
+def _k_apply_line(ln, line):
+    if line is None:
+        ln.fill.background()
+        return
+    ln.color.rgb = RGBColor.from_string(line["color"])
+    ln.width = Pt(line.get("width", 1))
+    dash = line.get("dash")
+    if dash:
+        ln.dash_style = {"dash": _K_DASH.DASH, "sysDash": _K_DASH.SQUARE_DOT}.get(dash, _K_DASH.DASH)
+
+
+def _kshp(ctx, kind, box, fill=None, line=None, shadow=False, transparency=None, name=None,
+          radius=None, adj=None, no_fill=False):
+    if ctx.dry:
+        return None
+    w, h = max(0.01, box["w"]), max(0.01, box["h"])
+    shp = ctx.slide.shapes.add_shape(_k_shape_map()[kind], _ke(box["x"]), _ke(box["y"]), _ke(w), _ke(h))
+    _k_strip_style(shp)
+    if no_fill or fill is None:
+        shp.fill.background()
+    else:
+        shp.fill.solid()
+        shp.fill.fore_color.rgb = RGBColor.from_string(fill)
+        if transparency:
+            sf = shp.fill._xPr.find(_kqn("a:solidFill"))
+            clr = sf[0] if sf is not None and len(sf) else None
+            if clr is not None:
+                a = _K_ET.SubElement(clr, _kqn("a:alpha"))
+                a.set("val", str(int((100 - transparency) * 1000)))
+    _k_apply_line(shp.line, line)
+    if kind == "roundRect":
+        r = radius if radius is not None else min(0.07, h / 2, w / 2)
+        _k_set_adj(shp, {"adj": min(50000, r / max(0.01, min(w, h)) * 100000)})
+    if adj:
+        _k_set_adj(shp, adj)
+    if shadow:
+        _k_shadow(shp)
+    if name:
+        try:
+            shp.name = str(name)[:80]
+        except Exception:
+            pass
+    return shp
+
+
+def _krr(ctx, box, fill, **o):
+    return _kshp(ctx, "roundRect", box, fill, **o)
+
+
+def _krect(ctx, box, fill, **o):
+    return _kshp(ctx, "rect", box, fill, **o)
+
+
+def _kell(ctx, box, fill, **o):
+    return _kshp(ctx, "ellipse", box, fill, **o)
+
+
+def _kline(ctx, x1, y1, x2, y2, color, width=1.0, dash=None, arrow=False, start_arrow=False):
+    if ctx.dry:
+        return None
+    cn = ctx.slide.shapes.add_connector(_K_CONN.STRAIGHT, _ke(x1), _ke(y1), _ke(x2), _ke(y2))
+    _k_strip_style(cn)
+    _k_apply_line(cn.line, {"color": color, "width": width, "dash": dash})
+    ln = cn.line._get_or_add_ln()
+    for tag, on in (("a:headEnd", start_arrow), ("a:tailEnd", arrow)):
+        if on:
+            e = _K_ET.SubElement(ln, _kqn(tag))
+            e.set("type", "triangle")
+    return cn
+
+
+def _k_image(ctx, png: bytes, x, y, w, h, ellipse=False):
+    if ctx.dry or not png:
+        return None
+    pic = ctx.slide.shapes.add_picture(BytesIO(png), _ke(x), _ke(y), _ke(w), _ke(h))
+    if ellipse:
+        g = pic._element.spPr.find(_kqn("a:prstGeom"))
+        if g is not None:
+            g.set("prst", "ellipse")
+    return pic
+
+
+def _k_icon_dot(ctx, x, y, d, fill, icon, icon_color=None):
+    _kell(ctx, {"x": x, "y": y, "w": d, "h": d}, fill)
+    if icon and not ctx.dry:
+        s = d * 0.54
+        png = _k_icon_png(icon, icon_color or _kread(fill))
+        _k_image(ctx, png, x + (d - s) / 2, y + (d - s) / 2, s, s)
+
+
+def _k_icon(ctx, icon, color, x, y, w, h):
+    if ctx.dry:
+        return
+    _k_image(ctx, _k_icon_png(icon, color), x, y, w, h)
+
+
+_K_GROW = {"card body": 1.15, "process step": 1.2, "timeline item": 1.2, "comparison bullets": 1.2, "agenda item": 1.12,
+           "hub node": 1.12, "quadrant": 1.15, "layer item": 1.08, "side item": 1.12, "bullets": 1.1,
+           "pyramid level": 1.12, "funnel stage": 1.12, "leaf": 1.08, "kpi label": 1.1}
+
+
+def _k_bullet_xml(p, size, numbered, level):
+    pPr = p._p.get_or_add_pPr()
+    ind = int(round(size * (1.2 if numbered else 0.95))) * 12700
+    marl = ind * (1 + (level or 0))
+    pPr.set("marL", str(marl))
+    pPr.set("indent", str(-ind))
+    if level:
+        pPr.set("lvl", str(min(8, int(level))))
+    for tag in ("a:buNone", "a:buChar", "a:buAutoNum"):
+        e = pPr.find(_kqn(tag))
+        if e is not None:
+            pPr.remove(e)
+    sz = _K_ET.SubElement(pPr, _kqn("a:buSzPct")); sz.set("val", "100000")
+    if numbered:
+        b = _K_ET.SubElement(pPr, _kqn("a:buAutoNum")); b.set("type", "arabicPeriod")
+    else:
+        b = _K_ET.SubElement(pPr, _kqn("a:buChar")); b.set("char", "•")
+
+
+def _ktext(ctx, paras, box, valign="top", field=None, group=None, grow=None, min_size=9, quiet=False,
+           align=None, rotate=None, char_spacing=None):
+    """paras: [{text|runs, size, bold, italic, color, bullet, numbered, align, spaceAfter, indent, font}]"""
+    ps = []
+    for p in paras:
+        if not p:
+            continue
+        p = dict(p)
+        if p.get("runs"):
+            p["text"] = "".join(_ks(r.get("text", "")) for r in p["runs"])
+        if p.get("text") is None or _ks(p.get("text")) == "":
+            continue
+        p["text"] = _ks(p["text"])
+        ps.append(p)
+    if not ps:
+        return 1.0
+    if box["w"] <= 0.05 or box["h"] <= 0.05:
+        if not ctx.dry and not quiet:
+            ctx.warn(f"{ctx.where}: no room left for text \"{ps[0]['text'][:40]}…\" — give this row more height or use fewer items")
+        return 1.0
+    key = None if group is False else (group or field)
+    g = grow if grow is not None else (_K_GROW.get(key, 1) if key else 1)
+    if ctx.dry:
+        s, _, _ = _k_fit_scale(ps, box["w"], box["h"], min_size, g)
+        if key and ctx.group_scales is not None:
+            ctx.group_scales[key] = min(ctx.group_scales.get(key, 9), s)
+        return s
+    if key and ctx.group_scales and key in ctx.group_scales:
+        s = ctx.group_scales[key]
+        need = _k_measure(ps, box["w"], s)
+        fits = need <= box["h"] + 0.01
+    else:
+        s, fits, need = _k_fit_scale(ps, box["w"], box["h"], min_size, g)
+    if not fits and not quiet:
+        pct = round((need / box["h"] - 1) * 100) if box["h"] else 0
+        ctx.warn(f"{ctx.where}: text overflows its box{' (' + field + ')' if field else ''} by ~{pct}% even at minimum size — "
+                 f"shorten \"{' '.join(p['text'] for p in ps)[:60]}…\"")
+    tb = ctx.slide.shapes.add_textbox(_ke(box["x"]), _ke(box["y"]), _ke(max(0.02, box["w"])), _ke(max(0.02, box["h"])))
+    tf = tb.text_frame
+    tf.word_wrap = True
+    tf.auto_size = _K_AUTO.NONE
+    tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = 0
+    tf.vertical_anchor = {"top": MSO_ANCHOR.TOP, "middle": MSO_ANCHOR.MIDDLE, "bottom": MSO_ANCHOR.BOTTOM}.get(valign, MSO_ANCHOR.TOP)
+    if rotate:
+        tb.rotation = rotate
+    amap = {"left": PP_ALIGN.LEFT, "center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT}
+    for i, p in enumerate(ps):
+        para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        size = round(p["size"] * s * 2) / 2
+        para.alignment = amap.get(p.get("align") or align or "left", PP_ALIGN.LEFT)
+        sa = p.get("spaceAfter")
+        para.space_after = Pt(round((sa or 0) * s)) if sa else Pt(0)
+        if p.get("bullet"):
+            _k_bullet_xml(para, size, p.get("numbered"), p.get("indent"))
+        runs = p.get("runs") or [{"text": p["text"]}]
+        for r in runs:
+            if _ks(r.get("text", "")) == "":
+                continue
+            run = para.add_run()
+            run.text = _ks(r.get("text"))
+            f = run.font
+            f.size = Pt(size)
+            f.bold = bool(r["bold"]) if r.get("bold") is not None else bool(p.get("bold"))
+            f.italic = bool(p.get("italic"))
+            f.color.rgb = RGBColor.from_string(r.get("color") or p.get("color") or ctx.c["text"])
+            f.name = p.get("font") or ctx.t["fonts"]["body"]
+            if char_spacing:
+                run._r.get_or_add_rPr().set("spc", str(int(char_spacing * 100)))
+    return s
+
+
+_KIT_ICON_ALIASES = {
+    "agent": "FaRobot",
+    "ai": "FaBrain",
+    "analytics": "FaChartPie",
+    "api": "FaPlug",
+    "arrow": "FaArrowRight",
+    "assistant": "FaUserTie",
+    "automation": "FaCogs",
+    "award": "FaAward",
+    "balance": "FaBalanceScale",
+    "bank": "FaUniversity",
+    "brain": "FaBrain",
+    "building": "FaBuilding",
+    "calendar": "FaCalendarAlt",
+    "cart": "FaShoppingCart",
+    "chart": "FaChartBar",
+    "chat": "FaComments",
+    "check": "FaCheckCircle",
+    "clock": "FaClock",
+    "cloud": "FaCloud",
+    "code": "FaCode",
+    "coins": "FaCoins",
+    "compliance": "FaClipboardCheck",
+    "contract": "FaFileSignature",
+    "cost": "FaMoneyBillWave",
+    "cross": "FaTimesCircle",
+    "cube": "FaCube",
+    "customer": "FaUserFriends",
+    "cycle": "FaSyncAlt",
+    "data": "FaDatabase",
+    "database": "FaDatabase",
+    "desktop": "FaDesktop",
+    "diagram": "FaProjectDiagram",
+    "document": "FaFileAlt",
+    "email": "FaEnvelope",
+    "energy": "FaBolt",
+    "eye": "FaEye",
+    "factory": "FaIndustry",
+    "filter": "FaFilter",
+    "finance": "FaChartLine",
+    "flag": "FaFlag",
+    "flow": "FaStream",
+    "gauge": "FaTachometerAlt",
+    "global": "FaGlobe",
+    "globe": "FaGlobeEurope",
+    "goal": "FaBullseye",
+    "governance": "FaBalanceScale",
+    "government": "FaLandmark",
+    "graph": "FaProjectDiagram",
+    "growth": "FaChartLine",
+    "handshake": "FaHandshake",
+    "health": "FaHeartbeat",
+    "hierarchy": "FaSitemap",
+    "hr": "FaIdBadge",
+    "idea": "FaLightbulb",
+    "info": "FaInfoCircle",
+    "innovation": "FaLightbulb",
+    "integration": "FaPlug",
+    "invoice": "FaFileInvoice",
+    "key": "FaKey",
+    "kpi": "FaTachometerAlt",
+    "laptop": "FaLaptop",
+    "launch": "FaRocket",
+    "layers": "FaLayerGroup",
+    "leader": "FaUserTie",
+    "leaf": "FaLeaf",
+    "learning": "FaGraduationCap",
+    "legal": "FaGavel",
+    "link": "FaLink",
+    "location": "FaMapMarkerAlt",
+    "lock": "FaLock",
+    "logistics": "FaShippingFast",
+    "magic": "FaMagic",
+    "manufacturing": "FaIndustry",
+    "map": "FaMap",
+    "migration": "FaExchangeAlt",
+    "mobile": "FaMobileAlt",
+    "modules": "FaCubes",
+    "money": "FaCoins",
+    "network": "FaNetworkWired",
+    "partner": "FaHandshake",
+    "people": "FaUsers",
+    "pie": "FaChartPie",
+    "platform": "FaLayerGroup",
+    "plus": "FaPlus",
+    "procurement": "FaHandshake",
+    "puzzle": "FaPuzzlePiece",
+    "question": "FaQuestionCircle",
+    "quote": "FaQuoteLeft",
+    "recycle": "FaRecycle",
+    "report": "FaFileAlt",
+    "research": "FaSearch",
+    "retail": "FaShoppingCart",
+    "risk": "FaExclamationTriangle",
+    "robot": "FaRobot",
+    "rocket": "FaRocket",
+    "search": "FaSearch",
+    "security": "FaShieldAlt",
+    "server": "FaServer",
+    "service": "FaHeadset",
+    "settings": "FaCogs",
+    "shield": "FaShieldAlt",
+    "sparkles": "FaMagic",
+    "speed": "FaTachometerAlt",
+    "star": "FaStar",
+    "store": "FaStore",
+    "strategy": "FaChess",
+    "success": "FaCheckCircle",
+    "supply_chain": "FaTruck",
+    "support": "FaHeadset",
+    "sustainability": "FaLeaf",
+    "sync": "FaSyncAlt",
+    "talent": "FaUserGraduate",
+    "target": "FaBullseye",
+    "team": "FaUsers",
+    "telecom": "FaBroadcastTower",
+    "time": "FaClock",
+    "tools": "FaTools",
+    "training": "FaChalkboardTeacher",
+    "transform": "FaRandom",
+    "trophy": "FaTrophy",
+    "truck": "FaTruck",
+    "user": "FaUser",
+    "users": "FaUsers",
+    "utilities": "FaBolt",
+    "visibility": "FaEye",
+    "warehouse": "FaWarehouse",
+    "warning": "FaExclamationTriangle",
+    "wrench": "FaWrench",
+}
+_KIT_ICON_PNG: dict[str, str] = {  # Font Awesome Free (CC BY 4.0), white glyph 96px
+    "FaArrowDown": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABO1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9uRaD0AAAAaHRSTlMAZ/bz/V/+gPtX/Es5XEX5XgH4BIIQ7UJ1uKNB62rwt/rlJhFURGg0fF3oM+KrI+yKKGvSmTeehCfWElWdO+AcAmms75KX2jrkKpEVm96ggR/O8i6VGWGkCQ4TAwiDDLvAxcoGz7C1qi3bu6sAAAAJcEhZcwAAFxIAABcSAWef0lIAAAIKSURBVGje7dhnT8JAGMDx2rJkCAg4mIqoiHvvvffee9/3/wSuVOjd0/buuJqY3POOPL3/TxJi0lMUOXL+cGabNfQ9WvO6E/1aH/od37T4/lQWVcxym3CgCxkmJBwoGoGicMBrBLwSkIAEJCABCUhAAhKQwP8GEosr+53VAKPjJ0MWrw6p9NfZkRgvENv5WvWnzPp16s/h5AIfEJ352dUHrPsIjUV5gOiqvoSFch+hLR5goLyFhHa18nycHYhXrtV2fD2oGQNNrECTcX+Ux/ZJ4x55MmxAxoMF9rAHerA9crlZALcLPz+HAa34A8hfoAcKfuL4BgYsEU+gcIAWCITJ070Y0NlCPqM20gGNKvDXdeO/ghD5LZEWpAGCGnnSH7K+TdEn220PHDcA/YjdfY0+6U07IF+i7cNCacIa6CN/fsgVoblz0qfnwAqY3wX6brpbLX3WTs2B7Um2PiwMX5kBiUPWPiy8JGDg8om9DwuPdxBw8cDTh4X7GxJ4fuPrw8JrDAeu33n7sNB7a/wcP+fvf15hAv+XGiw/svXh72A3LH0ega3PLrD2WQX2PpvA02cR+Pr0Am+fVuDv0wnV9GmE6vr2QrV9O8FToyhOCiL6VoKYvrkgqm8miOvDgsg+JIjtk4LoPi6I7xsFJ/qVgqdDUZwUnOp/vsd9vyn6zhTHJpjTtFxQkSPnb+cDKkqf2HsLAMwAAAAASUVORK5CYII=",
+    "FaArrowRight": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABI1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+GeTxlAAAAYHRSTlMAXV/2Xv3+d4j8aGf7RfJhuBEBA5I186DsKNxBMfpaO+rQ5CBE1Pg+mhlcEK3wx70GCjJ1W+GjhOsnVTYX5SZK741P9Lb5FjqhP0mMTjTjgartbJV2Vzif4oCKeawM6Qst1swEAAAACXBIWXMAABcSAAAXEgFnn9JSAAABoElEQVRo3u3Z104CQRSA4UFckCKCFLEggg2l2Hvvvfd+3v8pJNwoMhfGnP9CsucB/i8h7M7sjDHuuNNsszT/uFZKcv2hlFQnM071271SG6eF7VPCV58Rer/1RQKt2v1YWgQVrkVY4UZgYaEBEEdVWBFaKNBC/MEmaD4PnQlcOKEF48eFGR8thBxa6A/TwulIo+ALaQrHXloYjdDCWZoW+gZoofucFgZ7aGFs2CIENYX9HC0UK7TwMUELU1FamHylhXjXr4WYx/+XeXm3vL07LP27suiNRciGRVAhKsIKEYEFUZ9wFgYkSgOpfw/swkDmnv2bBjzsg/azbw7CbN+Y5U22X31dzz61/WGey7/sKy44mh/okyW2b1v0NftvE2w/VmH7qzm2b9v8avZt23fNfnee7ds+oTT7ySu2fxRh+xtetr89wvZthyGa/aDD9m99bN92pKbY79yC+wm2b1t+VX//grD7hyTcNxdw3yTgvgnCfVNcZPsN11zq/fqLOv1rtHqB6VePfHfYfvW6t7Ya72HXvcasH87lL6eNO+4013wC56ZZDqRZ+qQAAAAASUVORK5CYII=",
+    "FaArrowUp": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABSlBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////k2/KfAAAAbXRSTlMAYPb7/FhhgP1fQfXlRVT5/jpeATld8gQQ7XXrifD6JmnvEZfa83yB6LuCQiOu0jITW57ho6gnakuT1rdVmDbgHEAhAkr0MLacoT9EyioLkTQV3h/OLjO5mnsZXD3ipAkOAwiDDMDFBqvPsLWqHmh08gAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAhdJREFUaN7t2OlXUkEYx/FfgCuKbAq4geKe5lpWllZqi7anlfu+y///tvB0DszMw9yZuXM9vZjnHczw/bBcDtwLuHFzv7M7Gor+SgTXrw+X/k5ve2D9xtLdNDYF2w9KqPSDEar7QQhs377A920LYt+uQPVtCnTfnlCrb0t4ULNvR5D1bQjyvn/Bq+9X8O77E1T6fgS1vrmg2jcV1PtmQl2kVApS0OvrC7p9XUG/ryc0EZ9vTnqzPJGkn+d/ecLeHts3fw1U/zrTwN7RcHRrKlD90WPwAC5uzASqf34KEcDBmYlA9a+yoAAcftQXqP6jKdAAshu6AtUf2EYtAN+e6wlUf+8HagN49V1HoPojTyADMN6iLtSFxb1dnyAHkB9RFah+z094AdjMqQk7xPszmIY3gPQgIQjncYu94q7QQ6gAaA6Jj22b5IAJYs9TqAFYaRMf/ZgDxIMhEoMqgJj4/i5xwKzX5yQFkBR+QQY44AO3Hp+HDoBCnAv85jbkO9j1TugB6GTX+97wG9aZQ2EMugCGq5dX18QvQmuV8AX6ALorq9Fm6qtcEWZSJkCqKO9XhLllmABIvZf3gddd5fWXGZgByBTLx1KL5IJStvBs+Cu9pAIAb7e6k5/N/syrAT7GAQ5wgAMc4AAHOMABDvhfgCEWGLIOtLPAtHWgv4c5iey3DuBF1dWYcAwBTGLh37l0x7s03Li5x/kD32DMYI/uAXAAAAAASUVORK5CYII=",
+    "FaAward": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACiFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+VVzLhAAAA13RSTlMA+gP1BAEI/v0C+c7v9/wGhJ/hT9LihS03IusS3r/olSyHt+kjR/GzVnpB23kXDBE17m0a42JDGWuoiNWSkYv0G0KP9tf7YOatb7J0VVrgokowOmOmaBD4xCSqDxQ9HmEJIE7zWDajvV/nZqnsKHAyuDx/HUbM8JN+5UVpB6zQttoW3+QvNBU5oD6BZwVstDNqwSFZwPILCoquTFETGJ7HS47RUDHWmDtAg8ZkpyaNK26XeJyhgsVEJSrPsLXZd7pdH6WGSO2v03HYdrlXON2+ww6JDeqMKb9++f8AAAAJcEhZcwAAFxIAABcSAWef0lIAAAUoSURBVGjerVn3X1NXFH+QPSBAEjCEJEJAZQmogMpGZCggIAJWmUWgrXvWra2zzqrV7r333nvv3b5/p6YJ5N17X+6554XzE/m87/l+eeOee873SpJI9G19N1jnmpiqD/2on5pw6YIDbRukWYvdm+VIuCcn3dN/b949W/zrkmXVSD43O/xrzXKMMF2eDf42kxwzzIvipl/8tsyNM5VxsQ8/kCADkdA6vFgb+8KDNlkwbOsW4vm33SUjYskcLP/pJBkVSadx/CVuGRlpfSiBH2V0rEYJHMMLHMPwb5E1xCsIgUVaBJYiBOarEXS+cbXba7F4uzueTVO7vkqcv5hdv6ZVBZYowFJxka1Q1uPCAulM8p5SGvMLu85TRPkr6PpvTklkUfps+iaSG8T4ny6j771dHfizlQKWdYvwz82k0lY+GAs6tpKCZs6F+Stb6Ee7lrOZ0tiWRyB+i4/OWcOD99Lo3wyAQB6dESzhwb3085TfAwRuoRNu5+OX0vhlgEAhhb/NyMcf2k8l/AAI0PvMO9hFWQfgl1D4LZDAa/TGA+Cv4eA3424ywwfAU0j4y7DAHbiCVEHC74QF7iEzCgC4kawv5QKtK5HQb4TwTQS+HRZYQCRUgfifCPwCrMB2EP8k9hG9RCQcgeB6HYHfiX3JdXoAPgdXWdjqBTWp+VRTi15obwLwHGrlfwDxZ1AJOQA+C9spZFMJhQC+H1muR/xUgg4Q6EQ2hG00PgsQOEonZHp58I3f0PiPAYFxpl/rRe2w4Np3NDEpBzFd+DMOsO/SMY6BMxb2IcZj0Al0Xl1WZhTuUEd+zjTh/V0iveNTTJ6p9jwLO/8E08EnOMW633J2uHDtoEFnv2NRw6L9+xmV+WV7nqKFT/z6MxVIqvAAsl7VYNn/6FTpKaPxVGlzaouquZMrPkPdq2UI9InzS0VaBD5FCJzUIrANIWDx4/n9FsyovxwvkI7yKobmYfn37sL5Oe1YgQ6sIzVeh6Ff0Yz31N4P3CdKf2tgvSZb0Fix/BOYvSq9wChpjx7AetyzKV5nVp/K40/VayLN61H8MNQo6pnb53MrKmGNcuzuyRMWGDA3Kg8HXo/sotZ9V0I/Pfsie55O6VxvaDQPiPKHusG91YPRux/66kN7kuv+0enfo7WuJLstfSj6HAerQyszQ1AgEP4H7YebE4XeUvlhezgjIGhaR8vEfAcMd1ycgc8Ts7DPKb6S30Ef7uFJcWMjEsSXn3WSDy4l2nGbCD8145i/9ES/WOfNZbXJGf02c3tNuPkmFMzCMr9YNJg7cv2K8x+3/YYk3bCn1Y6NXh/JPZv/mFlDY9Gn4yzcmhCimldVvaDA97zK8H/n+S/n1EjeCgpUcbKvwU1NE+TZFfBuYDyMucrDPI8zZ8hh51BkaQU5IGCyLrZycrNFeo6ESswcTvaeM/uix8yBFXEbLt7Z1tHY4zrhwvEq5OO81zcWxTl5uC7syce0baGcDzo5QM5JyK5kTh5h3+3kAM1fiFqOpMlfT3j0vEPUF4SdEGW0ktBWDvTXmAIrOFkHSOgBXqOn5R0XUjXGUBgb+1FMgfojMy+qzG/in1SuJhehv2xm8dk4B9iGEw2XMjzFJaFh5QJxmruR8VkIn/5CaJWWFHsyLjWcMIi2R/n8c5YJ0fIg5JY9x17dEb3aqLXxfZVrGLumrwa08kuGtyIUl3nHN2ssmgWkxGXhD/sPtYt/hSegb/VSHOHIIXYalVk3xyHFFcZqe/DPGP+jvvZvew00Pv0H9u6OqH6K/XQAAAAASUVORK5CYII=",
+    "FaBalanceScale": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAB/lBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////unmXlAAAAqXRSTlMA9fnvM4xzZsyZH+XoCvoaF/wI8RD3EgcVm54CAQ8JhBGcgvOd9CKDBoGV1ecjVh3CiZg76trAXunKCy/443GfgCYWKtMnhQSKDnoDS/Bv1tt5X6IhbjCmRDTZ/V2qSPIUmh72l326pMgori3SszLcGOF/YEHmx6hVWuB+HMZkaY22VP46G+RjJWirsHJTdznEYoYkyWftbE202Di+XD3iw46T0M+QdROgZEl6NAAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAA6xJREFUaN7tmWdb2zAQgB1oEmaAJk0gJBAoKXuPsKGMMsssBcosq3vvvffee0//y1JqR7Z0kvXEoQ8ffN+wdPfmxfbZkgXBCCOMWGMR0zsU6J1breotzQPiSlSeS16F8p7GGTEY9j5PuOvXHhBVcc8V3vquKhGLvR2hVdreGQ0FUV8U34MTO+s06keIOiOCTSgVdUcpExCtHxBtAPQB8vQD8piAgH7AJBOQejlSX/lIc2oIt3cTXMwdtk5UBAMehK/VVUP1C3LC10xHIMClEIulFrem4cc6LpD1P/fgs9Jaz2uf4bqm+eXk3ZPYzOJPeP2zN7DfNfR8+ajJvY9d/47crt941QPPBtT1dxSqx31XpIH6i6z6r1CFk9gz0TmqrL/Lh10GNWjsBb3+nElRYxAfLS8IXj/X8bFuRaK/mApIUf7IrT58OEoeisJHvJFc7S5G/bxs5gfkqhJt23gEAAUqwIs1sJ1sgbgFaV4uL0AWyItlKsgClkTpXNudfABZYEOChaUQFIgXzLACDZApHTYL62WFTSwBQaAoUACOoIAgyAopTAEhqJDJA0ACAkshAwnQFGCAUgApZDAFKAowQCnAUFAJUBRAgFqAqoAJIIVsLUC2SoCqgAkghY2zbAAugBSymAJIIZ0NwAWQQtJtBSALF1AoJLMApABScDMFIAUAQAooFDazBCAFEgAJAAqgAFLYQgekAwKAAigAKBAApx0SQApNTAFSgQDAAoQCRYBUwAE0AaTwmymAFJ7CAJqAQqFdsWqykC1cVpjpggBdkoApkcxUPBccfqoAUhiBAH1UAaQw/yvIWrICsSi/KHpIgOet9NcilLkkDf4U8rlWRuUk4CNXYr6QxDXvCQm4xZVoE0xc886QgA9ciX7Of9EjElDOldgm/OCZ9jKHBLi4FrxfhNYk7i0a7DI1cyT+vdM4dg/iHBDAWa2d+XV5Xvx3zSvhONwqxmxamVEry8mW/exZ9Vdp3fR0PTvzm9Ql01JYs468oz9wDh5iZQ7XBlvHsRPUs+R2sJ7JPjf1GokNqNbQlgpo0sRou9aL155TE1BmdSO+mu8ZG7bjfeRhAs/b9az18TV1omnqNbiP4Rq3lpW0NfhtFZU1U4PTyfyLwJbp7rs1lRU2f0NbyYJ1PNRdEjogTGEA/n2HKFxHjX4Z0E+fU6jx5aK2RO+uZlU8E3Bf/75pIxNQph9QZuy+r3FAs37AUSYg4abe+g2H2Xeat8iqK4q8xidlI4z4//EHs1nUmaiWL9wAAAAASUVORK5CYII=",
+    "FaBalanceScaleLeft": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACZFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////DzP8zAAAAy3RSTlMApSkHZvwByzPMQAb9jGq/8xRp9fH+F+P4E9WA+xUsDlHQ38QF4qYII5nhA9Gy4KIRVGjOClLThPTnLRjm8FASVZiDAkq2XiXPkYFnTWGz8ob3BGsJrtLcelsdo0tvMfq8O34c5cZkJqwrTxZZnDp9wIKrsBCWXUMkSK8ucQ9XOBkeuK1c61/FpIWpR+wozfZ1Vje9nn/CYCJlqCcN1rd5WkXvjZIwc/k12rs/Y+nKbQtOL9RT2bqb3nwaPh/oyartbLma3Xu+PcNJ2FDOFKAAAAAJcEhZcwAAFxIAABcSAWef0lIAAASOSURBVGje7Zn3QxRHFMcXz9sAd57A3SHt5ChREkQEBZGiIE0UsBt7rwFUsMUS6WCNNTE9MVWjKZpqTTTFJPtP5eRud2d25s0Ms/yQH+79dvN2v5/97ryZNwuKEo1oRON/Fg9vrTlctw3K9hTFq3bUU9NLtZG4uTWVzFZ49rs17Wd5+dqLn2hG+L7FH7Ut6S9nOFMuq/9+gYbFgRVGKlB8xWmMz5bUn7pDs8Rm10gicfxmJzr8oySgUCPiUGhWdv6UYR2+K6VfR+pr/s6+DMrwfKkJXqUJxwEZwDNxfe2eDGCCsHxKjUsG8FhM/cvWhtflami7gLozZ0NAehWn8NQ31bfMsLMLPeI9e5sd9e9O7t4Eq2c83ZlqR31WdZeX8exfvZNoXFp+KO3C1znLM0ejXnTGy3o3+5BZzV/iDw9u7xZUX1Hybhl7ZkuRLVuNMZfCEZHNMzglgVuYa5AbDiPjlby35Ggu9AkUfitiIDcbzaQz5S+v8wkt21fQwl+EpaoOMvSP+sW2hQU9yE2ul/HkQgagCxD0D69E0O4O7D0XR4b7IkVXxVjWHVT1HSfWKsqNOfrvORuxe3QDznET+BaCpHxa+mvh3Av6SBx+T1JkOEZJjNSebx5coD5AHQboJeSebHYOhoUYTL0RTQEA04AiYmGuqb7LkqIDXIgB00InvMz+eJ6f+VEemaIDdANTRn4le7kW3l5Xv7qRmqECHC/qJYT3b5njCxXgQWZAQWYhIXFsAK7p6AzYtEADWA0gFgJjASANmBaAg/bez+r/Lrw9SxDgwUpIwQppMa1Z338rnPwtKARwTMJLCLdwmpQ4b+xn/i9EADQDLAvLSpEd+QEfQDdgWlhiVcAaU5zKBSynGkAsWNYC3lm1OzyAbgAtIaaFJHynnqlyAE+INWBdC2UBamPSZ+JVNiAXmAFwLRj7ejxgwQJoBw2YFgan0jqrMpFuwQLIifwaiKVEfyQ5RB4NQg8EWMAB5ULHm2H6vq5bmMsAXBMCLKV2VsPCAhUGDIl9FQKNiWoBB1wXO2FSDQAWcEBmigjgKtBZDQtBuIpOiQC20A2YFrJUEJC3lK9fABkwLZTAW0UxV7+yAuysNAvEbjqbo3/uuKWzYrsKaYFsOA3Mz7g38uCjAWJhmsroyZOz4C/oJofCMkCxQDu2qM3TqPLuX3exzjZ0C/Szaf568psxbSt6+IQ6q2HhB/bxPfRRcfTP3b+4wznvNzWL9uBpD7Sv6xZW1XIA4cjsPf5esoNyXocbk26hSAgAhQduTJZZkAOo/8Kd1bBwxAbgH0ZnNSwcswFoFdkTnb3ygAShvtEuD8gQArTIAyqFAOvlAcdE9N0BDPBBLBh5xJG5WgTwIV5FrNhv/TjKz+Lf5O8WB2gnrBY28lvrp8ooADXELBTxCmnlstEAXiLn+ewg844ml2IToGzLga+vqiZ78qgBocYHTLW3KVkZC0ComE4WkEfB7/clo9cUCAHeBJfcwYbf40xIdv9qS+dTtpQJ6E+qYK7r3HF76z5uCcZ/Tv3D5NqB8by4JPlPlmhEIxp24j8kB+LQUradVgAAAABJRU5ErkJggg==",
+    "FaBolt": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABdFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////89ue+RAAAAe3RSTlMABujd9wQBCP6TLQ772wL5eAu1oHH8hdcTN71/YMxQHE9e7vMaPoFDpOdrCa7cLPXWecYHSu/VgsUlTvh8bAqv8tjDQiPIqUf2lFaZejyjxwOoRusnrVqd4H6DZNAMkjW738ChP+mML5bZ/d6/xKWGBe3TD1IUV5oZXICe8r77AAAACXBIWXMAABcSAAAXEgFnn9JSAAACbElEQVRo3rWZB1MTURSFX0hCAiSEUBQIiiCGjiAdRIoKCIjSOwpWOkrV/fPOuAszhJe57+259/sB55vswD1nE6WyESgK7jtZicXXIgridNchGMMMaYfkJSQ4oAV7SH4ySgtCiKCNzndaEcETA8E2Iig1EHxFBHl0fs5HRFBMC35Cf6UPaUE9kp8bIvMXwoigmv4AV9ATekYLJiBBFZlfG4AEvaRgBTvWDaSgCxO8oPK7sSekcijBFyyfPtYDmCCfyh8BC5k81sdYPn2sz0EBdayfJ0EBdazHwXzyWE+B+dSxntwCBdSxXkKfEHWsl1EBcawHC1CBwS7V7e2U8b/3rOOPo05DQZ9PgfHebvQrGOVb1llOCN+y1tNuJhjwLZjhW9b6OVzAtqz11PAtay2PCvmWtY5oBd+y1lLCuKx1PK1jXNY6ihiXtY5ghHFZ63jMuaw1VHIuaw1l+RYCP8f6nU1hJuzzf5XbCFrtBUNWlf/XOv+33StzxLqSbd/5m1PxmE3+sOLijzY/0c8mmNYKHrDlq3akJw24iCI96ffV0LgnDfiO9KQJb5GeNOBVAulJA15DPWlACupJAz5DPUkTHoF6kuYT1pN+Nncea75qufe9Yzlrfu63TEET7wdYzMzvCfMKNjIF87z5qiQjv4U5XwXFetLlWq4nXS7FelL/5lnDna82xXrS5axMrCddusR60uNErCc9xsR60qUzJNaTLu/FetKjQ6wn73//wtyTLoXdYj3p8kOsJz2GxHrSY06sJz1WeX5Dzj4oYvzvk3fZufle/42QYF2qJ29fPT78zz8MSAlUczoeGu3wlf8PB0h5VCuP+qgAAAAASUVORK5CYII=",
+    "FaBox": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+X6JXfAAAAL3RSTlMA1vPt1NMqKH9+63hCmSQpPa31F8EC/ntH8b2YIcbARCWbv8RDSNiavqycBncFrxQ45jIAAAAJcEhZcwAAFxIAABcSAWef0lIAAAFHSURBVGje7djZTgJBEIXhGrC1e4Z9dUcFBdd6/7eTxRCRbslpqhIuqm6HnC/5E26aaOf61aAccfI2P0p/H5WDqk/pG1Y9/vcOAavrfQxT++9fzMcDzN3PBPDGMgDP4/vPLAXwZRS4kwOmsf02ywHcjgBeEggR4EwScPv7FywJ8HlWIQAIWYUAwGUVAoC9Rl4aCDmFEMDlFEKAP428PBAyCkGAyygEATuNvAYQ8EIY4PBCGPCrkdcBAlwIBBxcCAS2jbwWENBCKODQQijw08jrAQEsBAMOLAQD60ZeEwhYIRxwWCEcWDYa6wJj6uoCr2Rnd/yx8hlggAEGGGCAAQYYYIABBhhggAEGnBRQ092/ohddoKBHXeCGJrpAg+hac/9++eR1W+rt11urR7VOXW2/s3m2e3jS2V+0ti+Ds2Yh/H+oFc3GevobsHKtH7DOG2AAAAAASUVORK5CYII=",
+    "FaBoxes": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAzFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////94nh+zAAAAQ3RSTlMAp3kMBOYsqlXqkZD3Vjn2dy2eK3hyFck4n+wJ1/3dZpkSyI+zejwNO6KSETrkyhpNV3sIQIj+Pwv8IvQB878oA8ZYZ/GkEgAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAVNJREFUaN7t2NdOwzAUBmAnbUazu/di771XAb//OwGKkJ2UpKeGIFD//yaWT46/q1g6YQxZ6WyfaZaUpqg05X1ts6R2fvmIJ2KJkpWstMtKwBanAvxACbDpgA0AAICfBPr9YoFgMLouEDi/vOX8anJTFBAM4sXoohigN/xcDXuFADkBAAAAAAAA/jCwQwcCtRGqTT1/TW2EYiU9MQRmRdMVh0AEQf5RTruJD18UOol9x5Sbqk6i2JHmQzldnzE9dXFlXteeJFS9zOs6dVyDGVSAu6K0x6mAkd7g352T584DAABABjBVAaZkYH8SRs/LAg/jR6tFA04+rqeX2XLA3dP7o2ITgNZu/AyjVzrgj+/jxcbxQqDyxWohkN00D2QnB8gJAAAAAAAA8DuAQX51XQAOuemQNaivhnUBmB61K2LMr1F+ClluXR4CTZfUVLMxZK9C3gB7aTRh7MT2fwAAAABJRU5ErkJggg==",
+    "FaBrain": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACN1BMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////ZmOKXAAAAvHRSTlMAggH4CYP5VZ/gCrT3pOcO9pmoCPoHDM7Y+x0DifUxIervjRG7P2jzEFOl6MkuV3seQsgtcJTcehi94cKjhEZqDZ0cQAJFaU8w1bbaeBahIKbpBs9tC5Ev/RrjJAWqSPIPlZoZgGGFI6lHiihrTPGPMnWef0Eix2XrJ8xL8I4s0W+yk3S3F7xawaLlxqeIJstK0G70c1T+nMBEhyXKSSqwTtRytdkVulib3nw+H8RiQ2ftiylNUnbdXD3iw+dslLEAAAAJcEhZcwAAFxIAABcSAWef0lIAAANrSURBVGje7ZnlXxtBEIaPhIRACCEkQHAt7sWKS3EpXqSFQqHu7u7u7u7unT+uJOGavduT3GX3E8zXd/Z97reXzc3OMMxczPp40DfQVZT7OwpXot7mFnUN9H31yv5RFriie7OVq/j+iJ+RCr6ptg9bBe4oPoBK2a8RKSRMnX9SFqAxNs8tbUvlSAVpavwXtgI3Po+wUtwunvQiSgWgGvhxipXeY1KKcv+ATMwF1rukJlwJ8lUMyMFd4KFLMgpIforMl73UGdoEXGKcz9kfLCC1GXQ5Zg/tF5n0IBLzHfpiMVVf8c4T/xQtiMZqR8KouB64U94/GiTCudN+Uhl35Pw/gHcA+CSz/1pvAfrtkoAK8BYAnZK/T733AK1Z4elSCpA8cytIAHQSgC0kALUSgFckABMSgDckALni/nFGEgBjnIh96BcbkACALTpUyH+oF4AMACB8Oe6f9xPIAaC4ju9vvQgkARDO/4YmAlkArOH6r7WRBugvcAAWIA2AcU6NMkYesAF9C/lAHgBIqcmU0AC0I4BxGoAjCCCDBiADAdTSANxEAJU0AOiX7ToNQDp6mYkgD4hIQk+akTzgsOcVqTrAecQ+7SmNd2D8fzUcagEaAHg8810zXwY6AOitcQJOAy0AGBz5DUAPALen87NoAs4yTCzQBExfGyvpAnTMArqAZOYMXcAwE0gXEMgE0wVcZYbpAvzpv2QfuoCt4r0TMoBYhrlHE7BjOv8jTUCVY8FSeoAQV/+1hRbAPtO2yHtGB2CPZD/Kx0/QACR3uMsKzbog0oCgRg23D2snC7AH8O+xf8gCyrCLuJYsQIsB4skCMjHAQcI3fQzQSRZgwADfyQKaMEB/PElAdwDez7lCElAt0JDqCScH2LNEqOWVl+nZvS5d/m8iUrhpl+3vUfuhXraSyBbrOnYck1l615G1Wyap9blE47Tq76DE0gTn1vbsk0gZLG+QmVCUTvkYDD4JUt2Hc8J0x7qpUg8HRRsFPUZd4l5Bcb+iQVdkqoDFLVYtFxBT65TN6Z7gFsHNrLhJoCQvVDgI1Jj4DjdOutVfeIGiUTpqtPLKJRtnHtrI656EhKoY95agG+Ffz1Xzy9DNa9cwamJkIoa1v4Y9ofUoe+5jLCtVD91rLk1aTImHmoXV2MJEk2XyfhgzF7M8/gFrMzDoHnFuOAAAAABJRU5ErkJggg==",
+    "FaBriefcase": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAeFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////0cwFZAAAAJ3RSTlMAGPM41a6U8jbgF/6tdxqrKpHU4ZPWK5L50+KpFjR4GxUU3Y/w3ynXRYdVAAAACXBIWXMAABcSAAAXEgFnn9JSAAABDklEQVRo3u2Y2Q6CMBREi7IqiDvivt///0MxRhMTokzpfdE5z2QOpW2m1BhCdOmGfkc+0vGnsXW8F0gj0p5d/nwpDUmGVu8/kcYkNmMIBCC3mF8kX/r4TIeQQEawYIYJxrAgwgQRLBCQPxe0eYaCvxF8by6Ut6bzAlHh2XTNmwvl0XRIc8GGHtpcKDnaXChV04WqgqrpZrqCMdpcKJERZSiggAIKKHAiIKQ9bZaas31AAQUUiAzq83fOBFm9YOtMsMhqxjDIFix9CiiggILfEShfSJ2Nr32lVugKTiZWze9vjEk1BauqvA9HvfxkfT8eDBOt/Mv1cQBZ5zrff7V/nXHionS8H6JytOH/KXHEDbSHm/Rz62r6AAAAAElFTkSuQmCC",
+    "FaBroadcastTower": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACalBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+mISYoAAAAzXRSTlMA9dsyAgHMZjP8EQcSBB3r+urFh7D9tFzHsvcKR4r2WwiIIAYQH0hxctzz8dmv5wl1E/tgwaIMsfm7nOk0d5uaXfSdegP+SoXsj1GoRolLMUDGc6Hkyi/4OejJBe3y0xniHqV4QnCzVjyt8A2YeVp+5SEmMLYbXmNT3r8+xIYuFDjRVBxrJZRFbE3YI5K5qc3SvZ5/wuaEZW+3Nrw7X6fLrI3Qbk+X2jrfwD+r7ozPbdQVuqBDqpAPlXa+n8Omo4K1UH0k144LImhOkWc94XtFxQAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAABR1JREFUaN7tWfdfU0kQ3wSiJhAITSEgIhBRQDrSLFgAPZATTyxY8NCzne30zt776fXee++99972f7q0+e4r+5KX997n7pd8f9r9zuzMy+7MbAljaaSRxn+DjcOTI2itdMbcjdaouX4/Ecse5DGU73LC/ifr4ua6MuPMTZww1wkHhTD3Spy5E8wLTjiYCnNTY0SoCMywEw7EhHgvRonvQbznccKB5wMY/ClKzEF/hjNRdBQGr0e6P6O7p9QZB/NqYfL3cPcSelecyqtbYPKPcK8EvVVOOZiljPtl+D11G5F5S/MnhTH2arN6YOiJiba2iZdDavbs3rGIdv4+yivWGITNTHZZkmVLifpKaSinPR7PRe05Sv5N0l4AqgtGb7Af0b4G+f3gFMu+Khcsz31L8P4+YieBWwDNP8XX8pMkLm0hao2wsz7IFQieE5KtRAYaiRqC4jY2gTYmfBeoj2HF18BVeLRaEjPPYDZBfcdOUbMBI1ZLMm8612AmRNPA1SCZ64h6hD1AzTaM+Awj7iKqYrPWQV2W/nNXwMTzRL3E3qDm25C2o1gh8Pq5DrMQ1F6i2mHiI6KOs03UXKSvtxskYQE0QdijKc/KPWETC1DzC0hHiNoCaoXegZiPLUSNgHoOkcVof+P3QHqCKLfxGnO+EkI3USdALSHKxd6hZjeku7GQoN7XO7gEIQJgtz50G9hBan4K6UIYqSDqZr2DtchLrl9GrEE9O0/NbyCdiREZ+nkmnIdoPrgCcPlEjbK51DwIaS/Xl6+dWgcXINoGbho45P297Fdq9t1O0kMY0YUR2S1q+y3ZED0N8hD2NBTAv9g1/X7jWY6ahi1itvYXzIaDxYh5nBlOQu1vdlWSOTuI2lwVZzLdWgduynJ/rT7PmqD2D/P1iekivF4ep74kpkwfRWXaNXCthwFxlAvP5C/UXodFYBePRE6vRw+DKNE7KBFbxeMR7SOojKw0KKKUsSsYstNwF6/06h14K02c7SLl4W70njQcUSCm3i2Jei06oNMf7v2GKPDmGAzIyhPBI8IpL8tAfRwhHYzu6d9iyLsGI8Se5fL5XJK8UmMAGj9E+2KOas/KRxRDY4miUPJiuXb1Hk26+3Es4A9LR2RwZXFS9yTYB3lPleacpdiXlehWf7P4Pd1SdXHqmh5nPkQuvigboJj1XnUtdPkShlzgMlHDsdjrLJEOqNHEjSKmamT6nxd2RoVb95u8sNRrI1/sF3MyHT2LF90RY2716guSDYgy1JGAsg7Z5yp+lP3HgQLJhCuW5bRd+1U9kj1McTzOrbDpQJSh8mxFNXA5dvU1SFtRkEbs2T8sCs98Ja84iE2x5UAc8nInqyAubAvt2K9ezJNCuTYpo4abwG023k3qzThwWy9IZdwUhiw76DDnoNCBMpQQXqsF6TQ3iQGLZWiDWQd5FTbLUFJYK0i4BvHBKVLcB4V8K/bXGpQhaUHKsFWGio1UxiT3SytlqNdI51lxQsq2UYaMN62sHusFyXNd8jKkw0rrBWlIdxqSISRy/arlN/od5l7aU/xnIMerf3iSQTxUeUMpORgwefz0vAbFxyyWodWJNZuSX9lkmCF23ObEmorLw35LZeihZKpfQ/WUk2XI6AJnEiJ/RpMrj5rJSA0WYUxrcuVWKO817eBcZ3zI8sbkyo30utT5lPlFODMYUN1DEyL25BkYPJNSpo0fWBNOMlNFuPl4+H+AA+Mp12v/9mPzTP7rdGy7n6WRRhr/I/4FfEukQuxbHgIAAAAASUVORK5CYII=",
+    "FaBuilding": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAARVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////+Gg3WpAAAAFnRSTlMA/NzQzS7OLwIBCTL+gv0Kx9HbxoGA59mFzAAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAMRJREFUaN7t1ssOgjAUhGFK0YLcvPb9H9WFicjikBanJib/LM+BfAugQ1V9Zh5rF7+Kq++nysx8joLcbGGMkjxMoNYAVxNwGsCZQBQFAOCnQHPoXqsuNCnzbCAsy5AyzwbaZdmmzLMBa5t+FwBA8de0+IfWhPeRcEyZc1wD0Gg0GgCNRqNxXAPQaDQaAI1GowEAAADIgO1/IQGwfUQLgO2SEQD7rgQAAAAAEAL9ZYjSDL5fAT7K41fApAemIv8T5pP4Y+AJluz9gK9DkqYAAAAASUVORK5CYII=",
+    "FaBullhorn": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACFlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+SsMzEAAAAsXRSTlMA/vwyAf0EqlWpv+F3dgMN9YPqXs8VfOMTnM0J8Q721zcnCEvRogJK77E1PyXUELX3lZ7w+vl9JDM4Zjxgx0aJkzHWdNs7iE+XFrtZocoqsHL42d5dQ2cFiykKkBRc5uUh6fIZQueFyIooa0yPUZSZ3HoYW3/CQYSo68ytslA2eRdaneB+HEUmy2ms0Az0knMROhvkIIfubQtO8y9TNFg5oD7EYuiGTQ+0UleagGH7wL65J+RXAAAACXBIWXMAABcSAAAXEgFnn9JSAAADaUlEQVRo3u2aZV8jMRCHl20LR4UCBdpixd3d9dADDjhcDjt3d3d3d3fLNzzaO37ddiebbLN513mZzv6f7GSSzCYVhKAFTb2FnnyY+TGPn35qDHJbWSgn/e3l6J9Nc5HXXzD810diNQf9pLXIaxYO4W+T6KM+zfWzc6T6KEzr8JsNiCfAehwhnoCCQsQV4Bd+rQGy8GsM8Ml+DoCXqxFPQJalAvEEtDYixBHQUyr6qSZrCZj5kejfa3uedoCUc5GyqBhjBY0Ak5brQNSnl3cxDQAFsy1gYiaPuH/FAnpqu1YRzFZnbg7vf4RJmuFWAQ94YolHjPbmhoAHfNvIKp+zf0ULAmwKYZQPyTwjKADMrN0vzJdEWw7IN7DJD9t8SiwZQN/PJO+ajfDNRhlglEG98sgGvf8skQFuBaouHhyMBaahDBATkPr9cJsDnucyQLRK6cWM3OavF/ELiddzId3TQD8HGtNHawZmSCuVdHrE+TUQjG519HmknTdAfM0ZgI7pOQPQId6Abt6ADN6Act6ACt6ABd6AP7wBVZwBv+Y5A8o4LxVzDr6AxZrlhkpqgL1v95aobekDCbQAu87dYFK/X54Pu10/RQbEF3kafge25ZcUj90jAMJZ67qQzXVWCkC1yFAYPfuuIwIEJ1vl2JtCAiytZ6x9i2uUAUJtCSPBUFqkCBBqWd8BfbDplQDCklNkReQ6lADLuWQ2miqZCPa3igCvvYOeNnl+Srgzr3vR3h0Pn36IVXoqwDro4Ws+LgkdURlgmJJoAGBKnZa5PdgL9MSVSgaEgq//EzooaiqW+SV+IgKsIKALfttTX2RT4gAJUAQCLuEW5/xCfF5hQgR+kLzC7i/jlkh1AOEm5PtYYQvbGqMOMAf5RiltkmmlqgAuyPeE8ka/JlIFwAj5lkcoE3QmesAu8HVJl0qOXmrAGFI9CJ7s20EL6AAB0WnEiks2EBjAZ/jL/D25pvMfCAwAc3jRNk4mxBqpAIfhrI6jqEsjOqVPtGC87sKAoUma0ndEcnbdgOvGUZhgpCquvQMRbcX5lGHWliYqwspAGHbiT70xgAnK294q95n8nmwFlyswwEl7uD1V//S5XsmhIfA8orM08JjNcFm7e7GzEKBTy4u9q0Oy/k9kaXo1uW/QGSaxzLiC4J8hgoa1v/VFRZ5y6JxoAAAAAElFTkSuQmCC",
+    "FaBullseye": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAClFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////DZdiQAAAA23RSTlMABfj3Afn6/tsCsAQI9LF38SRmj5QTIm8x8w/8r9glIwlBS7L1k4gW5CCR7Qry3YCu1m1sRGsoDvsYDTYcwdAMGwaWzrlX1UInYOcymdx/5oQD6xK3fkAHSisRtjXa3h8ptL7XgiZVzdKz9lZlrdFuwMpoq0mMKs9OEDR8oOhITdMzGVNFQ3pUX4Xsii1RuJ4dx6jwjixQF1rlp8uNTzCXeFk/punuCy/UtbpYvz7jgcSlhslnkDif4h5GYVJ5yKlMcHU3vcx0neCiIWTqrJJzu99jchX9qi6VFHtO32OeAAAACXBIWXMAABcSAAAXEgFnn9JSAAAGbklEQVRo3s1a919TSRBHICQkQCBAUDpIQpPepEsTpSNFqvR2FlBEQQWkiWfvp57l1LOdnuXOcp7Xe+89/8wpH+TN7NvN2xf4wf0tM9+Z3bw3+53Z2Wdl9dKMRR2TnU/jtNq4p53xHYsW1veyyTK1j50JDDsfdVn8soXxXluSrjBRh3Vf1bb5eq/Q3TOZHSu1r83D/d/Hlpskh93ZAxa6X/yX0sQ3fnlkgftQJ5OM4d0kNyY9lphkjVei1srxn9pmkj1iGrjd23ooTBaM5VpbPv+e/SYLh1MFj3/fdSaLR7GftP/CN1nWNhneXxuMRsNh7002LMzwYin/+RFUw7bszlB7AWUfuv6iDxXoHCDh35pipKr6job1K1HR/qfZGQqdRQbKm2+zw+1yJeU/mHlKvuLnr5Z4qIVLRSYFzDddIYof1Yh0VNREiqzqGH+YXIzS6MAT1/77SVKMpu+43wnYmhrerR8/TJj20lCfE/yQs4Kfu9K2Y1vFDjEmKwZjbnvKYcfMt4hEJ64K9hDRs1YevzsQ6UMryi9BSN8q9p98OixXddXO7qoqN+xSsniGPuTA8QmhxwvISSLU7r2v4xVujnUnSTgDATZi7SOk/IF4v2kPg8Q71tGVQB3Zh/T4Pfeg+B/lS59BRJqsQfvBG6quI5URma3KYPP/9g4EHUDLPAk0x9BOR/t3wmz2jziI9jTimiuCIhjVnYHQZrVE6eW1BaJHUI4Waj4P5rPbIp0mdRDfAjWxc+Iu+OggP094SU/gdQoYNKBQfiHdBqU3AdzFmSfTL0kEJrlQUzsrLIFCkL+yMvhqiRxAPNVQsXNWmA5DCFD5G7zVylcgqRRDwpk9v8BEXyVgVzgSft4zjCReu5a41e0O+ZDGBasoWAD4z4gmIVYvQB9iLyHfl7/QaDacwbpz4L1B+dSMqAzWP4DfMP84pcBwTMHp1REwXyOQt4uINFsAxiIXP9ljZrM3IHWcoCkS7SlYonUKQMTPTvYk/9uj//CuoMiDJf0MWUKeCJ3DjUP+C0kR57CkUrg9g+fkepibNc/ZEp5ThIWehgv8jZYldRCRJ/w1WBm7PBO8D35vEszDYHyW0ybQhACIqyDfDcTxz35Pw4qJvucN9ET/D4BUCmI1EH/wnJDB78MCDBaEW+kTBEIGEMS7gHgvEY5hAiwciH3pE8C3t0YQuwFxAlEQvSrAYJ2Xyai2YN9CEL8DxB/yTZBCnyCJbwKOR9RBn6CZ7xHBl/xYgBUv2EueoIfpISB2o0+QDSD17DDl2Gh3NPPZaAyquASJYANtAlRxrGdTBYPskiHZnaHEkWcBJ9lZtVEXYrUZLnCpmK5RCXRUUNyC5xDRS7nISjgGMuG4IXUCPeFEi1KmD0iZOOf3oCODZwszZapEKTMeQsEh2hUn9lLdXCxpHhRg3QA4zEN5vrhsKTFTtoRk1zRnZjYHZoeQNTY4Ud2FZYuD+cJLy1t4/QwKL0jzX8wKqyD4Mjja5PD57wKlYwCtdETFb7384ncVMEHn5bmq+EsoLQTwgzzl+yBsV9JrmV5UAjErB+pQIhqpp1djf6Aj1CeyjlAPIPo8amr/KyjOQkWkP7Q5FWHOv/Mgumf4BuruA80BdIzdj9tgZmKpywVBT0Ddn7XMToJyEPO+RwTrIJ6FM5yS3UtIxa2oNMxs4yccKa2Ec0RHpCkc6cew1huf4MlmkXvcR2h5yqMJZBt5qBu56CfUTXiNt8XduuA810qfcIUi3KfSNS9Y3M5Jx7svjQQQJz4nrn4g8E90FD+TbKn1yWqpDeH1m25QLtoaiKZgxhF+/03dxAXYGA31KREm+wJ5/Y+GE6Zx9MasmqSZAX+ue0JXsjH7IwNZV0zG+rpRaf/nfyWtGodYWL9h0XZqkbj6Sa0XmZTqzdzNUTLMoWrm3Y9tQK4Yf/yCuQUF0C5PIqNcqJcBdyNpFxTV5v9yAD1LNhbl6cFRs1x/q0hFBR6vlrzBLGBxs3W3+rGb0ei2S73bmoUpvSAdFX4qy6+5GvU8cZ30saX+1XWcO1NnbYl7aw9bbm7ZsVK+/xtj8q57I+S5J9On9HiyUY7//jQL7sSvf+vF513Zk2rhrf7JK3YcHw3cr53Hdwl1untKic8eguf7aUXzzlbG7a5N63+JC/NxiP9Ue3QMyqiKmOj2fAerBR0a36np1QlabcLe6XwXzcvzUc//AK4vqHKcOXsAAAAASUVORK5CYII=",
+    "FaCalculator": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAh1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8s+2B1AAAALHRSTlMARUTjR+TlBAVGSPI24NX+rpQYrReSFqsq89Q4qZE004/h8JPWKxTd4t8VKQAcE3kAAAAJcEhZcwAAFxIAABcSAWef0lIAAAE9SURBVGje7dnZVsJADAbgUYu0dgFENgFxAde8//N5p84Uj+nkHw8H/lzmIl+h0GRS575jOWoWYo5F81S5fXE9FFiMb9r1d68CjHreuv4HgUYdfoahgGPm11+i68vAv9MjOCBrD9jigVsPKPFA6QGSII4YuDjru6joFz0VcO6io1ABeTyQqwBnCAIECBAgQOBwgOQts4gHMhXQy2LHlqvLE5nsCBAgcFRntODM1TWvOaMVlrym4eSWvKrVofIETg2w/By7zkWZJt8Z+JqLgjnnt3xnwPJQI0CAAAEUYJl/ksxFh9dw2PQJ/P9clBv2RZmA5iXTXKSZl3iM/RtI8Lr30QOa1C+sJ3jg3gMqeP3Bnb/zHKOBVbBUfX7B1q+n4dp2XiPrv320F8PTGe77X73v3T1Xkw3g/1Bu1j/v7ydxD7r4L3C6RAAAAABJRU5ErkJggg==",
+    "FaCalendarAlt": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAilBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////iVxWkAAAALXRSTlMAzc8uMAHOAi8x5vPtiAaZ1u4k2D1C18FFJvTARCWbQ76J5YfxveuYIZy/PprDvEmCAAAACXBIWXMAABcSAAAXEgFnn9JSAAABHklEQVRo3u2Z6Q6CQAyE8UAUEFDxAgTvu+//eiZqhAU3MbYkJs78nJR+myxdStcwNPJWNt217nucGK369NKGE6OVnT9sc2K0ooI4MQAAAICqWTqKiK1ock3epp9PSUzxopr/MiBBDcLK+kXzE7nDEmBJwpqW9pfElSmAkzzAVwAjecBEATjyAEdbk1ICAAAAvviIQtDnbRYKDQAAAPgFQKNlPkyz2+H4WkA3t9scXwuwctvi+B/98Ur5APwboPbXtFA4PY6vBXTazzVZvSbHx3ENAAAAoC9CXwQA+iL0RTiuvwHUcMWyrfuSKFAAqTzgoAASecBYnWvupPPHpcHpcU/1XpYaoSuaP6wOfxdnufzL4dv5cuYHAvXgBH5xf28IjA3/EI/hUQAAAABJRU5ErkJggg==",
+    "FaCar": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABxVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////++BzQQAAAAlnRSTlMAFRTnbP4Gz/Mb8RbpCwUKGff9ZhjHzBcrAejJMyG1hQT2meFGLJjQDFMa41IIxsXIDpT7N+Ynsvp54AdK9BHkq0nubYZIcbS5OOIvQgn4gfztzqlH7Iooa0wtcLMTuL1bwoQiZetqS9FQ9ZO3234c5YNkRYgmaazv1bb5eLsgjCrZd7pY3sQkZ/KQLpV7XB7DQTDAgMH+/0YbAAAACXBIWXMAABcSAAAXEgFnn9JSAAAC6UlEQVRo3u2YZ1fbMBSGFWc4ISETQpJCgARCSwmhhVKgQIG27N299957l+69h35v21PHSMlRdOVE5/SD3o/21fvYurqyrhFSUlJS+t/lnxq/q08PYYaG0vrI+FSTZfvbtxIYoLFUqyX7hhEnBsq584n45FwPYQE1LwhOlO0oFtTxGhH/D1uxsNYLZOKNHVuQrxfq3z6ALelVEOYfv4Qt6nEcBDiILcsB8f/SbB1wwQMAbMRl6D3fP1hQYF9v9FazYqv3nnpdUHD8athOL+4dvPhRumQauVsEVQJtXv4r150jR2zyc8LXUdF1kFVRQz1TByd6kgw+Dysc6qGOlI49GSYnKA6szDZiULgBnuIIdG95C05z0zUi0r0BClhbRQyz+6GzmYFvv6kSaf6uhxlVWQ8H1DMswsszSGdVfVTkCxVluSyjJdatiAggwnJZQj8Yd+ApLkozqV/oJ+NOBgkpxbBZQN/KT3GpNM+ibAhL1PwcQkmZgOTfI2Lnoiz7xZy5MXV0V9o8/JJM0WBf5R//IfExHPbJmCDfsAnIyEnBx7y/1i0H0HfYANyRtYry2xlRCYlHTwPa/qTTip1z4qwWiPUT+XxgAO6bV3Lavyu7psX90zeN3iW3eqoyAOZOaNfyafGuEfXvspndkfkO88YVM+g5cSoUJHQR58t+82ohIEbUnjct4j9gI4a2MgFzZHXPCmTa2UKODDAB9DF6Ag7YTH/emIADVNwgHDBKDZxhAj7RvTIcoFEDrzABp6n24SocQHVOwd1MAI6SjegKHLCHbIKJM1IRAI+d6PFm/6wDT+zzC5FlOnks5gkglPX2NN7DRQC3rM3unQG4LAvwzAAckgXIl8c+WYAzjNa4Ugq1V6S5Z+viaqubkOGfIJrgFhkAaoeVAUAKUCZA9E+uAihA0UetShTAcSg6idaKAjgO2yz9JBZw2FLwV0d3iQJ4Dh7qvu5BwuI5uBy1Rp7cnQ4XsqDyHZSUlJRk6Td2bnMscv61fgAAAABJRU5ErkJggg==",
+    "FaChalkboardTeacher": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAByFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////GlzqaAAAAl3RSTlMA81MfzIj6ZjOZCwHr2AMw8t1hByiucJPbDF0FLvj3+yKYxZEIt0fXvcJVwQJFK27aWf59G17kgkRoKqApDxS5Do35jP3nUCaVnsTtmlLIBKmKzQnx0vYyE1bcehhbRolqjvUx1hI7X0DlaazvT/SXFrucIGMlBqtt1BC1ljR3WDkavyRIi85sCvx7vlw9ddEhTtM8VN8e+cVWGAAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAArhJREFUaN7t2eV32zAQAHAnmZ2FGZp0SZM0ZWZut7UrjpmZmZl5a8et/921jpN1syXrnPNbP/i+Wrqf37N1OsscZ4YZZvznGLDadYd1SDP91YdiWfHjOzW9a6NYdmx2UYBnIkJ8Iee3bcAANn0jAjtFlOCJwF4c4CsRsOAAfiIgIsUaACLrdUQEADj01BiHCSAAu7t8wcyigUChov6cFgwFlqNqi8GAvtAEnOGw0zCg68SoVOn8o5deGgCM8Kt2GsFxBBsIXvu7Vlm6UQEvryyHOS8iMKVWcGN4wB31kt6PBYQFQmswiQRESLvSfRzgaQcJ6NiPApwkb6xvUYA2MhDHAGy03uA2AnCOBrxBABpowDwCkKABQQSgmQZYEYAWGuBDAKop/bQ/hLEOLpOBHSgL7SgZaEcBknFS/sA9nGraTgIakMq1K6+e/7ELa0d75FHLXzusmmNE+dkxpLkn3w0o8x96rX6TduXQddpty9m6fyfV3+AwAS4Zda+e4m7dzuECHDf86V3x4q7DY+TnqBtY2XsSvbFYb8JGfVHKAZjCBAwBKppb+UxnTenbxlnTmeEf9FX8GbHVUYp6JeAuXTyjAoTO16Xlz46ZQT4a5Qezcq+avtld3HBCeb2HIU39F2nDeuxN8r43A8s/XvxY3aY1MiuviqVZEDBRmHXhivbQ2QX5MYCAvDTnWIpl7L6+gvAZAkgN1WnG8zl/pQS8AOT3JJcnjMWZhxde2FfM+S3SLeUAR8WkJUZoFqR+bTLNDghVKzMOCCxj3Y3vq6X7mYM8s+vwkuIEncDu+QAGfsFWJvz0aAoG5MBAFgY0goEJGNADBlIw4BQYAP7oSIGBAAxoAwNzMOAJGPCNQ/J/rIQvZdDvsuM62g/vNHv+W15dHc5zD1v62oO6m6gWhp+i1gHz57EZZqzV+A31KonwpP3odwAAAABJRU5ErkJggg==",
+    "FaChartArea": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAA/1BMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////atUTwAAAAVHRSTlMAEn8DBEXr/QIZ+Xe/6NDPM5otMcjNaGf+Zuz6NAXnzkJHCXAO1xO9W57hwqPmCA1Qk9ZVO36IywxzIAHKKvMQ2ZtdxMmq7YsPtFL33Xs9YTLM0TDT0o0CAAAACXBIWXMAABcSAAAXEgFnn9JSAAABsUlEQVRo3u3Zd0/CQBzGcVTwiiKloOzh3nvvvff4vf/XoseylOv12vokJN73Ty7p58gjMYFIRKfT6Xqg98881csnMxAgSe1MCMB+AQYByJYGAgJnd8uvSMC4IiqNA4EsPxmJw4C+wfpRYgAFXDTP+kFAufVBZDEIYFy3D4POIAeyttOAM0iB5sKhZpAClv004AwyoMw6gGAzSABjjxzNucxQ2Xq7DwDkqCvxDJmf/1rn076BzoXdZ4gOD/GjF9+ARYK6Z0iPNU6K+z6BFBMBzk9D8/q8KX+AMUri+kXX562s+gJyLs+3z2C7Pq/gBxAt7JzBfn3ec9QHYJF7jRkc1+fNqwMuC9tmSH90v75pqAKuC7dmEFyft64KFEhe1RS/fqwISBb2KKYGWEGfTwklQL6wvG0FwGNheQ8KQI7ClPIGiqGAG28g1POJnYABWkADpUMwQBto4CkOBmgXDZzOggHaQQO3a2CADtBAdRIMUBYNLFbAAF2igRkDDNAjGjCPwABNoIEl/ZWaBiDAn8e/DydsJhpgaIA08B8Ahv4zTWKBWiRjAt8Dq33pHxJ1Ol0v9A3Tbycd8/XeeAAAAABJRU5ErkJggg==",
+    "FaChartBar": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAATlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////82gLR5AAAAGXRSTlMAiAa3G7jl+/q5HLu6Gs/zxwdtyWzn5omHGwJSDwAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAOJJREFUaN7t2dkOgjAQBVDKUqgbimv//0cVLdakxTSdmYTovY83ZM5LGQgUBYIgyAJSXi/2Ga1K+rTVpn1Na03tKmXfUXRg7acZV2lfaTrQ+Wmdq+xH6EBk2j8BkRPCC0ROCC8QOSG8QMqVAAAAYAfC7cQMhNuJGQi3EzOQ0gAAAOALkLJnSEDKniEBKXuGBOSNAwAAAADpZZfXzALG1w2lmQXqZnrgVFtKw/wpIfOtHwAAAAAkM34Pt7JR0sBZGrA/APTSwFEaGKSBw072Vnu8aYgKt/FH12nfC64KBEGQBeQOhVJRBNJFmLAAAAAASUVORK5CYII=",
+    "FaChartLine": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAvVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////87ucsBAAAAPnRSTlMAd4gG4CEe3dwdgOUcB/T5z2xwGH/H8G3zyc7n5sjNa0zxj5nCqCeO+nlfxibvbtr+G14lSXLZfL8kqpqJh0xaVIMAAAAJcEhZcwAAFxIAABcSAWef0lIAAAHNSURBVGje7ZnncsIwEIRlO4EEbAOhl/Tee0/0/o8ViAdcpDsdI98MyWj/Srsflq3zyQjh5OTktAIKvibyV3U/YAH4ciGfBTBJAWMWgMzIARgAe0f7Uqv0mbQCPEtYfgmAxzMEUC8B8CoxlQD45AZ0uAEnDWaA2OIGCI8bgBFKKhUeNwAmEAHRzTCOt/sRTKhZAcJmMjQKYcKpBWBzYz62tg7lp3OWB2S9EAHKpwDyXj0BzCcAil4dAc43A1SvSkDyjQCdt0jA8k0AvTdPQPMNAMibJeD5OKBShWzVCjinekAGYL9tfg3KnOmARwTg154QdPn5ygcD4PVJV0ldn0qh8vVAQFvxqmFQfobwBgI+CHFg/oJw9wQCeoQFgfOnncCs12i04Ob3VuPFCbl8Ia46h+fvSHd9ofNihEK+uX2v6TYu/OjCryJwH9SWKQyGfP1O9uilzZQP1CKPWpyN+VA1fXi5Pm4X56p3Gr+/yzdelJeo3SGQ0gbYnTIpjYzdMZbSitmdk8NRMnkn5DqIR61uHF/uBu5bhQM4gAP8UUDpmn17lLzyuQFjboD8B4ABN2DIDehzA6Im71YT4p6V8D37o6vVHTCWCicnJ6cV0A+1gwn8NrP16QAAAABJRU5ErkJggg==",
+    "FaChartPie": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACEFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9sVt61AAAAr3RSTlMAaf7P/RNjVYczEMv76xIC9QEJ8/AD6vQq8gj87PFgx8GIJvl4FeiGTQ9aDrRChdUoTFFBJ8wN1nkXO+DlRbERFt99G17kIO7U+Ja6xAWLzi5x975cHsOAB5G1WKUkdrlmBKlHzY/Ss/bXuBg8fx3mhCJlqI7RslAxdPqYfkAhxkqNKwwwtpc12oKmRCUGjG0LsNl3OXwaPuNDSK+QFDgZ4sqqoUZuL5vYPSNvHO9yE/3S7gAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAztJREFUaN7l2mVXG0EUBuCFBig0CSEJgeDuXijFneJSXAp1d3fq7u7u9v7Fwol0Ezabmc3cDz3M57n3ycyc3b27N5K0BMfbJ5GU6VuSgZM1o11JF4iYl3AN68a8BgLAAtnQXz4WLRqA13jWbKQFAEtqbqBJ41QBwBCk/cAjyooma5EwrAoAPbGaspdkpOidpzmgDiA9I4o3+72kHlmCh34AoIDvsEOyEz3Cl/sF0HScPb2xyO4VzQAgcSVj+qhW26JgFgCdYUz5Y1MUYpkAxLMIrSZoBpC+yV/6VdPKkYwALFfV848UIzAAtVWq2/8OgQIYUrm/Vq9B4AD2+8w/4Ds/D6B75CP/uiwIAbC1VzF/VQ0EAVitlD+6G8KA7S0KQB/EAZhYnD8nWCTQOeKdP7cNIgF0eQOnIBaw5Hvm360TDCDIE5iDaOCIR/5SCAcgLzOi+gkA+cV2DgRAsgyopwB0me78e+MpAOS4gTGQANfdQDENsNMV8QM0QJYr4g8REGx2RswSAUhzXmW/qYCbzicxqIBSR8AUFWDZ5QgoIgJsrgvtIycQzjZK3PXdECfAPa5RAwnUQCI1EEMNrP3vV9DEBlyRhXwJYx11FyXpPeMjNlT2FWAZ8/2i7ZJUAFJhVPoKUsEqfWZ/RMnqzYgVjEHF0neQCtNSvo5UmJGkb+yAhnMolKQJDoB7Dab574mfQChMzk8bt3MJfLv0c2HaB5AJ8b8WZtXxATy7NOsovR6QCXmOSSc4AeZdsjnLU6OVSGh2zdnDC7DtUkyI+0ugDRRrSP03ZRAEQpbsc8KGzRC/S0nyJ3O4Xvgakj2bFqkQvAZTuVcXpR9i1xDkXb60G4QK9YsbIs/1AnepUqkxdRfC1mA4q1jkPRYl2N/4KCOzIWSXTGd8FqqaBF2hbA3z3ZMEtVbOei0n3S1LEPm0TL3d9cLOD1RwlfNpFdxABt8Lw+2+YL4jOMzdKS2s5Mi/o1rDW0/vIOtD1DoTp+3FqnELy7ub6dVr7U3qkNP+7n6GsczA+uDmqaPpvmu2grBxAQ1848FD+5R++43hTEnYKA+9c7/D9bpu6th2Pu8Wxf81zA3taQcazUvxrzZ/AU+g8lIDIAKLAAAAAElFTkSuQmCC",
+    "FaCheck": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAjVBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////jNCgdAAAALnRSTlMAEMwT+BHK+U9Jz07NBQOtqKZKBPWnoQEqxKVN8vfsrsLrHMFkG15jh79dhq++y3ZIsgAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAYhJREFUaN7tmWtTwjAQRVc0IkK1AvJGFHw/9v//PEUdLG3T7Ca7H3D2fm17ztBJJncLgMVisfzHDB7fp7OOHt/d4jajTIl/dIo/ucx0+UqGAl/FsMdXMJT44oYKX9jgWlhNPtblIz4p87GlzMelMh/vlPmYK/OHE11+e66zv3b8M+Mb/8D4/dl09TqQ2V/d6u3Z6PvSxinxL65+L54fq7yfHZ9qiOfTDCl8ioHLvy7dFDKk8kMGJn+c13UBJ7Y+4b6+bXgNrsfjg6/POCE+LJFj4PPhBhmGCD7kSDfE8GEyJBui+ADzNtEQyQfonHgfLO64hPOLZEg6HwmGxPM3aEg+3wMGgf7QaBDpJ13/au3Frk/ybxDqV3wDt79xDfx+yDPE9E+OIa7f0g2x/ZlqiO/nNENK/6cY0uaLsCF1fgkZ0uejZoPE/NVkEJnvGgwyfL9Biu8zyPHrDZL8OoMsv2qQ5pcN8vx9gwa/aNDh/xm0+F8fYRZb/qKv97fS+vnl4+0BLBaL5ZDzCVInipnXPd96AAAAAElFTkSuQmCC",
+    "FaCheckCircle": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABv1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+2elNiAAAAlHRSTlMASQtN+UfB9/gJvPq7dwEF/rHVrm/WRQRshCw2pxGlCoLYQiZEYXlUI2bxrfUxEkArNXgGqyrzNHyvLjO+HrAlQ0ZtJGvnKC1wszL73Bh/HUEi0bLbF37l7/TaFiDp1BXeH8Ri6Ck4e4BSVV6Fqc0O9td1vcwI8Byi6geNbsDkyi9yEFO6/RrJqvIPdhS5/Cd6UV9grIGGigAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAA9hJREFUaN7Nmndb2zAQxp2SJgETCNmMMBIg7D0LZc9C2aMts4xC6d57773uA9dJTIhtyZYs8Ty8f1r27+yTdTrpJAgnRtkR/0FZ0OkMlh2URrL5sov8uT0lIqRILOnJLS3iQ2+YslkBKceLpVZWel3lFujK7VxkwJ8pmABDiQWjJvG1n11ApswrJvCrOUChzsu0/6S3Dah0e/8pDT//DlDL10iMz/JawYQmnFlk/K8tYFI5dST83k0wrckKY37XGjBo55wRv74KmNTWr88PO4BR9hnd2HABmFWl46WKHeCgJxFs6NwELloIYcZXJ3DSOHrEvQFueo7iN1r5GRAR8bvZBxzl1mYFe8BV39T8sxf5GqhZVRnIAc6qVs0wwF3K+WeevwGPIga52GDWuWXNNVdeioECNr5tWhC2NXG48Ii/IrLxT8Ugp+3q0baRNDDGgY+wMJA0cJMHX2vhVTJ/ZuFnpB+52qLqh135+hQnviA0KRs75Ms2Hv6Ja1HZ2i2vXxy8+MJHVQKQ+Dw/J/9IKlfd0Be/msuNr+5kKGYKpGr/aAeCHI9Kjo0P7vhaQzw2PlgDUsOv4+MDDEot/WjC8pyVqX8TKpWaosg19rY0TduY+XBVaitDTSBpsafSM9n8I+ma1DiA42MtkPNhSGr9jeVjLFDwoRwxvMFhOXo2PcO8/w8NaFzkTH1aY4GKD0FUJ59XPK/yEo1/5E6O6htQWqDkwx/UQGtSMVK8ROcfeaBF9DpZaYGaHw8VARH/myq9ROsfOdghwjXaAj0/Ea5REw7Kggm+POGgpkxtP1yn9n9yykRO+ppvEOjfHyCsk7YYWCDiy2kLJvHStUDEh3vy3UuYjV0Llm8hy9UOU8dW3F+cxvT+ACOHD9yns0DK/5R8wgs0Fkj58Vid0IZIYYGYL34nWQRqetpCnIunLAKF1g9A+A3E769cxuolwAoL5HzVXoLeVkKKBQo+tCtdq7edluwHC8VaqIVmO0f+Bpr3r9EUFJr0bnfEcsx3NGu5u7Rbaj+evafJ7tcRhbZ2jpuCji5UiBnjZyCI3pj18OLPY0ohoUk+/EtvcfPI7DAP/lovfiYc5bG9X6s3l8/YWfn2eoMSy0M2fpvfqIiT95KFP1xrXIaqWGD4f2ZJCmm3bpjl94QIa42VpraoHF7CUmMsLrnp+etddOXeL5Tb+fvNlBXl6WoafssjEzXx149/EuYP4/kmq/p5hQSbVWJhA8O5hFDllsvg2MMK69GK3Y5uTICyd++N8Dkckt5X7PEpZlSrz1McfsD3gEugty/6b8jpHPobDQ8GTs6hnv/xS+0n6SsRzAAAAABJRU5ErkJggg==",
+    "FaChess": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABelBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9xrg87AAAAfXRSTlMAdwrk+eb6iAblMokrtRqvMzwsUDFEENnEdueFcLNRo9C7+AWH7Gvxj9L7qNGY252iAuoH9DDVEf4lKgsVWP2ghinO8nFXmj2KzUwOlNd1uFbcGL2ef2BBhCLHzK0NspN0eRe8WsYmy7HaeBY/IKuwTpFyPkOLTZDdGYAeYUCsph4AAAAJcEhZcwAAFxIAABcSAWef0lIAAALrSURBVGje7ZhnU9tAEIZtuUjC2IZAcBx6IBBKINTQSwiBQArpvffee+6/RyMbI3G7e3foNDEzej/J1rv7zEi3t7eKxSAtJRlLNsfCk5OfsSMhApirCPB/AEtJ5pP2tbQrv/61xDjtN0Doj6h590u+GdVBBKgewPyrKYZqqrAaNP+XBUZqYS0g4AwT6Hi1A9pEgIaAAGuUzn/UCvqWP9GAY4GXaSMNmAheCB1U/j4NlXaaArRoALxJ4/n7H+vYLD7ggLyW3agtvCIoqWs0vCIo6Ud4RSAohQlNAKwU+nTlx0qhRRtgDiyF9Bxozro3C/ecS2Nyxz1pOH9sFtzrVi4or1AE5bs1zuWM117reZtcUINCEZTv1jmXtV77AeePGghgZVLYKrJNSwPApDY7UwMgRQEOawDQDUdmVBFE7X+ATTkTGgDkKurWALBMey91oPhgx3jTGLJxjYvzj/NRTbyrCQGcEgPO8lG/eNdlBPBaDIjzUbd41zsEYPwU5b9k8FEzvG0Z6x7TCTp/YhoIquN9jWh/yr2g8g/+gWK+8sYbeAec9TSoZDGXi3u+Q+RnwZCnPGCe6LEjGf8LjVd+ro/AEZ9VW34lZc59aMT6KembVK/x6Lu/aLd/bWD+dh6wSAJWYcAW5u/kARdJwF8YcB3zF3jAeRLQAwN6sAM2cPJKd1GAIgy4gNiXoYp5TgF+w4BrKjPIRwqQkT7muHoEmYsU4BwMeIDYFyHzMAW4CgOGVZrIHQowAAMGkC2+Hzy+GwTgPgx4Cbvfwm7qW9QVOOSJYFH79ZAA3IZDnsHuu7D7PQEYhEM6YDfSA20CMASHDMUiRdIuYoYlTvAKk68pPskCW7zC5JsSA4BJVmHy3du4om3ErH5AfacM4NBBf3pRVMVf38ok5UXIRLn+k1mmoGx5JJSNcvztTEkn0EMy5l9RA/SWACvyfqYo+VVX9kcAod9Wy5+Q+Ljk95tqgG7p7X3bT3wmItqIZJRtWv8AEVRBwwQtleYAAAAASUVORK5CYII=",
+    "FaCircle": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABelBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9xrg87AAAAfXRSTlMABTUBd0Ku+vj5sNX7Ev7WRSMJLbMyhG8XwacrfQousYLYRiQEYVRrZn/1ByAq8+iAHiYnbUN5RM3xcNc33KitLLI220Dq7270ERamBv3ev8Sqr/I43b4lelVsUV7nDvYd8DF+ouUCyzC76cqrL3IQNNk5HylxD/czdntfYATxyuMAAAAJcEhZcwAAFxIAABcSAWef0lIAAAKeSURBVGjezZoJXxJRFMUHGBhmWAWEWFRQFi1TQ9HMvbIySzMz0/Z93/flfvdGJQVkmXlzD3k+wPn/fjPv3XffPU+SjoxsxeBWbluWt3NbE0Ubr3dXMKplFKqQktGiwS4e9+RAXKW6cscfJ626+/qvUVN55GMW7LtnvdRSSqJb0P7Rmp+M6eUNAfvBHjIh7bPZNRkbIlO6P3LCjP/ZKTKtKbthe0dMJQF5R54Z8//2hgS14DPiv7lCwtroa+3/4xVZ0HBnK//zk2RJQ73N/Z1usii3s2ltuECWtd7kK3UME4MWRxuWzhVi0cxSg/11nZgUcdQFvCM2xer521U+gPLpsP+VADHq4+Ha+otYJdf6n7rECzg+WAPoIWa5qv2niV3V50+EH6BV+r/18wP84QrALAGUOPC/rCAA3oOe7wxBdHEfcBoDeP7P/ySBNF8GDKAAqTIgjgLcLN9f3CiAO7QLCBJMex1GFAdIYwppbUnN4ACe3buGggOoWR0wSkDtdNu9SMCEDsgjAbd1QA4JuKMDxpCAgg64hQSMtwMA/0TwnwxfpvCNBi8V8GIHL9f4Awd+ZMIPfXjbAm+88K0jrPlNgtv31+gLyFj7rlBSAgFYrswIroKvsdICqg7tD6vRowRJ4/afa/c4RxrnBfwEj9Q8NvBQsG6o8xUxpWjrYFbybfD4n3vfcDh+l8N/sYgd7092/s+AQo9YHhI0YpGk8FOChkT6n56xsH46jARp99ZE/TWfwayxXyxqlB2G00y7QOXzfDAX966brP/m4t6dE8hl6vx6IJCJv3hisNfwR6YFU/1wwkBHpizPW3iXsIR99rDXe6dWGxSo76upLzyPQ0KltCtQtTfUgCvtDPE+cMlulvJ/CrJc+J0v9WWPzqOev4bY1QraqYVDAAAAAElFTkSuQmCC",
+    "FaClipboardCheck": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAByFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////GlzqaAAAAl3RSTlMA7ZnX8knu8/TvyAjWPR22/efxxw3BxkWIB0qNDBZEjBDev+gkydj8Gx9sQi3SDtwYPH9L8I7bF+omETXa/pzAxeklC9Q02ZvEQ0jTD/e5HsP7txxOBKlH7CjNCY/2MhO4N73CQeuJatExEpg7okCDIQLLK9DV3z+CIAEGKm2wtRW6OT7jgYYFKc4utDMUmjjdGb6Aa6pNf8HTfgAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAsJJREFUaN7tmVdD2zAUhU2mnWaH0DSUAAkzHbQUKKVQVssspYzuvffee0D3nvq7bWK7ca5jxZGv+uTzFMm653NkS7qyBMG8gtl5pyg6Qz8XBB5qc8wRReFf7fj+iy6ikes3tv+TMClSOIvr724lQOFF1P53EZ2i3xAB20gJOfD8g/86qKa2O6b+nmtDA2QVS2kq/zwkpXgODRBSHKfkYlIpfkADjCn9o5Z9ctmJBlDeoXq1XKuMNja3leMtIikpCIASnZ9TZe23xImhYqCLSmlwhO6/5CEUueVGm2htPAHq/VP9iZTM+0vURlVNFECclJGv+3BzuTZpyvMlKJqsbMqpXMaTVAsOwHgAenEAXkMAQZINsAE2wAbYABtgA/43YGAswxXgTQp7XnMEiKdzUT+4AcSrctgrTgDxnhp3nwsg+rIQeI0DoOuLNvIsOqDrRFHkjWlkgLQVhO7FBXh2gMi+DCpAd/+jaeZnMNw/oN/mHQVx64eY36L6N4Ibbkv2X4D+NczjIJGrveyi9//OGPNITsjVG7X/ofc99Pcxz0UJtV5D6F0LYhqamWfTzsKFgEoYNuNvEtCpvZI6kq/L3AIRFw8yr2g3HxZ/BJj5Wxd5DAKOvWNfMq+Aa/tmSOQtqPt028KaHOmD32YbD4Ca5+ctLfoT1eDqI1CuW2cxqxiqpn67MvY3PQ4maIS6aYS8aPdqw6abt6MkXoYEqn8ls+mp0oQNd9BSx/hoKX8/Ym764pCu2UIPavK7awX82N+DnF0DQrADPX0/riXMdnDYH8wXCLNfuWxAQquUFu2NnHY4CsGcP1Pi9SxHeHCX4x7taYPwcZnrJlDsb7X3yTbABiAAkI5YorwPifyGgHEcwCVDQAoHsMY4HzyJ4T9ISTivn7HuTz0sFQJVlv0D9APlkbQ1/+9NZc/EJx1+xvHg9Tv0z/cPJVlwRcFb2b0AAAAASUVORK5CYII=",
+    "FaClipboardList": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAz1BMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////iCg/sAAAARHRSTlMAS47GjUnHBu/ISoxIB3vzmdfyj8nt9P3Wee58JNg9G2xC8cFFJpzARCWbv0P8+x22Tr3rapghbdk+tJoZvmu3HB+qTam8LKAAAAAJcEhZcwAAFxIAABcSAWef0lIAAAGaSURBVGje7Zl5T8JAEMUrAi2I0KK0iFAqqJxyeN/nfP/PZAJbg1t2ek0TTeb9xSSb9yO73XmTrKZF19x7s2zbWry+a1moa85AyPn8oPdf1mFD9S9q/zsHfsnxaP0LFyDJWZLufx0C6j0TAs5hi0w6//nPBu3mc0X/96xLBvCEpVFZnYchymsywEI4VtZlWZSPZIB7sT9+XVrXFhlAfEN7fp0Xty2Z2+m4Y8NWyQBZtvU0DLU/64NSRWmLtmkwwv0fWoCosF60g61puej/R/3BKK/8DXRRo40A+hCiUu7gMGzNBDlfINE0XsuJL3WT6tAA1BewRgOoKQFAJAYwgAEM+FeAzUExA4A0KNIDpEERjnR12OrV+AB5UAQdm0f24wMCcxw+Uf1BQDHrLQoMilXskI+TfKZRBsV0Fy3KoMjNjgEM4ETjRONE40TjZscABnCicaJxonGiMYABWQGInlh6WT8SNZWAMQ3gRgkY0gBO1E3xksJ/gHT126v0/uhjqeY2Uvu7ePKNJun8X9qhb+JTs5nwPtSaZvB8vwFNwYz+33nHZAAAAABJRU5ErkJggg==",
+    "FaClock": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAByFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////GlzqaAAAAl3RSTlMAQgGw+P4F+vl3rjXV+28SKwqC1kVGayMJLTKEssECpwd9ICougNgnbSUEVGbxs3+t9RdPFunzEP0av+gPHrEmVSRDYXlEzdc33AOo6/AsNtt+QOrvbvQRpsoG2d7Eqq/y93b8ON2+UXpsYF/nqUdwDva4VhgdxzGi5SHLMHi7G8CrkS9yNBWbOT4f7SnOTZBxM3sZ4lJe0NODjAAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAA39JREFUaN7NWudf2lAUjQQMQURFRBQUt+Ju3drWXVfVWmu1tXXWWrV77733vv9uo1CSEMgbee9Xz+fDOSQv776bcyMI+wbpvb6+wS1Z3hrsG+5NZ6ud4wuKVRJoIFWJQV8OG/XspiInJIW9aCbbqnpW/TkwhVs+aEG+YiITkJDCFZTyd5ccgIcn5ynky44AAcQPpM+kpx2IcL2yhER/egSIMZKBLW/zOIECmZXFePqHngMlQlk4+pGzQI2NfrT+9zawgJ5ClP6JBrCE9jxz/TQ7WIQ9zbQ2nATLWDG5S/k9wACz1SlLp/nz41zrivK6ZPN9MjafYn+FzP+ZrFJlc+ayLanBK8Sl/1SptxBUTzL9DFR90JJRZ8Q7o/6ZXGBnAIvG2voDWBpoFyyKw6fYGhwoSzDAOL+IDMCl1x8F1gagP38a2RuIWv5LB3sDR4GGPwHsDSCs0lslHgaZas93FXgYwFycfpSPwcN/7HLgYwBTMXYTL4PSGLuIl8GF2PuLnZeBPbBH9gEvA4h2GEF+Bl7cQkprEC2pVfwM3HvvGhI/A2etwq0Gfgaw223n8TQYVrh1PA02Fe4gT4M/CreGp4Ff4V7kaTBEa9A3iW9AdYuEsjvYt2gb10AfD5V8xelEdkge08QXly/H0L/5TbLR/In97NNnWBsNu1R8NiQF4zPriN9ESIod1BjfKt7/Qhc77HIN0maSYOMyslwLIn6e8tiYp9iakQdOEPBxo9WYSiKPTB+BAbQZsogO5KGfQ5RPrFeO6w1aUnNXA0SNV7yd6tKt8mJqZjdZ66jepiuqfnEIo3UsJzQAx4t4OO4142WTte9anH4QW4BOM1L8Oj3kmc3Hlr1rb8Db+a0SuYPjbaTjpmk9ld6oSxUGDljQ7sZO9vq611ghxN5AnyVMszdIiLJF1vrN5HEOEQxxjjDE1mCNIlIjgTudIhQkgJR0qPONncFc8mB2mZV+oy1FtLzBRv94R8pw/BIL/dlevvF+Q+H/HFAoI5ZJ4DpiEYSC+8B1SKSs9JiF5ycfZ5B2bYlWX8Qa1Cmopxs1yjbsaWYGReVzvyYb964Q1n+yce/uCeQiOr9uU8zEH93D7DUcjaOUU/2CMEZHJi1MWfguYZ7vZw/R3ru0O0WBWu0u/cTm45DAgNeVq9sbzlyXNy3A9gOX2shA3bZflv07dQP9tfvno56/cXcMeWf3jIEAAAAASUVORK5CYII=",
+    "FaCloud": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAB5lBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////es3kSAAAAoXRSTlMADJUE/P4Cmfb3auBAl30BBgv9Gfv1B/Tt3grnKHB/A4nRUHS3Jsv5OkRo7s8v2ZBXgMNaOeOFzbNGMa+KnjwwpMipawmPLQ5RlHUTN9x6vR1gQeaEqOvMCI5vDdb6mDbbF7x+HIOI741U2lkbXoJj6YerSYxO85G1+BWbGl3EYkNnBWxN8tNxUjN2OJ/iYcIiEjvBxrDHsnmdoj/Y8bjwSK7QZnAAAAAJcEhZcwAAFxIAABcSAWef0lIAAAJRSURBVGje7ZnnU1pBFEcv5GF4gBgRFEw0tliisfdoND2m9957772ZmN6b6fX3nwYMEYO893bYvfm05xszzDkDb2f3LhBpNBqN5n9QUOc7tG33uafDewrVy3MCuY0YZ9eW0llK9a5KP9Kpbs5RpZ9SEkUmHlao8c9pgBULVijwzzZhzfSArD6vD7bUtEn6++FAyCcVuAhHQo9lvn8I4F2Z/foxRQKIueLvHQhW+R+Ysdvunmni678BYripojr16kgwXzBQIuiHZ37a4j0m5M/fjGzxHBbZRiohwQ2B/dMvE8Ajx0BAyg/jmVMgVy6AVqdAo2QA9x3OR1k/5toH6qQDkWLbgE86gAu2gdPygeW2gcXygaOsqzTOkO1G1C0fKLXWry2rl/fjrpV+ZLUJFdRa+HvLlehRPzOz/1JEjR/lMzL6FxpQxqork0fkW1CKMZj2MWqvQTHhlomP4vpZqGdNQSrwHBzsPfnXP8/DEsDxm8nABzDR9Wfa6wUbnWOBz3wBoz3uL4zwBfAu8YjByVuiT6yB90TdrIHwG+piDaCNXvAG3OTlDbyiGt5AB0V5A0X0jTdg0EfewE/q5A3EqIc38IOKi1gDfURfWAO/iL5y+r8n7jujjIH+xJF2h8/vGRg7NDexBZJXzn0bmPze18nBZX2YJ7B9fLZbxzJ7nc9LTY/3Qur9rYsmDtjNyg+e/Uv/HeGX7FR8Vk76lXBri6lO37Es0z3qYJOijS96wGVx1dzx8upl6cVfdcpl+7PpkxPBsqlZ0rTxTDvDHzEajUaj+Q1jyskg6bwllQAAAABJRU5ErkJggg==",
+    "FaCode": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACClBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9nulMrAAAArXRSTlMA9AQCA/2AAf77NQj88IgG6AXT7OEd5kYsbzYXBysW85FiTI/SVtw8wqiy9TGYX+XvDLHpThD4m8lnkKSpcCJqEvpAISYReKGHyrDU3hqgPqUucfdXexm+HkLnR5lbf2CjQa0Nt1XgfsH52n0/RCVoSc8Ld7o54x/EQ6pI7c4K8g8UuZriZgktsxO4vWWJJ8x5p+qN0E8wtrucOt/AXqtt2XxdgYtsTdjdXD3DYUhFAo8AAAAJcEhZcwAAFxIAABcSAWef0lIAAAQTSURBVGje7Vn3VxNBEL4AaRCK9A4hdKT3JkgVlA4KCIgiiCI2RAFBQey9997b/Y+GSwg7O3slvjsfvJf57ebb+Sa3t7vzzYbjPOYxj21OK+6d9dGS3yeY50M6h1c0S9DBC6a/H5DmrUmCAN5lgxV+GiRI5gl7oD5/GMnP71I/wUmQIEL9BAUkv079bxCbQCYoUP8F9oMZKlc/QQVIcF79BMdI/mT1+Ru0XqTVIEGH+gnOkvz+21TnP1NCJsj4dyKxn1YEZiiH2B5u0cdP6ivZKbJJfn3MujswwzQXo5x/r72i8IeYRSuUTFDmKkEZ9qc9O5Ty1/8QwtuNGOoCM2Rweo2rwmN4pDL+uFxnfCLGmkACX6f3i/O5cLsSft8QF0EfAtNJ/kfOgmnYWLZp8vwHLxEU3RTYaCYTtDucXwlX1gU5/qIeksJkhWgvmKEUwfdJT/qOjkvzH7AACt48DeBmgDWuuSKoCMsfKf4oE09ZJgl7F5JQuuDLpCNM1eL8IzyyIyQeDaAmwTeFY0ZE6I02PLbUixxhAFiXY49l4yibkSkIX6KBJgMc0kKC59ZZovQocNQL8wcuoGHmO9QJBZiyXf7xHhTaisTGxcNoUMIpeokBuIjYO3ko+HY+Jcjn0JBwtO+rSLiEZIgLReFlteDlT6MBu/tpfi/wOy8DrG0JESzFb8D9HxC8rxh9peNgQBQE8/EUfw9bB+/hF1zwk1TtdjtBv18pIgltcECRuQhKZDUWweSIVLyNDIgm6JmwPRdpv6VGXrXbGCOsO2mmvFccN5BFe3VJzI1eLq/ak3SIq467gt7LV4lqZ4sI3yCa7TU3oTBBrE6BascJJri6BGVTFKFAteMpyhoANVjqIytQ7VYzzeSo0XGKlqmsamcs03WVUZ+KoHd+7qr2wFF8mkUCJSd9VMip9rFbiIJUerVlcoedjGpvY5yWbeSA5d/Sx7WMao9Eu4lvuUkVnOeSBeepmGoXbN4fT/EY+khVuGRedaFDbNXusLfoDOIzGaexz6pE0WerdjExxVd6MWXLY1HZwlbtYnWATzSKKKMpMeEFVXu0uFYS7LO4tHuP3rYVq/ZCsM1voHntlhKnOdRxYp7Hqr0ZRExTERartLz+xpLvLNXusp9QvqfINQh1jAYEqHZLLRVR41YDwmqhvEEZmUQRH91qoRhNIFTtMzjirhNajFbYxqbCNhauxOuMHTTkVhuLGnG2agetz0O3GnG7Vn1DXCXEiKh2cLXRaUp34yph7ewj9oaYahcLcNfEVbs6JqXaVTFJ1a7yXTtDtatgMqpd5bt22xa8a8/8r3ftrVvwrh0u0jD1E/RpfNfOXasY3EgQoM3/cnEzL5za8Benla0Md9or9RNt/8CcTVnmPOYxj21O+wurLwBOnsTkKgAAAABJRU5ErkJggg==",
+    "FaCog": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACKFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9fz1M1AAAAt3RSTlMA9+wG/fquAf4FFvwHDvYIF4B1czrukcTdpgt6+9Fv7yv0jLAVCjgeAnd+ignx15kYfx3riRJ5O8WrNEMkqu2LdhnOz/guRIUoj1G43FujIqjwsvVVWuDBX6JAxssR+TV4u30bJSovEKCl6ClN8g/iw4jnBC0mP1NmcHRZZ1RLQsjN0jITN708wmBlAyfMrSzWg0VK0G4wXuQgh8po87pYm958vz7jgR/JSJDYFJp72rkjPVdibWFgRY5MAAAACXBIWXMAABcSAAAXEgFnn9JSAAAD4UlEQVRo3u1aZ1fbMBQ1JGQRIAFCgDDC3nuvsqEUKGW1QNmzlEKh7Nm999577139vZacOLEdSZFb+ZQPud+cc9+9tmW99ySFYbYMZue/bayuJawsfd9Y+BpPWXzBFFRZBThwqxjPfUFPPwNAkUjNoBluEE7NACDgMnAZuAxoGajXB1AGe9q1YtW8urz4PwT3HwIYZGUI+GOHx3D6fe5gMoFzV7Kb+4ETuJf52Pk+uQ+BwR+tX/5yM6Shjb0+fhQQoKGI5R8ItFg2ofSTu60hj8yW2wmQAyKo0mI2+dWnrNc3guH6yiBbSEhaNJP5BhAjdYLJCQixXSrgBc+X92prtwERCE8ycC9NMP3tboAaeucc9eONgCIq1A4GfoAqyoT6Ta10DbyHBQY7AWUE8fXnQ2gbyKt5BrsAdZRw9c1y+gaqUSlHQDAKXq1SGLj12AzOAUnwwGZglMbgCKtfrCLie57xi9Wo1ZrYlWlPMocRq0EY0dTM1tgHTZNElBn9rPQOAm5BJn9mxikIgjrYytvidFqalA7ladDpi42yp9TFp3j9x7AC0o53CNzBJcvCUjBcE7zGJmJCIvQ+AvZQJ/KGCpSIIo4cB/m+cgi/MB8xIzNRbciQNzziPqI1Ur6D0rPRjVQpNCBAieLfg84vDdpAB83CkUh+AbTDxfWa0CSjQNIrcNPReS/FIhRJ3w2jx+IM8mARB5H0LBg9Gmegg0UYkHRoBpPhDLSwCI//ZwB9RRqKr0jyQa6U+jO9BKNP4wz2ipto2WJTRbrIVAHPXUlog0hRyW6iHpGu41D6d6vgEd2wdB2dhuxFFKiCE0VecNRh4Zj69wxuoCcvmdff4xvlVZh+I3HRny1x2ooPOrYtGc7bFjbLNBL0UArBSL+OIgg6ayUvEzXjpTrO9x9ZRRKTYKVfIFx1GX39dTKtLq8sn3BBdAs74f8dx2xPvCaNQZjNYMpbCn0PTrEdl8KAm1QvS7CMBSe5n3UJff0W3rwZof4Iqj7+zAyScgQsK03KH1Kvmah8/z0cD5Di82nqh8qk3RQMKYQVkFwuJaWuWYziZB2vIl6Fl1j7rpSqM50pDhWxMWv+szFrr+n15+E1Npjt7IyWJ4z5qCL85J9Y9pJHn1uvr0yh2pA4y177ndtsfTydSqIfWMPfHN82jG6k/A3A+1UMZ7u83+kGs3tCMmd7/1MESOnC9Zo5RScEJxZ6d6y8XnBA0VP0QeyhiLZtADUWF5di6BzjeCAM1LROoVwGLgOXAcMgskWEkpYBYq00Q++vIddmvvAPZT0/K2rfKhmqCK6uWf/105S4/GOxZk7LbBn8BgGiYDIJKC5uAAAAAElFTkSuQmCC",
+    "FaCogs": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACx1BMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////b6qweAAAA7HRSTlMA+wM4/QpNAf4CFfUH3aIM/PfRzcz5BDz6G0Ro7j4S+BjStQUqZHZMLVGUuPAsDSEmaRFUFrtez/N3Od5dQ6+AYtjjJPbX68bo04oI9JWWfGsJN55GtzZf5UWs0JLV2nhZnDrfwCCmchBY7S4PtFKTF+rEqUkL4VWbqBrJ5rlWJ4ZChWYos3UT3L1bo0FLMdtAy41utjWhygZtkdRTgfKQFFeae75c4sN/gux+v6rOcaeuIp0f58hHcDsZuiPxDjKZeh3ChIlqrY5vslDWmHm8WsGDiErvK7FPMHOXfT/kxSWrsC80Z4szn3RjTp21ZRMAAAAJcEhZcwAAFxIAABcSAWef0lIAAAXcSURBVGje7Vn1VxxJEB6ywO6yLEEWCG7B3RIIECy4xiF4AiRA4BIkaELkLi4Xv7j7RS4Xz7m7u7vOH3HjtjWzzO68vHfvbf3UU/1VfdMy1dU1CGIVq1jl/yOT+rPUVPPmqUDF3Tv66FF0PdmO1aEulfHK+o9wRTGx+YJ4SMXbLulaBf1Xu6OEbJm28aLPGbKNpk5WzL+DLQrJUhNmT+1oeml+r1uB4dV3Dl9fIIVc5g4SVEv7n7qEhw6WGvBbkP8a6SmaVCLAn5AaQiFAME16AF8L8SslwCuKAQIfaYJwI4PZolhtKjRFusclCeyNDOxEsT3gGqNfKkZQREOKkr2SVHvKqSfNVAUItKW5+gwaUUoGo7YG6rlQr19900KCHRzATFo5g6N8RmSThj9tRPDsbwDwOgfAzsgFVlkCuffIWQKuWu+TRtC1bO8qVpvNaovpubwyprnwLtn2K0DFJLiNQJSFZaANg3irku0zsASJrNaFUjkRTx/GYsaVGlRc0hIx8FFiWTWh/BHUsASfsNoxUhNGPdpE/emGSss21Vmq5X4fQe5xeroYgmusMohQzHNGzZHbD5C7nMd22n8zR3lDNJRMRB5qkao7BmbMh8jv4G4avewGw/AIplBHo+ZKGOGR2dJuv0ck2A/Ta+icT40ox2z/qPs47qAf7uyj/PuvNJ8AfUi4+AXccPQAHkMtkX9xFydvSxw4DrMsIhglfHwuceBcRC2TxZiP96GOTn+SoEDa3sZ3ijTgMLaKNmDPPZKgXNxW1xKJJZkeCRtaJQiweJwEv8NekqBXzDIg25/59v2mixK8hnWf05Ht7q82vN1cTXUsKiNtv4ezJvQg78BzdBLxX5yCdyeMEpGTzHj34e3nFzK2nq6QYWGKIPLPBf3Pb6NOqA5sjE1k+6cYNGY911ydfMTYcqtRJnnHGLRPxfGiepFuBtYuFx7d9nUC0zrjc26nMMVNnSMjQZ4nMA4FMDP5EGdHORl4omD3Q4lrsuAlxuUQfMq3dYMwywUEtXIIKvm2f4GgGj6oRw7BAb5tFAgKkpWf86VlIgSNfFCzHIITgu8HTPeO80Hhcgiq+LZj0B00QrDIKjkEHQJjPwCzVIBxkOFfKzQeBjC7BB/aggm7Vx8NEkYZzWIjVKRxpjoxCnVkHRAm9ScFsLjzUDLMhiOHb/bSt7jaYzM4hgNPwIG+aBN/C7XAsD/IbG6kHjtznEjoOiwqtmYxlq+LHVW7dnL8dx0Ug63Bu9d0EvN6n7hdkDfs03Q4Oy96GNoOxdJ3onbxk/9NTmoVVHrgRv026qFxhDT2lUoZjsytSv+uL08KshpBvOCel0mCbgvzomMIYhcD9mTCR41MCXjAub/w5L0Qape6WkQwROQc0KXxM/GqhAwpv0VU6VyArrViZ638G4hjELgJmXh267jZ/l2JeQ5lFb4/sLnHj8wQzpnrX0dkf9pcOoANYRWcF3I2092eDIOTmQT/IGXB7K1aQ2WLdltYRB4ZNCczO8nF5IVw1mq2eoHFCE5PPf2+z3HS+WhSFX+ZyojjkY/KJf1v/hXZTr1OEZZ5/c1ZVC9mRjjxs4BSqfCb4HSi2JF/Vty9bVQcHll98CKgAS9Ql7J9jWxobGK1l2mdf2i6N3UQqzP1Iv4/puN8XGZ6MpE5VoDJ2hucGQXPoJBQ4MJh2+1tjLzE2aFqRruHs8oTTFYxSYBghziA7cz7ZbDKaxaW1OZwaj+t9BDOcKwqLK069jhd/Zmu1ZyOI767jfTHPHq178qAEmXNRcwyVGSeqmpg1neFUnXT/XCNrEIymckSwqeEiIPBckdekvRPB+HtdrcEeDb04fSbyMeyBQPwlsDmBwAE2aYyvpzdrFlatJ8UFDyydK+YTiq9PL0HByO995vIowPhRf5AsZ9EA3DaslC531yeq0iX3457rovIIr8zm0tqBX+kLXPCZ6lzE1vVyFUhykpXu3NAB9lMyUVLtnoo/7c0iamAeHipEatYxSqPUv4DyiBXLMb490sAAAAASUVORK5CYII=",
+    "FaCoins": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACf1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8Un7H2AAAA1HRSTlMA3ewbAvnM7vz+Afj2yNr9TjUMEQv3MtkPkXX7vet0g0qQDkTVGkfw9fqsoAprCJ9NFFC4rbdaECQpub5bvNh3MwPEUeZVRe+2KrBTWGftcVdck0OvgNZqbV6iI81MlFYYHYTHZQ0xfhxkVLvKm13jyZoehfNvOEIEjy3ScLPXmaNBIqhGJ9GymDbbF+ppsXOXWZw6fcChxYercpbeYuiGBUjOtFJ2GSxmPPSk56koCROe4cJg4EDGiAcr0JJ43z9j6SUGL7UVOXy/PoEfpary0+JJFo5YIw0AAAAJcEhZcwAAFxIAABcSAWef0lIAAASfSURBVGjeY2AgBTgylxlFFE8zZmNjZGRnv3KFnZ2RkY3NeFpxhFEZsyMDRUBi5QpJp1VX8ABWlSh7g8tkGS4UGyR+hUhgtydWiDTTM6SsWa+QBFitpTKINZ3F2Zb/ChmAP9uIhRjjA7uukA34zLgImb+c7QpFIGcXfvO3iF6hEIhG4jO/l/MKxYDTF7f5DppXqABYxXBaEHKFKsAEpwVM1LFAduAsMKGOBVo4LRBjpUokp+FORr7USKYp+DJCHg+l5vME4s/KnryUmZ9sSagw4vIRJ994uwAuYspTASsOckznMDZgIbZKYJaT4SbNdG4ZOWbSKjURBcUwYk1XUVQQIateVnKIlHQqIVDplyobotW3M0mzhUVVUEBXXtuUl42PkYmdk5OdiZGPjddDXz5cQFAVM9BTT2hcYaAdMAz1A/qLVqY7qjVogAOOJqbrqUm6wGKG6obrrOw/qoEU9dQ0+4zarNwYabS0RbmxLIKXbCJC9W3tsJeNONu6gmZSklrWi/axswMrBlZ29jmLrLUUpcwElTCbT/iqb3VsZYP3fCsX3FpcrOZ7o5UEwbjLxBD0dnRWIR9R7cLCLOQ2tJ4kjtpJE6XZst5mMQmNOdFaMz2EXiOsXQeOuUjGW8S5k1oou8dZIOrwHiw1mitS7aVFXjN9JrzWOuKHLjn1ENx48wnS5FZc0rMlYFGNWjVVIzXflfMpqXovlkONCUWy1sMAqcKM4KCscufQhZizE5paOabXdCMnnr2Ut3/sISbZACMlLDdLGDXpu1KjgbUEbNQCqWAJtEzrxSB8kBpNxHnmWLu/U85fYVhKnUauFKbxRcWgrMGQQx0LCjBqNC9I0mFQp44F7ijNHIN6RI1GbQsMFU7LIHfvqBVEvBDjz2L03KkVyXIQC7DUaObzqGH+GnMcFgBrtCVUyGj8Rgw4LAB1Y+2pmAswGtqtINFwCgs76V4GHBbAarTyTZSYv3UbAw4LNHzgjZQ4skcmNIOQGzIoUpstkGTWnSOvq7S2FaWEQJJqc0Vrz0cHsZNqPHtQNFoRBI+W9lhYjeaN1LoJ8CKha6wREo/UbPFGskB6qj9SjXZlYypy29h5Qh0xptfNdtZB7l/pQ9ugV/gvdLhKoHmK0Q3Vm8uck0zxtALyTZOMlqHqUJsDa+S2YDZdQXqsyzArI7F4/8pmWzZGP3ZgsPGw+zGy2TZX+seLYY66Hj+Jt5kOcVbfKTIb71z72wn0A2A+F7c/Rrrx5iuqCXY0kMoNr8wEUkxPyOzjJqIng1oqFkxpJGpoO7UxvYCfuK4SZubc3XFg8gY83d/JmfVtHER3lRhwJEam6dozamyUq5oShYHJWkI4sanKzcZ/hvZ2XIOFo6OLo6OLo6OLw3p00daSGqOL0Ytxl0Wi8jqUji6KJHHjLezUJRMpGZFKCJUlWJqyNgSTOVlbobxak7jiWrawZQGpph9Wy5UlpT7QcNqhrEe00x3sa9XJqHBEY/RnuakSyDFu/doxohTVaKLi2ZPSdScu7LQoEhYGJjIdYeEii86FE3XTJ2XzcY/WaKM12miNNjpfRl6NRvKsBmk1Gj4AAHnfSiAHl6KiAAAAAElFTkSuQmCC",
+    "FaCommentDots": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACNFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////yEN4wAAAAu3RSTlMA45LuODb5DPgvC5H3ky78MJD98TnyDg3dBQQ38KI65PbVAdQX59f75vX6HF5Em+jHb+x573cZit+l0CNmKBOe4evMatFVO8GD6vRzFlnPbfNyEIbtiwrYe1yfR9umSIVLfhG7NNL+UqQtcFF1uFZ6GFs8wkEiqEaJJwitslDWEpi8QCECRYgmB6xPtlSX2nicG8ChguklBowqTrWWuljePsRiJMkpzk1xDxS54oAew390pzXZgWyp4Mt8v38uCgAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAA1JJREFUaN7tmuV7GkEQhxcuQZOSQEiJkECINdpo4+6ext2Turu7u7u7u+0/V3I5etBbjoPd7dMPvB/nuf0NtzK3MwMAfvz8GxbHDPRnTLWZkhmdjkk2td3N6N8YpiQkrq4etOkhAp1tsHoRpviudO0bKEqmudb3N6krb4IS6CiP8UX9ZfM+KBnri3BvVzWPgV5hPDbpjXyDAXpN9BXJi/G8AvpEcpok+Z0Hoc+8vuZZP60JYhCU5Wn2CyEmJ5eL6T8dhticK3WvH1AJCcBscqd/ygKJoDqD1m/VQULoalH66SpIjJRRoX5gByTIEkH8e5cNidKY6qof+RASZmmEi4NlkDhjLgs8S96B/hCvfz0RUsDKT9IaSIVOh36+kY4DwwbOwQ1IiR1ciI6m5cCwcBX4CKnBfn7iCug5GJ53MA0pEmJ3MEbTwVe7AytNBzP2QwCpEg/G6ToYBTmo201ooEYTpVXh2u3kge9Co4xLK9QyPPs8n8AT4e//k7aoVTj2he8O6BPYQvk4LsexsySCTIEt0OkmhmNnSQDCt3K65itx7AuXMKAQcxCOY2exgEraU2QS2LT8gGAcO7fIP4XTpnY8H6LAsXPbFJFxyLgRIbF49nlGwC/U/VseoFSGBStw7WyomKMb7IZA/CzlcA2KaOoX0bn38nxAHg6CsPvLRk//C7t9O+k5+MY6KDPS0me4ONhFy0EXF0LKDHT0o+MdQWo9HQer+ByTymGzOeWZMXoKSeADymlsg2siXk9avz7SNdXPTyCrf/WioESdS1LfOC0st2wJIqev2I4qGJ0npp80h6x4XSZWLBpH6kd0E9LvrkOX7I4S0u877qbmuI2MvtldiTw1hYS8pcRtUbaHhP7trW71XxGoiFSsFqlaa/G/jxMaEf1iBaZ89lvRqjvYgydf0+6hvbIOOaxQLpMU2DKiPHU99meiDvwjey0prMckrn4/eOiEx65K3G7EyM2PHQfknvwZsi6fVHOh5KaktlCWcHBu+xHnJ3pX7m2+c7rKWsCk6JhYU9XaAzmtARqpXa3Pgh2kN7cQbOVO/l2zSzKXkmwVR0z9VYo8W0y2Fx3qMjeX0npJN7v5xkTjioEWQJ4JS+6PmfcjObcOx/n/WuDnP+U3wY42ddwcLvAAAAAASUVORK5CYII=",
+    "FaComments": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACeVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+CY/WAAAAA0nRSTlMAEAfh+/HzAf79RAv8BAIIeBLsdeZv9TEM+U33Vxnn8N/yEbu3zqSFLRijDVCIyyu27i/4GiQF7V3Y0dqHU+OqbNL6yZCzc1EOE1bcvVs8woRGaq2OLLJVF1o74MHq7/ReoSCmBkmMKm2wNHygPmJD6C60ex7DIg/rSyZpnBvpyrofZvae5cZFWYtCqUcJrnC4N3odYMdlJ8zbeV9kp43QbrEw1TUWOsA/5MVjaE6RcrWWFVi/gaWGZymv03GVM3a5mjjdvmHIUhRcTAOSnyMyzz3mOJbuAAAACXBIWXMAABcSAAAXEgFnn9JSAAAD6klEQVRo3u2Z5V8bMRjHi5QKztBSHMZwHe4+ZBvDYQrDYcM3GK5zd3d3d3df/qJx0nJl7V0uub3h09+rNpf7/q65J0+epCKRXnrpNdcVVf1Svr1MIX9b7yg0WhKyOuPShAyoFe2zxm6xpUB009xxW6BN9qENI/jPvrXFBOiW7P5+rOGyUBwGXBLfdEF+eqU7gJF9QgAS36EbwMr2mIT/6Ng5AR7aHcmT77IE8NPgFC/+girAV2YNPPjrTQCCgqD5F5H4ANTBho8HQNQ8KL71O1Q+kNXCTK/XAF02+7gN1gEchXLyP9tgGYBELoMteHyQZ87xhj0wDYCS3cAKlw+G2A3isA3AQjZ+Hz4fWLEZbBLAwIvNoF8AgzC2xWdIAAPQRZCO1ii0BayREAbnCVIWAEmdi/4xEAthUKjOOB4Jsy2MhTAIJEib6RIwxVz4X3BZIx5PnWUauAthEK6ZEiJSGAZeAvClBgSpjtEyf6ZMzhDAII8khTKblhuoDD4JYHCCJLlqtPmoHKzT8A0qCFDkrMYDprRDJjbfOYfgXJvdXEQnkGxsg4ck57auksYiFjeG2gnMhoh/LkSEUw5fMA1KScotLVc+UoMkuYrFHyPXsyitSTOGLqydcQz2kowYrdfiv1EOdhj85VHkvtSItWaSzEfmu1L7nCAdlzPpuWAZj8h3ayLvL9G1+UqzpgyqndD49q3Uxv2czh7ZlIE/Gn9jJXU7ywhnUGEkQ+LH0gXXK5Y+w+Q7zkfib/Ok+AelLJ3ciR7LUPArC+gAqTBjjYLpHj0IG0DZmws03459eI2nQzRdY+8L4yYtdVCdDpzk6LpKJPrBvDP5ieP1VK703xKiPh0Y5nqWCVHKzBePfiq/tq5ZofvhJx+rV1tR7wrOHzspGqQ/OeV/mDlostjzIFhLRZZUs7qccbjhL+UezXHRd2M31/TkzkLT2TXl2vZ7vk+749zDpM5hVc867ljVlmtcfg5Vso0inlxZLoMsmn8i4f2sbCHD+TcC3VDRCF8wZ/Gld402ruIxH8We8OiAkhvNZ2x5TvgELurXJB8v7+RMr+C4aJR81baB87m9sQqOGO6BGdiIwS+CGfpeGTL/CNwbzkLli0MgwycI0eDKDtgAffRfzwsJHUfb6trkwJ/atiE5+PLIbh0oBmkOPJJQgSuCQ6ohD4cAX4TiYwuvTGowj3uReZ/bvJK5gm/ml6zNlUvYJrb4Rf10J8+ljHPYsV98F4SB09722gvVYrlqxA3LvNXVXirKkla5yz/YjVGrxe9cquzR7HM3sDidnD0+yP+HGRxaLA9MlDf1+ekKFfORP1PZ1vr/a/XSay7oL6FSunc7oD0FAAAAAElFTkSuQmCC",
+    "FaCompass": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACE1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+h2d/HAAAAsHRSTlMAB/gFBvdt9PoB+WxvEgR3ZrP7If7z/YLW1UIDAs8LxHaxsK+u2CZEXyPx3ITHCBeiKxEWGzR86AozvkUkJWDnyOzNCS0yqK0sMTbBQMan0DXk6asqkd7JKc78OHtDRnp5a1Qo0nD2Vr1/QSLMUPV0234cg+9uktp4Ol4/IKYv1BDZH6VNLg+AHlVhUqlHDteZNzzwspg76koMMHO7333AxcpyFVhd46rt8tMUV+InU5p1lMQAAAAJcEhZcwAAFxIAABcSAWef0lIAAASySURBVGjezVr3WxNBEIWYcDEJSSCBQCgBDKH3ojRBRAVUFBSwgAr23nvD3nvvvbf9E01C7nKX237r9/l+3N15k+ztvpmd3aSk/wYzQm3XrttdLvv1ayWhGWK557RVFhVbgQrW4qLKkjli2Ou2L7YBKExv9q80yp7qDgAssl01BugvLUwHRFgHejjp+754AR1eruWgP1UIGDDrPOuadGQAJmy5kszC338HMCNrOTX9TIcNcCDdNZOO//IKwInCVBr+jhHAjYoyMn/LEDCA2QtI/EvKgSFkrMPz+03AICw7sNpwCBhGOWaWymYDAXgSQkrnCBCCffWI/TULCEIafMe9B8JwGMa/3CbOgRWi3+YsIBDZ+qxgDAhFgS6+7OGlGizwPDu5NLFVuprgoJCT/nupOTrBOg+LtPz3+OgDF+UF6df1aeNPGgd7ZppqrVzWh2k1/xkvM7007FEztOsGeHtV3QuZdX8sIXgV6Mecjvc2WBkDl2N+YhbyCxKj4znfZib6XSdydLtoLmxgitLdzfJlH8N0chls7Du5eyU1val2FVQnn8KH18W6t1PSz/M1ICJJK9ygOda9mIr+lSMfFamaECatsfMLTaDP25qDDrWoVW6ZXmxtZPo1e3MxqYIHeYoYj/ZXkh28wOY6R5B2PkohzcvFHrMk9LEhOqCY6GAr9g+8xgS26C4n6sSIE8ef3Im2tEUsfxP/gLLlkw+PSlJXivYs48aZdoQHrCPuL3n9N+ZNN6xuVPHnnsPZloRHTJIc+GJU1XnKR1f9h91Y2xsoIVTvFlkfUmA6mfQWa1yqtYPikUw1Gm/rUviP443t4SHrCfqs6KdquWcoDorw1hvIDoIKl+rkXC63hTLJDghTdFxx0BVvrJLb7gLyFOE/ciD+OVO0dhHUWAgOIh/5D3bEbtWWXS03dsvL9CBpid8gbbRitcw1xjx0yxst/yvJQWSjhXAD3FrZsVdJ0tIJM2TSEGgPj3JixG6oGidzORUk/qjY4eR6PVanP5LPIYS9ImGLGznLiA6ChJA5jP0Dx8ihdlonS5AFIA/u9x/LJDvw49OWATS98yd5fsJCXI1PvJBFh3z3OapcbVts/H58dyJqDs6jzDWb8cnvLXjBZHgLda68UTbaBevdBCs4tNSuoU/1RxUzB6z7k44992KA6aRiVyw/QNRi0JxYazjBWGyw/ogbDxBrAanNzMWqCyrzHv0xVrPJPEck9mN0Hb6SoDptPK9NB+zQ1hL6df0n5a77PFWAMJq0c6wrp1VNFzlKN3FWSVYkrJHzukmu8k+1F3zmLtAeSFzkG8QWpPb+45LaWchFW5PAoqCpBSZjm8U5sMMLs0FR/A8RVyH1FWL4j06hItXOThH8Qx3oUNsjorzfh0tFdliM8luWEK5YHhjjz2gjXeL0Dhrh7+wjX0OV7TOwfnbSXKTdvsnLX1RPedfo5rqLMjkorxojupTNoW8tbNe939jo91wxM94oX13EFL8OcNyJn6HN4rxp/Zy3+r2nKYra1gt1Bt4l1LsDXsKzhwajTytWNbciBMrSOrZRzOOQ+eO+YJYmotqygj5/tdgHLs6O8cm5Ey7XROmkv935/zzq+QuJp0s/7/nwSwAAAABJRU5ErkJggg==",
+    "FaCreditCard": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAtFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9vsrUyAAAAO3RSTlMA5wPgk/lYVaoBKj3hLBzGDEkLckgpcfzd4iPIqexRYOvMCK3bfiGn6qwrT33A5CDKtVPefOMk7QpSgKmB10AAAAAJcEhZcwAAFxIAABcSAWef0lIAAAEXSURBVGje7ZnZcoJAEEUbRRBcwF0T12iiiZoYTWJ0/v+/1KFcQuSBKu6L3vPYQ91TRdXQzLQIIeRWcNySnTAl1znF+9t3BeD72Q/yCysFolk45L/0FYz1z/71DxSQR0eWCkpXXrGCtuSxgrRksIKMKDAUUJCAIAuGzZYQQgi5F/jjRQEFFFBAQUhQL1/0iVTO0MXP4vU+clyPIfBCERVdLUa2qkpcQfhIawcPRGJTQME/wTAUYOlqKlJgxRWkn/4GmLqaixSYsXfyvHdx/2+ZDV006tfnA8f1O/jYwa+W4ZfjWaxgLBusYCrOApnv7WddHxNcfufhsCPfmqj8kRvs+fKshYhvff2eR421atKjxmqNB2xCbocdpFEPMv0RalQAAAAASUVORK5CYII=",
+    "FaCube": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABfVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9hN2cgAAAAfnRSTlMAoogr/jy8+kTEZvV3VQKqrC4N+PxD55kBs8ISYgXMMCQdkRXpBuGCTbsK9xDN5dWrA/3UZy/ka/HSwSHvDCXKv+1x2BTdGNsH0HPyBAkIPzPrWi1CTA77J2q3F4PqNYzzm94ahosPOOKPE/Am+aGH2aDJzmzTvkux9FKKjeMvjh6ZAAAACXBIWXMAABcSAAAXEgFnn9JSAAAC7klEQVRo3u2YWVvTQBSGp2lq09I2UoptKSq4gNCqgID7giIiKAi47/u+7+v8didELJnOPifPw0XPbSffm3knOTMpQjo1vLi8nFpAMdXun9/rmNQP/9uFGOKTzi78v7bs2A6bXsvuxVTtz+0EU7PHT2NGdVXzW6HV0GWtiqEGUBVPDZAqoRprVQpqLFSpqjFUpaVGW9Wt04clER0dkgEnD9Ys1GzLFi/mh1wjVXI1k86JcGh/7qyuqmm5mkR3oTm+0J2Qq2o0u/w9yWi3p7dIz7jY2yNRNX979t+MD4gHDgz2sRetb3BAfOWnmWBY4726Grpkqr4EE3+rp0ZPVRmhFVdbjYaqsdfohYkadVXv0HlDNYqqPqJ5/gulW6wXcAm5Nmrkqt4gutfY7uFUr0pHAOMViFNIZZwLwOfsDzuNbKQxUADSa33PZhqXytQatABIncnVzNKvZlufeRYA47qfMrn5+4woNmD1eTquk76Qz7BzuACMD5UnVOOvO1O8FAFgdRrD8vRZ4SYtBmB8rJyUdFLnjjBABiCV4R+nRr2qZNtUAZAzgnOUFf8o91x+rRKA7BtDeeqzrOD511SuVASQ2uf0N+Nncg8VL1MHkLEjYRepeCNp8ThDQNgMqWbGnKk5gDTDLtGvpeqVUTJHG4DS0xYPYN37EgMg+saDA+ieBQtgdF1IAHPfAAPwdj4gAH/vhgAITx8AgLlp0S4EABBvc21AG9AGtAEbANAZLyCZKEUAJVhA5+bogb6OliABdDw5SaKvcIDWeIxvojkoQNT9Wt1AL1+BAFh3T2rqKUKfAQCcePL3SvA98cEWwI3HD8JvxSeuDYAfP/Z47b+tZ0eMAfx4fOruuttIbTICsJ+c8HPBo9ZJD6Edr4swiNdDGMUHdVlxuQVLuyj5d0Z3uTXu3h6hFG+OUI43Q2jF6yO04/UQRvHqCON4NYRVvBxhHS9GgMTzEWDxbARofCsCPD6KiCU+qInfmck/mV8raCPVX5u58Fwof+yiAAAAAElFTkSuQmCC",
+    "FaCubes": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAB71BMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////joNC+AAAApHRSTlMARMkCr4CEAVVg0d8w63GqkVZmA5kG0/e7zk0zb4j+d+yKMsLMouIJ+/3x9fn4EtoWsdIT5icXp9AE+rM8CEuyWuoHkirz40hSGQ3bEcTlUTEjKPReJQvdefw9yGjPKalM9jfcvVueatbgIctKG8o5H+gFiwouD74ezSDncNeJaUIOfx3wLJh+HMFAg8Ym1ZzA5IJj6e7UENmggWKGJO1s8p8YrEfm72sAAAAJcEhZcwAAFxIAABcSAWef0lIAAAPuSURBVGje7ZjnQ9pAGMYPqAIOQJC6oKhUhqioddWBe+/WvWur1jrqaGu1rXbvvffkDy0QgeRyyV1C6JfyfoLc73mf3HuXy10AiEUs/mmUx1e5XNNPhqOT/cpQ+jEvFcdNJ6TOrqhNPe2lRZo286SUpYlL9LLilfmZ5KWBQ4JSwaWBI8JSlX9tgxKWbW+XQZds8SJn1dbQUyhVodZjAMDg0RZCDb0LIrqxtwtlkS/1BNt6luRw40Oh+YuXmaXJaWG2t+QwS3VW6HDfp4/k7KqBTRhWZ9No0C9h+dcKQsrJgx4uqudgMoQ5OgUZfDmU9e3P8IMz+32H6IIgg9sBTcGUAY8apqjejgkyiKfuypmuwkxAhUzroNg4MQb+IpmvcmO/LeFFSqxBoBvISill2moaJt7AP8stxTDxQf+cyURk4BtvrUxJa89KPQMTERr44qPl8Gm9pU9ANEdu4PW6FucBmF90Ma/u5ktm4IuMDOb/8T8TIFFKA2bk6/Z8cNQMuk0jAThKBr2hpyMaBml598Kw9AZlcYzXi+QGP6AFUHKDJBAziBlgY/BzH7nBxgPq1dAWd4Esu13FuV1nG9SpasZp23l9F8F2vRW7CiWF32s/Wdt5xosPjjuWUZJVlDJYs7iRrW3mb2JLQzNgloZ18mGXSnEzDz7JNHIb1L7Ix8Ctnx7TSzX4ehkCspuzQFZzNtpgkwhODM2qTq2T2eSo7zAGWowd9Q5cvXhgZ2WFv2EYOoeVaiponavQlPKlx8C2QZ/xe/qVZF0ua/Rzdcno7ARw6RaYCv+rLuk3IieYsb+kGs5OCOuBNfgzQVPMd2bTMHZzxPBLkH/Y2wHsGjIQ7L0Q+C6gNG5NEVZTpHELh4+B8ClbxqvISnXRj+TEMKAV9oaF68669NPwIJPCANpP5SIULbpW9OaLBAbshWqEIahTpfOtalgYILbMqZfD31vM2Zj9NQ4GSJm1ocknaGqwkqze/DDgUCXnTORAK8S1sesiYOAljG6THahFwIQG1GFALQImMXDWXKRGUS0CxhsU5p0KThO1CBhn0GimfQdSi4D5DUZNl+jPkVoEzGtwTsFcBtQiYF6DI0CAAQccM/gfDN4SaxQp572C4U1gJdQoUo7yP8Zo+BHQE2mUmRm4ZQgNvwH2brwGe/ecsNvu+/r8DqMhSo+GvwfW1o0dPg2UXi4XAO8EPxrL5FwaqPZVKiWQTRLCCSraKQptUcJOTwwz0vtHfm6FrWGcOtc9YdqzjoFX5hDHZZmcZwiroBviheG7x6uqEApOmDM9p4pLIQjmVvEpBMFoFU4hCGarSBSC4NCkba+0Fdgq25WSw7GIhYj4C2aSofZp0MtsAAAAAElFTkSuQmCC",
+    "FaDatabase": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABsFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9pYNpdAAAAj3RSTlMAEfzqzPL1+e4FTbXUaLsBU91l0DQYF8sQoYfc5g1+ZBac7bSBiC3hAxrEuWtCCWAxogdKl17kIOmGi697gPob0rOeHSdqk53BJpLKC/P4FbpnqgrDWVrNDvYyuJm9fyzRVRxAKwy2VH0/Ktk53nzoDzPYn6SCBk8EN4m3MP1c4sLr8G+8AvTVbZGWlRke05x3GIAAAAAJcEhZcwAAFxIAABcSAWef0lIAAAIxSURBVGje7ZfnV9pQGIcZiUkgYStDxQki4qoLF2hb7aS1VqvV2tYO69574exy3H+5p9+8IZh1+eDx/X3LOeH5nQD3fZ8YDDLZTu5sxTbWpiaoEecCyyLEsgvOEWpiam0jtrWT3DZoz+b+4e5e+gDdmoP03u7h/qZatn1WWOcTSHES1+vCrGL66GRjHGlI3D85Kk9/YBlkkOaYbC0vb8Xndx8jnTn5c5Ud/zeBCCRxkS+JPz/9iQgl9dueyTeeIYKxGcX8y1+IaHjR18RFEeEccViBgIjHhRVQ5Au8WEEe+YI8rADlIFAABXetIOcHLQej4gVW8IZ8QQk+rodI859yon3Mk+X3lGaszAGS/BqfhM3FaFJ4us8u6RWl/QwJPPP8dVYzKug268WbQ49k1LFRx6F71dvyVl5Pix0Pi7TQi544irNCO5P49WOX363iB2Hc/pJnOOFLJz7s6MUMLebC70LWKpOMT1dZA8NhTvzZ78FUxjRdChZIPVuk2mMRKssqbF6q0Fn+/xWq3FlIeW0VZZWCxVMdkfyvfIxLjmtmcN5AIGMf3mffB+7pb/ron4Kf5RbOavtMnTZ43dfAnLKNxkTbm4zq4MamQJRRtzJbxzvqV3wK0J76jppWzTuZ5q3NXS5HbUPb8s37fW0NtT9cXc1Wnia59E0sazazrAm8CAqgAOwa7BrsGuwa7BrsGuwa7BrsGgqgAOwa7BrsGuz63tu1OPrtWkH02LWKaLHrm/kHa2TV6Y7E71UAAAAASUVORK5CYII=",
+    "FaDesktop": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAA5FBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8fIpK+AAAAS3RSTlMA6+qMAkfsqlX+SPwtnn9BA9F0nZzpBu5yBa+0n6RwDlY3ejzCo45vDTH62zt+wWluc/k1eBY6wD/PEFM02Vj9OUPobNMPMxQ4gMPjI/2zAAAACXBIWXMAABcSAAAXEgFnn9JSAAABQElEQVRo3u3a507DQBAE4I3t4NjpQIAUeu+9dxLqvf/7oCgCRY6laI8bpCgzv+39pGuWbi3CjEeC1c9W6Dit0l7wU/+5YyCplnv1Fx4NKPmjbv2HyMAS5URuJgwwmVeZNNDMyRcWOJAMFqhJhAUiMeD8JxC6O3tCAgQIECBAgAABAgQIECBAgAABAqMPjOqNF/xS0MMCL7KGBS7xV8tbNWR9b1FkCXm9f9vdFZt5WIOi3dt35Sqm/vXVb5PoolQc0vNpJN9uDHmhuP8UaE6XOAlkHXfCppLAtNv69YFOz+yMUyAenMIsdoQcj1E9pRfmdIzitGX+tzGqfOT60kwDmv1PLFd09d92tdv2fltT/9yiu+a9K4AVm6PnTAHM2wDrCmDDBvAVwKnFR+ikoJnlY7Wwc6hbp3e+7h8BvyDM2OYbNCThkR+Hj0sAAAAASUVORK5CYII=",
+    "FaEnvelope": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAB3VBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////49NrfAAAAnnRSTlMACfr5/iSAAe5vRPOR/BD9Be1CBLOZwYixJTTeI9cT+x3CA9YmEcqr+Hc+Q6rYFDjdvj1m7EzxcBjhf0Eix+sIrfANVTbboiECRQfvDPQwFrvfwOTPU5s5GuPOpOdHzdIOUfYyuFa9PKPmhCcs0fUSmLzgHOXqyytPVJc1nDobXoIgpumHsE7UtZbZv10fhsmLr03y03EPtFIzmlziwwYVdiYAAAAJcEhZcwAAFxIAABcSAWef0lIAAALxSURBVGje7ZnnWxpBEMaXfjSR3hQUItKMiC0ae01sicYSTe+999577/3+1mBk96jHnew8j0luPvFwc785luV9ZxaEpJBCCinWSmyeb5hkqcZk9Xcdwa9zsCAx417hRxkWKJjkn+cH47OsWZUq0MQChiP1/bKgEUM3YQvYUQNsgWqkhy2gRyxw/AMFjLB8I5qGLZBAD2ELvEYTs5D8pQmEKlxwfFfFspxqtHKgL1i9Ke040WMQ/EucpaEt5+jza7dnmrJVbaKLVxoqc3z/PVVja7uW31m8CtHjz6o4rmefJv1K9owW/7osjdQcGkIM+6gOF/tKZZmYOczzPWWZZTX9uYDfqaktn/+mC9NueLFc+yMaspuMtHaPRqvI8AMXWaaN28rhP9iFOXvrsw2noxFfWW9bPX/rBkz5lsh1NHkEZX828eEn2oOaFQUss76CbN3h1fCHPfj+ur7CntxxBGcMHBXP555vKFHM9P3qAE66I7Jf2q/lVljO01U0EQk8sSSG/+QkEeaD/G1LTyvOHDMoBfNHsDYg3c5SfZHSMIaTH7cIw/cP4jsq81W/QOO1243zLwiarbpHcf69bmGd3YeX+I5ApKRdG53EWQbHBbeOcbLlGr38/MUozpQZxPSm00Q5Psd5+xIfzjvwXFzzq/iEBVbTXnSZFO0kSRsW3V1zwuUpskyLtwQIJE/7ftFC7v9S6LrNJ0TikTDzaD6dezGsxcsT4DUp/gEkVIUf8sqenOFuSqDNlphwxq+SXXg8wyXCd4k2tJrLG6GUb63kzOR+WgdMO8hv3epUlj2j/aohPZSq8zLDhDq5ruq2g8YQ2P+j2DHTXAulKTN+phB+wE5vjD2vy+dbvFTn5HeqbHxXH+1B3GRb4PBTI3KISf+jU1fV21sVc576v84qpAJSgb+gAPCxZhv0wWwQzcMWOIt0sAVSvdVhSP5MSttHe1jYPyhQ0gzGT674k/sFDL+Js9mYPUj596AP2i3S34dSSCHFmonfS8GeRXnvHuoAAAAASUVORK5CYII=",
+    "FaExchangeAlt": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAn1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8Qg5o/AAAANHRSTlMAZwlQX1j+/WD87Pvcdw/r+tu2EDnxf7fGOoLugQrytDiAuFY3W8dV6u8R+dpZxU5TXe1c9hZ7igAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAWFJREFUaN7tmcluwkAQBV9siDFgs4adANn39f3/t8VAJDgkClao27zzuEoaz7S6NVJISEjIXnrP2XsP5L/VbU9jjD9ue52kRgm6Nmuofwt8esIIbNhg2mDaYNpg2mDaYNpg2uBfDfNJMzWSbdWY3xjLxjAxmKQiNUmBG32lqMBDsXyf8QJ4i7r0T15qRh/TaARfNEWrDloquGK33h9ScGS+aL5ovmi+aL5ovmi+aP6uff+T/1DJqj1wAInvi1X18qNW/8ARqpZs1rWXpQ1xq/juIz6Mby/Kb1J+mV3nh/LdQk7Cjm/TfNN803zTfNN803zTfNN80/xjJG3OIpK/zqgwVBKy/V1p3ED7944u2AEk1Tk8Q/GCIb1FffYnP9HHdABftBf0KqedQbQtRtWULXY/GkQbRBtEG0QbRBtEG0QbBBuY9v1/A0gpw+MV9h4WTwv+3Sv4opd/Zre5QkJCQvbyBdWfQ1a+fw8zAAAAAElFTkSuQmCC",
+    "FaExclamation": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABOFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////10QvYAAAAZ3RSTlMAAQc66QLo+f7HA+qIVN85UQjg7C0TLCHGIAaghu3TFOH4xEcJ0pR1uHo8YEatk/p5QKyHbVO6H8mLbPe5n+JPd+eKdDvFpIUjKDd/61+Dp42SoeSmjNRyllg+gaUpdlc9gB5h/YlzMiPeDwAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAi5JREFUaN7t2edOwmAUxvEXWkrLUAEFcQ9QRMWFe++99972/u/A4BcH79No8pxEE88FnF/S0vffUKW+MaMHYbdswvUPijTXW652wuskwHHBLHP2r7lwUhRgAAMDFMDAQCUFqMZAkgKkMJCmAM0YqKEAfgzUcX6nQbQ/SHrQGhGQIAFxBFSQgBMENEmfRbUkYAQBUySgFwGDJKAeAdMkoAMBBRIwhIAGEtCFgH4SUETABAl4REA3CYgiYJgEtCOghwQYskn2iHKSBKRkk+wR5RoS4BdOMowyK8kwygkaEJdNslJNeiBLAxzZJMMoT9GAXtkkwyhP04CCHtinAUOySYZR7qcBRdkkK9WtB7ZpQFQ2yTDKPTTAkE0yjHKSBqT1wCgNaJZNMowyLckgyrwkgygniEBcNskgylki4MgmWamcDsgRgTMd0EEEDLt8v71BBFREMphvcz42+XH75Nit+p//+YUTujt2zL4+0xnPhwTWZ27M98fA7Iyx90dnPj/HLVXU9b77ssPIjgR4+wO7utP0ykcDVvVvFZe062/rAZt0H2Iz6L+KwwwFmMMfKBYpz5eJAYvxS7pwPWaJAOx5AQuSXw9K00YAwl6AJfkNqjStfwEwpS+R+E0e9wIiBCDvBVQKHxXzlOh0YuCUc1y3wG+Zfk4QqlBwZllJ29EDm7yXiiPd/hVe9JVv7kn0taV0H77c6fisIk9s0frw+3/xK/4ElhaWrWCr1fZs/ODqvAJ9S0QCYYSOSgAAAABJRU5ErkJggg==",
+    "FaExclamationTriangle": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACDVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9xxQJjAAAArnRSTlMAAQUJyczvqv4I++v6AmkM+aGCFf059/z4y8dghfaZPEGiFhur85vefMQK2Di+XGEHN4GAw+cEKK6PcA4y13qj5gOt0fVVNts7X0DlIUWsK9D0MLZUOt/A5CVJzy/UclO6XYYk7c6vcTPiHmdlpMhm7GtM0lGUE7hWvVvhwoQiakuOkzESt3kXfoPGSk8Rl3i7fV4/IMVj6YfKaAuwThA02Rq/PmLoSJDTmt17PTXWaxp3AAAACXBIWXMAABcSAAAXEgFnn9JSAAADfUlEQVRo3u2aZ1cTQRiFlxSyoQiElkJQEAJKk6aAdKSqiApKU0CkKNh777333nub3yhSwszutOzMnuMH7te57705m53ZZ3OiKAtaEKKu7EAgO9G0+N/fwbQOLTYnf3sEmFVEhRn5+QDSSfn56eFwQXi69IIAQPRDdv6mZLQg4Z3kgq1Ao2VhUvOPA50aZeZbt+gLdi2XWHAdYJQtL3/pRlzBmt3SCvYArGpk5Seq+AJV0pkUZgME2aOlFPgAUa0y8mPWkgu+rJZQ8BxQlCKefzaJVhDbI1xQBqiqF81fAhhaL5Zf18Aq2LZSqGARYOqlSP6dSHbBzqMCBd8Ah8qN56+K4imI2GC4YDPg0n2j+QcBp24Zy7fk8BY0rzCGimiK/4ojqGN+dG3MSH48gnLAfQlerIxFFsPjDRSkajgIXX2CrqaKo9xpdLlEA3rjwijXgS43iIJeo/ZO+YmuZ2nXO0PLd+pQLhI17BcEvQf6ZxdqiNUZfominBOBVUHQq8FsV+Sd5hrGkMafn4tDuWHY0SMEeniUq4Qt40Kg14o90drYLDAkhHJvYM9trKWUD/R24M/kfNgzhPec4clfR0C5c7DpAN7jHuYoqCc8Ve7BpqsEU4YAyqVwXEYO0KvrII1ehG1HDIMeGeXiYFsa0TZBz39LRrlR2PeaDHqXqQXlZHQ4AfvyyL4LRlHOAxvtBkGPhnI5sPE9xThIzj9Po6ta2FlKc/YaQzm3BXK6ac4qC6FgjA6Ik/POCbqzggvl9A+UkjlyLFHpTgLopQJpuovL70+WV5Dcjyn4yJ5TvcU+X5FXZTvz9PkD7CnbnxlroYftHdChXBZzxhF8zXC2M81ZTk1BNfvzQ68xTjvTXq1BuUzm9c+F/U3M7yHzg8J3vs/pJvqJbMwB5PlRyL4xitGCIvYt1wSh3F72beFDCz6zJ7zz7yQPOfZOAVrwlGMkSFIx3RxuzSVycYx0v5o1p/Dsfi9a8IJn5gYd5TTqCvGumFLS42lzBt8B5oH2pnWEb8bxz9zGe0S2BxusZbwzjxQluo/7ELbPbubEEe6RvmilM4RjXrW5CgpcNjWEkcPKKDBVGUqzuQVVit/cgkyl1tyCUzSMlaFBnt92RTSpxESamf9s6jeY3gTz8hO+Tr81RZmVH7VvZut/spuT72kJno4trjiHZMUVmffnggX9Z/oLBP43y7vhZSkAAAAASUVORK5CYII=",
+    "FaEye": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACVVBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////fZCMHAAAAxnRSTlMAJHDmAQYLA+zpMZj5cgUNAtnYyAQSDJLukehIr90jmUaykxcH2iXKL+0KV+ci8PV0+uqsbvQwEV7kKvM0yUcJ8faUMuHHqNFvVcEm78Agphq/kIBmiiiuLQ6z1xPcer3rJwjWO35FStC2NRb+331JsBC1WP3Ezk3yLrT3OJ/iw4Wp0lG4Vvs3GJ48f8JliWqtLLc223m8Wl+i5YMhxsuNsU/Vc1SXu5yCxWNEh9T4lhW6mzneXeOBYqWG03EPUjMUmnsZvj1yndYlAAAACXBIWXMAABcSAAAXEgFnn9JSAAAEaklEQVRo3u1ZV2MTRxA+yZLVLLnIRcWyVcAF9xZ3wDZu2AZjCDW00EvovZcEUqgppFJS6CSBhARIp+R+V7CjlU/ab3fvZB5vHjXfzNzOzk6TJOmkk0466aSTahr2V3vziwNWz+bNHmugPd9b7X/+qnRndFVvWCEDqt3xrT1jotrN6w5bZQ5ZD291TUD9a4UeWUiljv3Jabfs3C2rpKM7Ldo9358la6CH87K16f86U9ZIWXs1qC/aISdBl1pUqs9ek4bky5/UBw2NLlejIVg/uxwh0rao8lPLFRSO3rZ41MY8FL7F88X6zx6k5X7tm0IDU43NNLLjsUD9pKe0UI03F4OnzP2BRn8+jaf/3XYQHiWclwiCzR1h4w0BGl+Xy/ui9AW0xMcFLHSbjUZfF7xRSyEt4+tinBckHoc4KvJoqco2BCwpBf6J+/7c317MqOo4UhwuW6Q8Qz6I6oW0/gHgn6wE/4cIo9UxoLiHybSkrShR/xsAlZYYP6sVvGPjT8NeQ8tm5iTE/0zwLu9Rx/QpuCdmxX5+HQgPmeMkfwKQ5lTKwPI4N9hjl5MiC+LjU5S7+uiLCsWnv9gZnEi+TJGe96H8BvKPOx7y/ZskL6HMN90QC7Ri9AF5tP5pDQmYLwknjDS0kyCvhvUDPJYyKs5INH4EVTj/ZxZUIWaKidLvost0OMoy2ZCOhoox5tvQ+mz6AA4a1UredA9UsmGUNRVX2Hpyf7HvdyDYX1GuEWtZ+/KGezErGJV8FFo9dr9luI0hoeDHWnotUhOjR6iISl57mX6HtrkbGDA3KSUMfpM0k8EhuWQVv1eZQXIZgz9Hms7gkFTyFt/AQZLMGPxBqVJg4Au+gX1CAyIXrVfnon+YLmJdMqnc2/gGdgsu+RdmmE6NSt7iG7gahW3F7PUW4UP7mW/gJP+h3R3lfchNFZYU7ghFEvZxyD4wxquAya6cJLtPeAZG+MluFqceyRujstsr2fpbh6OgQ5BtJF5o5xaceWwDywimE3G7Y12VAT1nK8mjpgfM4c/MK5mVFZxSpTyg1Pg71n8kwi36/YJaomhbhuFIuLSA27Z0xk/0QwByLsbevpjmXo5wG6/lCRuAHPCRNfbxsfl8bUL89Fm4rWNWIzW6gkjOTB/n/7lGkbhtH2ziN78+A13S94NIWKBs303/LruwJ9C8JzT3fZegfa+9CAcQMCAUJjWADP6NoV0+YEE0QoH4S2GOjQVLaXR+OncIBP7J/IqNj7hp/GQ7G28H93v7PncQ99ISp7zprEEcLDUKzYI7u9MBnPpHKlglOMH7rfpMHBXzUTNvDZ+Oa4ZNhzpLURs2oGqdswWuc2w9Rv/KHLM5Z6Xf2APrS9oztWsvw4FkFlI31C6kRmnvEq3qv1mndSmoycSqJu17R8s7Z9Sqn/NdkhvghT+WirWvCLdIyZPL/x53tVx7M5gtTZAy7M7FPjgmhowlple1go8EnSN13QGbZ9cujy3QXTfiXLtJ/9NDJ5100kkn9fQfWBq/u9XcsGYAAAAASUVORK5CYII=",
+    "FaFileAlt": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAeFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////0cwFZAAAAJ3RSTlMAzvyIMTABAi+JggrNzy6AignchAPbfvfdI8hM9sf1g8ZPOsWBJMONCu75AAAACXBIWXMAABcSAAAXEgFnn9JSAAABCklEQVRo3u3ayQ7CMAwE0BIKhbIUCrRl3/H//yFIcIBDEyeOJQ4z58hP6TInJ8l3RnljiJP3caqv58Qnow0x8wFeyX2AnPwBWngATQjgI5gggI5sgMIAmmkDbCEYoKE2wBQEAE+QACxBBHAEGcAQhIBbkAJOQQxQVxtwCBEAuxADsApRAKq0AdpqAw9t4KANUDTAO3xgqQ2stYFKG9hdlAGqi/tSFQj7xgAAAAAgCBhP+/b66g86ImDgbsieCMjcQPbfAOMRpSKg03PcIUsn+NEAoIvQRegiAADQRegidBEAAAAAAACgA5g4800rUMYBVhFWT6wp2pdn9jHmn+aW9ZxbKXwPZlX8zn8CPSxmfwK7sHwAAAAASUVORK5CYII=",
+    "FaFileInvoice": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAhFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8NoezaAAAAK3RSTlMAGoD5B3f8BnqJggp5gXuKCdyEA9t+iPfdI8hM9hjH9YPGT3g6G8UkdhnDY3zGZQAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAU5JREFUaN7t2ttuwjAMANC20BRaCuM2CmxsbOM2////DWk80CJSO7a1i+zXRD6S2zhR2ii6jiKvHGDiezos9m8RJYoVIOMCnCOnADnQAZgQgCoEoAguCIBXNABhAIy0AbQQDEBfG0AKDAAncACUwAIwwvX0QVYfy3ptAJQkIGsOdluBduE2hX/0pnJ9bQAedUt0jgQN9JoPeYgC/ALvNUVUSQSAuTYAa23gUxt40QZArBeRA7/QpnzAP7rUBubaJXr6YAP+XgSL5DDlAZwwwAADDJACOscY38TitEMGUlqfTMnAiQY8kwHZ3fAfA2GHMAMMMMAAWcDatWdSTMu/09703+nHllT52GJHRwMMMOD3A4F3kngAc/kvcDHL2tF+GFAvEeb7iC00A/4m4GTyu7vAWAaYCfx64o37nzOLjUT+7YPn95xyzHwObpbU838BRIh9ESQbtzsAAAAASUVORK5CYII=",
+    "FaFileInvoiceDollar": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABPlBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////lgy2UAAAAaXRSTlMAeQKCB/yABnqJ7gr3HoqE8H7F6YHoJBR7wwkOUfbXN9zHA2qOt/qY2xedg4gwVBb+GwtD7SkP3Z/iI8hMj3ATo0HM9ZN0EsHGRe8rT/SS1RGX2ng6P0RJKpEQ2Tl8oKWGBUiLztiaGT2w7SXfAAAACXBIWXMAABcSAAAXEgFnn9JSAAACHklEQVRo3u3aZ1PCQBAGYIohSJEOokgvItIUe++9997L/f8/oATGIbkxXLjdL0z2E8y+k2fmQjaFGAytZTdPCYSlGnHi8O4btJR9jjBWE/gtsxbATLQDxKUBmOoE0CIIHQGkwAyQzgDShw0wCx0DpBcbYBQ4ADaBB2ASuAAWoTVuFOU90doOIH5NgKhs9rQF2gv0JtS71Mr1YgNkFHeJfsvCDFiVO7mfCVAX+H6mDKsEAhAPNkDmsYEwNrCGDRCwWaS52A+0JD+g3p3FBjzYSzR0zg2ozyLisASTfABP6YAO6IAOoAJnovLUBgyI1NwGBjTFdAAcCDzflxsx50rhDh5YH2xNmkozwMCiMjsZBQVydPgTErDdUtmJXUjgjYoWfaD74EJq771X6l+yH8bqlQ32V5SX2gm8afoitYfwgJDUDuMBl1I76EUDbpoBZyrjQAHcob/MWGQkgDDslmWDKJaugQ+7B3ly8xF8mk4fy7Me8PNBLR0ztYafEM5ogZHI2F845Ea58HJkUs5m+hDtys4blNI7eJeOW1K6jAccNO6c8YDGE6cvWMD2WjVGs/VPldVrKT0OCviKVHoBErBNUOEl0OPghA5Pgx7JR4PK7AbwLJopyQbRZA7+4vfUNd4cEvnvPp9+f9C1APptbP1RpOLxo/6sQge6DRBgti/8C8RhgGGAV09U6/+/M+0JiO1vD6i8nuOPc+4HYdgi3/4Pqd4ZGE1b/SgAAAAASUVORK5CYII=",
+    "FaFileSignature": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAB71BMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////joNC+AAAApHRSTlMA7+T4AoknqlX+A+V9ASSINWz3OPD0PvFqS/WDnPz2dz8Eivs3nlA2+UQl8zTyn9TMlA0F5pNCCUwtVn9Gjm/6nTtARcuXWUmM2Tne40O+I+pXIqRH7M2Ps7jcWzzhwqNBZeutMXkXfqLGp0qN0JIw1RFUuzobwKEgxbCRU5YV/XwfxGKl6GdI7YsKTZAuM3aaez3igB7nDiEMY78IdJhaoA/Y3Y+VVaAAAAAJcEhZcwAAFxIAABcSAWef0lIAAANcSURBVGje7dlnQ9pAGAfwQ2IhFNQKalVcOGorjjrqqtbW0VarVbv33nvvvffeu70PWpJLkITT3JMnvJJ7YUie3P8HR8DcQUi6zYJWsa3PY9WCyolBT88CG/ntF6l18ypneimV/XAgQgEApcVgYA0MgAsyEAALFArQzFQDQMEGABPsACDBFgAR7AEAwSYgLtgFaHaqAVHBPiAoIAAxAQMICSiAdqcaYJVUAhtTDdQ6CAS59wO8TCla02kDEG4vGmNdrlyGAPcg+TkutU9GFgA4Cs+PC0JAyUJ4vi4IAbSy+AM4XxMospmun9OGoiI4C5A5cw3VdwedBszCa8cBk/DAQSBnD0fIdQ6oCsnzk4UjjgHBUGz6kCTIHVjAreUPF6h5ZuEA9jKtfcYSzxdoz3ge21+Uoe76sR80dwfLW14fH5NEwU+QgLvQnG8Q/AQJlGpfgfl1iUfj70MvQQJFWv72euNx/TUQJFA0ygLe1pkrRsF2/hLe+HAEm/l55az7aBGvKr/EAnm7We/+Um7Zj30FeStY56X8/EPY9yCen8stv8deRfr4r+fnZxIkUDDMej7i50cIEggFWceV/PwnBAmEqmbMX0WQgJ5/zC2YDwRc2qJaIT//OEECFvk9BAm4clif68u45U0ECbiirMtZfv5zggQ2nGI9uiq55WsBCDDS0DBiPqbNlib4+ScDkDnam4rYgq2fCwyVcHssDkAmgWFWquYB/PwbAdAsU5tdZfEAbv5gADSNHdBrTYJAWILNk1/ptTIxoE8CTsTX6rXPsghQLQFn+gNTxSYBwCKfA5SpszlJGyN347dG9wxAgwReq1BHKD9f+Tv58eun2Kb519/pgEsSeDGkST3c1qZuvmhntfzkA4d98NUWNkKtraan9psHrLPOTwJq76gjRGm58bw//5KB+wL5hg6r93l2sVvOtti3i35GC9tMTqibhKWiiA+46ng7/oH/Pk6pPkaDJSduYn7lSnj+U18oP5R9Nkb9sUdXnQG2xI8F1VtONkZ3lYcPHQEen9EO1bAp495m5d87ux3vlhwA6M79PuK70HVO3x/rfFozrj3e2httRgPOLIakgVkIyLj8W8783Dt922EJZOMA65/I28cw+ZtbrD/KvqGwx2YLe0m6pRsh/wF5CfdEGpipWgAAAABJRU5ErkJggg==",
+    "FaFilter": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAk1BMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////bzZmPAAAAMHRSTlMAxvoKD9h9EsnOBHoRNQbz9QnXe8IIR/vwweVktvn+IJHZdxUkBa9S/Dja8n7DedMBq3OuAAAACXBIWXMAABcSAAAXEgFnn9JSAAABNklEQVRo3u3ax1LDQBCE4ZbECnCO5GSiTdT7Px1VhEKAJc3sTt+mz1v/d5njAsVzyCvK8lAWwPSlIm6xxLyi7hUzLvCGCRd4wiMXCCi5wByjjNnP7oCdPV5/fxdgCp99nvDdZwk/fY5Q7zOE33174W/fWvjftxW29S2F7X07oalvJTT3bYS2voXQ3k8XuvqpQnc/TZD0UwRZP16Q9mMFeT9O0PRjBF1fL2j7WkHf1wkxfY0Q15cLsX2pEN+XCSl9iZDW7xZS+11Cer9dsOi3CTZ9YNAEDGC0JgAOOOCAAw444IADDjjggAMOOKDeERs4YwObNRnAw5gM4HJBBtC7PucCwDCQAUyvLrgAcHBCBnBzTwaA09rB5gwAt1ntSwNlvfLwCyhB2nD10T9esgAU/TCZ9Ueit+/+FNdkhsUKCQAAAABJRU5ErkJggg==",
+    "FaFingerprint": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAC8VBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////JPwmUAAAA+nRSTlMADX6I/gb6AQP89/0jAuoQBBGD+Xib8Tv7enTLK9D0+DR8GoEFdsDze02O54rNCfaZW55BRvD1HAfvh23ti84UqtypuUcoa3UYf4SJX+UmrDobJe53xGcK09ijCBYts9e94R3mrdsX4GRpjW4MktXafYLFROnKaKuRU9kV3j6lSK9xD1LdGcMLhqdK3+QvlWyFj3BRE8Ii62osslCTMRJVeUBPcz9JjCqwcjnjYvI4PeKAHjAyXGak7K4OuFY8ZagnS9Fv1reYNrxaosZFtjVe1JagJMkutDO+nE4px1lDTJQ3zJ3BsVSXu6FjprW6WL/okFean2FgIdIfmxz7LQAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAACFFJREFUaN61WWdAFEcUXgTkQEAPQREpCqIICIgVEUVRsAsWVMSCih17FCzB3nuLXWNvsfcWS2KPsXdN770n9yvszM6beXu3e8fJzS++mTfzbmfefO+bhyTZ0v6bvyRyd9DMfZ1jTQlRPapnzT1+rKdUQs1t0ZJ5C03mrfTLyJpz3nz5o84LTNrNI2Vw2TdZvaxvD5O1FtJxrJudy/eLfM9kU+uT6WrH8rPiS5tsbodSi+ui2pUKpmK13M3FWn9sD1Ox23VPm5d3TXIx2dHqbzPYtr7nWxZmT/4hrN0Uz4FGV9dWgVNWTLs5wt2C0dNQW9Zfb7b7p+LOmc+ckx7W3cyDd13r62eqflrs/R3VtGw7+AapPLgvt7Z+KTzhnbBJVsIhRXVecboH4fYpMq4Q0M36Jy96uwyaNEHvSrQVLV3ut7ItKg40QR4+bKhpOU20G3ReNRpad9joxXFxSRGpMy6WQyOGxHrizN1ah1Zb3M4BRkR7Eb80FtcoH5Rf00kYb/VUHD1pmf7ulBeiIRGHyyELUe/fezPfjHLR4q8bbWn96TMFnl+Bz76WxuXtHD0QjGYI98eltgUHzfl4whQ8VFGbH2LzIBLW/irQxlqz9S/w0RrXVGOD9Sio3hV24i+ieO8IdTbNTuDJtoXa+Qx9lgtapNi1bM87l6nWiOf7d9w8ddbQ9+CxhgWDN/QFY9VxgN/GfAvnM94aVSfHUMM6/tDVEq3AGbqWxXt4I6codHNPJ5XadiJ8afxD82TddZP6rs4S59flX9ZJg6UeBArf7HUsbbaK5D7IoENvK7gymt4X7LbQDmNSn3E/1dTPSz6NsYempLtbZXrVK4q2VcBqJN2gBpMJCtMnOafwBNFDZcodxqyijNId36T3wWg+1RRjlICqaIVHB/4pbtQ6hYKMT1T5f7oHM3lIO5wZ9rNK1c9PCR4qaRj9DRYFBO+FmO2rNm3q+SQwA+WsBkIycH/XsoMUZjDRixAjT7QnxTiqOHoVPVaPJnmf8LTllMI9NIuxtH42XI4AghP5BB5HTmkzcbIemgEy6izvdrbk4BUbLdNPhjGcsqZC3A9pbC6rd7KM020M57FdFhwsZqNfEricJ81NbJ9XWeSHfWzLB3KSa87zaPrvBynP/ssGh5EfCw8OlzqK6TVvDQZyD2AJA8RUmV5KV3qufCZynBshZo7KAy1g+k3F9KAOl0YqNjuhZx7t2BVMU8sLSXoNmYOEXzLk9SNKokrQo9E2ipCE7w6hjDGBb9kJNvSRPNAQfm4cnTrcipJXsm876KDisTPTbm782kbjHXpEZ97Du97/8iD88lHo1wC/I4jg+gz+w/dkvDwQacJ0u1HQwuX9CmUu9NobLQZtX8pAa6CjgQwvM/Rcqsz+JNJ7NkNVqYOpgiTkFFbWWfC7lXbFMrxfhlkMRUgTxRxnCGaoCpn2gKfSDYiCWnTmOZD2JKOrEM7QMymH/SnfY0/I49VUaj5ZJQf3AgWbPiMdfwEhyaiAoR8luEXyS6AOA5/TZYAq2zupCYDHzWJ63eGuyZo/naEmEiTw4UX9HzPQkWYK2OpE8yzdFd5vtGOcuLur4QkthbA/ZQYexkAevcQQQMoHrP7m7gi/DmqlQEhSus6g/GSexUCUBGEt73oAA23xNlSna54nAjf4NRXU3jjR+jF4Qs5MwOsSZAM5SiIY8MEqh+bOGKWsM45+zwA2mkpgNIO+ctSCkJYgEL3EqDlM5vjiRLKewVcEDmWwFIFbGGwkMwwoadgif9noMJ4zCr8o0hhsbb6iEPry9vaEeJf6MMEtG/ngi6zyVwlvIMClBHYRP9cAOQ5+1h7ZaClWID78wkviCVFFVhX7Qw7geu2Tyj2mqomkt0bMqAuZM1c8N2HF1ngDwyw4YDG1oehrMmfndM2kTLPMJH4Pfzen4RVHEdga+/NFRzKLRtygSRrvkAs4E+7BzEQ3MAyfUFWc5Y70dje5785Q3f+OzOgcgflID6h3TBURbVRMLxkDjWYE8y0zKiTwO8Tx0m9YoSUxGI6vRYCOloWXzgECezO4nsA/GMwk8CqDQ7C+StVxkMuMAgkEwUUlUhbO9OwxYzqOz+97HQeQq7MJ7I4kk3Qaa9Z1OGnCK+OG9vqbgJ5p/urPMNVI1RncjmEdLNIvaTvopcohkBad8AcdI7AWzt9wfunaDgrhVUpFFxRW6AeBxqVaaCSDFzEM1HYwGIvkXZCR6TAkP1pyhyoUrYdA/gm1oaRGRe0OBm/RRwinYJJ+QO4RmnGD1Bij7eArHNnjsWRuyeACmp8Z7E+fb1Dh0YnSiTgunHFGuc3gGFxFqoUDZKZOzb003sZ5SLZK+6GeR+DXDD7GIqOrtgPYgwo0am5h2QBkeo/AJQx+QaBKUlls21XSujEOPD9MbnMxPUO+2aDtoBOzuYrFoHs3fHMLcJFvDSbvSjqHrEh59yo4SidKmDg24ovcAt+h23p16Hriczoc7+oZkIpnCIYyJn03rFTuXY7uv3M6TKhvapaqKPUsnHOh6ONNCwQgTJSqYwHRiPW3W6ufeMFfULOYQSvPGtdgJJSdBkRFTehl+3+KvEIwt0Xj92c79Dq16/+A8JD0wnyfiFVYvt3/JfXG2h0eGLREsQ3zlj2tEcrAoRBE9C3/SKmmhWTY7aAnvVl+NKgusfUXKsPPRNVlX3NNnN3s7M8KaKOuIrkuK+JG/6EGqYRaX3MqmFS4NbSklpcMUCUZKzmkbYQ6ldExDoD9uztmfV4VyXPM+gYofqxwjIM7UIlY6RgHvry44ZjWW11nLOn20rzaXLKNPTbKT3eQg5qKg3jJUY2W5PpkO8yBIeBubLMkO2L0f4esFINVGXnnAAAAAElFTkSuQmCC",
+    "FaFlag": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAB11BMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////LJsPXAAAAnHRSTlMA8az3AQx//P0JzQ7hwsfbAgf5xQaq7Xrsa0yZnifR9beiIWlPkjX+oXKW4wXOCnbdgNzmDbyn7hDZbBlErhFmSyMEqYooUdd1vTxgQSJlAwjwjiyykxI2eTvgHMFAxkXq7ytul9p4FrucOn3ApumHJWiMC7Dz1LU0uho+gYbJSE0PUpXYFHu+XD3iHsP2W2qdX3P43uhnsS/6cEl9tPyHAAAACXBIWXMAABcSAAAXEgFnn9JSAAACK0lEQVRo3mNggADOiWZG5pMtmfpYGWgBWPqN50DBVHsW6ptvYjsHCTBR3RM6pnNQQIwIlS3QmoMGVKlr/gwOdAs4Kqhqge0cDCBKTfNZmTEtYG6kogWz52ABNlS0wB6bBVZUtEAcmwWTqGjBLGwWTKOiBQ644sC6iU2jxyCBcU5glByvWUSDEgllSJgmX6lQnWQAiG03E0sqsnCYMAVDVIxJuYAo45Ok5SE6uKJB3OmYFvQyzsEBDIoiBQgUPCqm6nDlXIJAkXD2OSQB42Yff1ymC1SnSKAolgSJ1s4hFeRJS+lhmu6U5dKFrpIPJCHSPod0wKyg2YlUrpvEepRgC9dEsKyg8xyyAHtZuWJQW76qBq+2Oi410KCbQzMA9eGoBaMWjFowasGoBaMWjFowasGoBaMWjFowasGoBaMWjFowasFgsICd1hbw0NoCRRpbwK5GYwvEGWhqgXwhAxEWSLQIZ4SIilbq8giRaL6nIwNeC9h1ZZLrZQURikTUlGV4iDZeuwN5pBhDml/LzQLryGiwPi8HEcYzGhajaEOVtRRXwje2a22VQ2AsV4zNDk0PsmymF+FR8HQ/BdwxwueNOWqLpfQgBLhVQt0xDecQ1pfFppoMC0CgSiotV04MGifmXEzZ8dw4VJJpAcwz3a6+rfjnDymzgAgwasGoBaMWjFowIixgx2xNUhcYISxIpYkFNQgL2GhiAWcczHxhTgba2GDID4wHdn42apsPALU5iUN+xEWaAAAAAElFTkSuQmCC",
+    "FaGavel": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABKVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+Ovq5KAAAAYnRSTlMA/MwRL/sWeBfV03tayhDYGVUB+eyWd+t0zhMMDdRyLcIIoojkxBRrntb65Y0rBv18v10pbPfiiijNDnqjQY5QErd5O+DBQGQmB0/038Chh2hJ7irzU/jZFTmg44ZI7Yu0UkOm+YIAAAAJcEhZcwAAFxIAABcSAWef0lIAAAIQSURBVGje7djXVsJAFIXhgyZSVCxBxQaCqNjA3nvvvXfP+z+EKBbAkJlkZt9xbshF1vcvVsiQCZGHWZjdMm8XM4SaQIg/Z7wT5Nd0c376urA+qFDgQwqBQS6c4wTWZx7R7AdLfL7ax/rMe2CfA2C/Huxb95jf/6+/qs8P2fjsq8P6+grlfF2F8r6egpOvo+DsqxdEvmpB7KsVZHyVgpzvvSDrey30B1l6zCYPgXVmaCHOjC1MMLhwzeDC3TS6MMbgQnOL10LjXAJZ2JxnPlxJwAoH1tfBdqebghWNSBes74MeucJTNnfuyzMZEddfRq5Ak/7X3XDuE1f4GQ+F8Qy6sEHgQgOBCzduV9gdl4Ejl351lctAL9gPudvnhuvdXuLGio/y25fbsH4HGW1Yn0QFZV9Q0OA7FrT4DgUpP36SGhpeMkrXh6pq8doalHlBMmXmH/tjDj5R1LPv/1sOHfxzS90vmhJ/7QLr0xnYpxGwb3OiXp8ms1if6FSfb//nXfzsreQzx0QFRZ99hnNB1WdOOu4f1H1Oldk/jH3uRd/6lX22yr7ReJ+4JHWfZxTfzIl8ToP9oVGszwNKflTo11Z8oD8l9P1KftzE+vQA9ikF9skC+zQM9ikJ9snwYX2iGNgnaoXcv+KCPt++oNO3K+j1/xd0+6UF/X5xAeEXFjB+7o7L39PmAKHGSD5aM+lRvegHUhrDoe3SRqQAAAAASUVORK5CYII=",
+    "FaGlobe": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACdlBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8rISQAAAA0XRSTlMA+y3O/Qn29wED8PX+ye9xHPoCCivpzAYdNvkfYzDPbTPigKXLcvyiNe34HiRzdnCj6zHbFxsgqyrzL+gYkya7qJVFtAdmGj7nTJk3Ro50eZ3q0PR91LWBSCnyLhmfVifFFdGmERAEWVoPamxHa/GUMnpbf+aEiUssb6eNbpLVoe5OkTR344uQFLmarFiWFijXYMdEyqDTUg5BI55Qv2IFOXxUqeyKrlF1E9wiCLw7fuWDIXjfXuSCJUkLU95nqq9XOHtcpJc9zWUNt8FAur4/OsZo1BYAAAAJcEhZcwAAFxIAABcSAWef0lIAAAVpSURBVGje7Vr5X1NHEH/BkASEkCAQQI4iQgBBRUE5xCIqiqIWsVpBRaCFel9tvWq11VZrq622VuvZ+77v+77v/Y+azOTBe7uzb19I8vn4A/NTdr47M2/ZnWNn0bSbirZcLCu7eClh6uf9nM9CVHWmLq5qp1VEftzRxSKU3Rlh5eXGqv3O3/6sbMefHzvYCPn3Is/nvVZwVwzqnwhWMXYOfz9Yzgzk2I/cxYy5L8wfo/qsQWdI1XkP2upmJmpErZ5fQ7/Lf1o/BvWTX3SCpiUwCqxmHE0IANAGA+ehaDcj5WAj6lmI4x+YQKsQuRVHPcWZ0ejvTdfVPIcnySUamIgf/aw+Pn/AtnrPa35dajNyFjCCdiGWo4/zM2zqnzQ4quRV4NRXUQbceH6HRzkzk+3o900dlWgeAtYRRtIK3P+uUU7RHLX+5bUGFS8Dq85FG5jYD/BDBlZ2hUr/LceMKpKAV8YkdBDgJCMrNU/x/anG2UXILJIZyEH8ASPPe9z+97M16NFMSrjCe5ndNVyupOQfkRu4Dz/LzKydLNP/xYB55hvoFe/JDTwMgcpTwkURyWn1tHLiZ4BdyJjqb3Qbxy2lDZzgpb8E9nQrAzUw5W6eTfr0bgc3y/m6MZrR9Cg6ShrH9jcR8TOHF16NgcNtZcCVLB7UMKWnCAZEb1qGmZhZUie5CYzdL+SXRmHOOeKQC7ROz5wcdX/AGfhWlG0AYK21AUxIvSIw16y/KU0MZZiillobuAc3UNyotCSTgbmi6FRMBUxBG2DaBBFoNepf7xQnbMRqRWWgA6YdFQFnlsHATEJyJSBTVAbehWkrCSSojdM4xY0WkfHyCGDFTElfw8RdFFT1FmBLSLl99tyAsT0WE98BbBWJFQPWojawwmKp0wF7jMQeB6xVbeAonTUN8ehJEmsD7G21gbUwsZPEnoE9dpDYblmUFLIjVRvpFf2NEFRNy1WD3Gy1gdth4nwaDNdg/9LQNJArURuYjSmXBv+Tbg+bB3LNagMl2AWgwRdC0FYawvu1V20gG2/sNFgQgmpoCAsel9pAKpZPNLgtBD1PQ1g5lasNuDHtM6mnJdxAwv9ECd/kYRqqi9sxpaM1y42Lo4U7EZcTGSrC8SBAB7tZcQl2Q/Jw/ZT6emOsr7eT2ICs8A3Rd4AdUhu4ABP3khjeBj8ksa3xSJk1Fkl/jd2kj52vdST2vUXZchKwbWoDi+UtK1dgvCgcp/iR/BK4T3VK0V9mEMigrWtsh8rAfkmzgruJfyO7iLfbu4g/reol9MbWSsjsFhdQaN4FoobPst8MaRCBV/iXmh4yYWva+9YGpsCkAnH9b/IHSTwHp+00pPAacZqpu3Yp6eTtwV5LbUA4IWJLTWvy89vUb7cpeIo/5Y5CytsyeOlNdtuam3h2Ge3PG8muoI3G7DJ7jVktmStSPsKG8Ceq1rL2lZlbNEkWkubUUrWRsjnexDXHLZ5BZpnb75+q2vsHiIRv/URx3CtWhfLyLvJAYXrE8yoeWcxrKKSPl7m9a1ph6nJVaqjIFmqXs7JHolMAHzawuvLUyafe4NIvLRLemQx0GMChpdE9c4VOa5BvidST4cK9gfcyew914cCXb846dN3WgtjIgvNn2M/RDZt1qb9gnEs9lvoA+mXk2bMhmiogc8dOFPsbx3tEAycQ+QNHO3dkRllo+EqdhotIQPCFnBuG115nqW8MtUxfMHy5ysFw08c9YPR8hoEqnO3Lg31jLJeqr7j18lzrMF3lHJ9req50X6mO5V9Brv/jjaz+R0NC8g8jr73y2vUtsVZ9Pt05t4/4eHOb7va5cS0wzy6Al3F3S3/CathLVzMyrv5+c9XV/wMznaVgIelZVAAAAABJRU5ErkJggg==",
+    "FaGlobeEurope": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACf1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8Un7H2AAAA1HRSTlMA8fj+Afr57hEFQhLkCgQj+4Qx39Wu2FQJbwJzNfexsNYD8PUXp/R4IAb8r0Uld6TNLXAyrQcrfRv9KURgbF+F9tfcGA2y2+DBbhbp8xC/H8Tohh6CJmFDeefs0jd/HaOoicwsdDYc5YMhy7uMNBVY3vIUON0keidtVWtms5ThxwjRULdaiEqNDDC22lmcXqFjpoerKtRyU5bZYqou05oZgEZSyCi4mb2eImXrao6TmLw7fqLG6tBPl8XKSc8vtbqbfBpdPuOlyUiLzk2QDzN2e5/iwwsrX1AAAAAJcEhZcwAAFxIAABcSAWef0lIAAAYfSURBVGjezVr3XxQ5FF+2U9ylbaGDsBy9I9IE6SJd2gEiCIKAiAiIcPZ2Z+96Zz2v99577/3mD7qZ3SnJbDLJwN7n4/styXvft5kk3/fyshrNQyP+XRlL3eVZWeXdS6Vd/r7FXpMREmc3MIAY7HEhGWt8g75ua4ORQYq24Z11q0UPfKyNUZTwrKRVwN8ZCmaIYnDdWSF86G0dQydTcyuAT4llVEhcq9o9GdHEqJLKpwvV4O/YyKiWjdHU8PobRhzK0ZMnD/5dsH0WNWbM01NuzVrsr7zn5HXWZ+xsM3ivRCANfuYeHHzTCUjxCUes3Mf8Ahk/fzP28yx6Ke/Nq4d12vNJ+AGzOPxsJ3K7dT8FafkFEPC1OHw/C6/ys8lk6ptKEU0SytdCBKXoId8Pu75hvMouT7MWsKreBv2SUIX13cyQHPD4TA5k6AAn0W7F7s89DMlBq9DcAJu+PAmoVpkx56tW6aAGeebIt0blxoVXAd109Im7ocgEulOsSuSwpxHlbZ3wJKAcgcIfQPLD49aAKmH1TKZELD4rFQBrIHgpFclvj7AjP8k7ozBrCMwhPtVrdB8OXzMG9wXn4TZJ5FWZJRRfEnH4mvVgV92VEvw2L9wu6iVvkY3FYvEBB2c7QpWJwCqdBxs8MofAD+HHRjzN9ytOk6nSIZnD64w4ApVC9nbe3SyeoAom2VJwALs/R+QPRj5xu8LvC7poVS1+JF0u0D2E2kLbario8gbf+oEy3paL9i6psxGdX6WxxCyMpGFDemGF3eSWvhc5lksQ44Nht6gTQc4ZNmF/8puS0nGu3Y2wySHiR+EzqBhJ63t3hxhFJ8X8eRX40DEMkn2Pa7zOVhL+qMKiTgN6be6e3WKuUcTrNBDwX1faNeclvUPRMlZo4e8vWmX8tBo8/JYXOEqfMHPS7HWctZ5EJIMwgX9w6K1Rh3Uo4qwRv1GPux1CcBCGRG+MelYHURYgHwumnVgixTkYCA+64AngVXLKAmSnGJzdTTu9g8jrDFMPpxdGxF1T/OhuAvM30DuY4dofcp5CYMrCnA0jlw4ukk5BU4I4gXBZ9Bcpq/8UlACJ16NMtvWAeI6PCYa38DrBS6AHMXSWwkEII30z7u985FayglLwp4ADm9D7DNsoo7h/BXN0nKasMwk4uAhmmPsZ30gQ4OCg0LnMNnp95OAXwEGH0NmLy7jUS30KKovs9dknmh8Ed9FvQnc55SKTBc7IvgIX2UEJEXPxZlegm5eTci+dkeU5fvBRTge36QMqeF32GHyb61eawWfgQVukwe//Ts43R1yQQt034OBakCqIZMd+gDwL4sYFxxF7tTR0HyI7Il0zBwbREa0MuhPZ74sDx8SCG03AsZdiI/Lbr0L1nCSvc2Yjh0zdsEUhpSiBLr4fCMWWf+GQWaqEf0451W08DGrneC7IgSItBhDTlmFSMu28DarfnYtk+06IR8dJSrzCyCVkPXfy/vhLKEJUsrweI0u8FFLHfdRluObjCPMiYvLbpaJOWeBtXkJK34tTVVQqE1xy80+IF5BH1dVa5XPYL202AzkKUoilCKo3AVcojcsnDlj53Symjcxl8I2g2EcONCnJyGssho/UO9BPMXDiKxarkQ4SVTvYgCslaOKQHvaqxH9OKoYUyO9CyLRwRh2++aw0+RT5IDL/el7dNn1LsvzTu6QWj/Lwq5oF/gh4O0Kw5A5UUXDcSk8V94D68jRKIw81hfERSvzUIWJlQ4/cSckX6B4LvwBsbJinkMB55F59ieJJMTcczJGacWoL7UgPd0tI+K/FgBxsVV3e13YoPs5Up9OW9/EPFDHZ58YwHzZ11I/+gYL1gH+iMHAXtZxLsijzyiFVTyzsC2Y7IZEsA5STvh6XxcBQ8oawVik7eE98gvr2jLyYWEd1Ls3pxNtk5MTNXT96BylbMyWpRBgVHCRnf3kduRW0m/TUvBIdr/6WFj6t7rl3Vh18orrnXi4C2dTgFwyu4E389LvFdOi6AwMrfNXPdRko/jRweUSzcjH/v397cMu1ohYcQbUUlWh8Is6eTls8dDaM8bbOAKdv/+BiyexxlC1nZS1vcPQsWB6eP/X8B/zapSI1am/WAAAAAElFTkSuQmCC",
+    "FaGraduationCap": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACHFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8EoJZ8AAAAs3RSTlMARJGA+6ICzAMBZvURFrsSVer+8bP2VjwiCOQGd3b83QQTiScHKwz01Zb9hsmq8tifw6SuN+utb5g2rE+2+SCHbfM5H8QzVyPIqewt0nBRmdwYnsKEqPBQ+hdanTsc5YMhRcuxl9qcOoLFY0lyELU0upvev6CBQ+gFSCnOCk0PlTi+XIWKKGsJj7h6vX8d0Q3Wt7x+X8aIStBuczVZwF6h6SULsNTZfOOlJItsr9NxUrk9YVNIuyQAAAAJcEhZcwAAFxIAABcSAWef0lIAAAOLSURBVGje7VhnQ9pQFA0gQ0SWiqjgniAi7r1nW0cdde+96tZatY7uvffee74/WEjSmCAvgUD6KefbTU7OTe7LefcmCMKDBw8ePHjw8DEiBKtvbbZvq4IILtQVavEJgCMgWB7oW/VKeXAxoCCyyhDnK/UEQ5UWuEKUMNTfW/HoUOFHQAONeDveN2WHw74gXWzUS+TBncBN2BfkvIdlF0m1wDPYF0TinniYQBgOWEEjVr9hUlepxUHAC4QEy4/D1QdzlZ3Aa0RKRachZQc+g/OCsC87HNlidSKmLqvJTAKcICmzRoYgMVLAIYZjkBbAKcaRI9wmyOY6gQYZ5zbBIqJK5VI/VYUgEl0OZ6+pTvY/jIZBkrXjQ/Vk8+7hvTvDR+KwzW4IW5Q/BeXeqJcXvIiB7NWtjvNTF+0LMpPXz069P+9hGLQX1KL5K7HA/2nbMU/Vv5/Np51hyhykFNIBfcOen7vifnsNeqZemecgrjn1z31LGrN6mmVfxdzpJTYH9/BtxG+M0jokfHTDrcEr4jJKf+eqYfvPD9xwrf5oYN7d0TEWv+QXHpuN1Mm2JPeq04L43XlcQqHEGc1w/Xii1AnYgWQArLG9FDMquuuJgSaovltBKXBvrNVuX3iCOOLGnmFVCUCDVz2FW5RCDrUV2JQ5V9YoHyBbhT0abEiF16uPSLCNxoEHg9TINO2nRuD0SAhBpmH+s1UI9uRZ5GqbpKJq11fpc5WUlcmHJxCYMMosFuqc35f350Jl1Ctkv7+MObN0NI96D2UI8cjoqrm2dBD7e2JjusYFxUiToBBlTOJRCmRHqEsX/TB8WEyF7CEpjEZQ4lERu930JE2CVmxbwQt9i2Ufg+ufwl58cJRsA88/DuBGqMYpcjTqYtvP4Eb4ijPSD9vAE8CN8AlnWNGohm0CuBGWcIYW7dgGtgmgRjjYe2ZobMCMHViCDoIy6YUNaIzwgKCgVltmm2AZluA5QQlyWE3ENsFd2C8VkrEcVpuLYqfffIbBZoTVXi+x+jiuhVXoAomFWU2R4em/EKAVK6AuIM/VVvzYxG2TJ/Kmol2arbSZfCPElKYvXXdXft08SDsVUf6vfCa1xQnR/UjGuXTqWoWMYezKIfHHoqnn5gRPVjaLXWsXb67MCs64MdfdvFQnxTD8stJlu7he8bOstKndsqCUSpULlvam0rLGir5o/l81Dx48ePDg4TP8BWRM7mGeZYi0AAAAAElFTkSuQmCC",
+    "FaHandHoldingUsd": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACGVBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////Fd+rAAAAAsnRSTlMAzAdYAxcBqlUF8v13BA7C/l74/PuZJ/A2M67x0tfH9X7BojXA6QaR42JN94TVPOFBrUvliMtK7wxU+X3Kq7DzU5Y0OXylVxm+n8OFyAl5EMlmqUfsiihR9jJ1Vtx6nn8do+YiRusx1nSYWp0cX0AhxqcmaY0rsfSSMBa7WZw6oT/kpkSHaEnujAtyoD6BH8TohmdIi84Kr5Au03EPtJrde1w94h5hzUwTGAjFQrOT2+BP40QGXgAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAwNJREFUaN7tWVdb2zAUdXBISAwhs2mAJpAwUkigjEJZZbWFltG99957T7r33nvvXf3CfkmtJJZl14arh371ebTsc5Kje690JY4zYIDAzrNzrFbfeWb8Y+woiSesBB7+4UdlrASsogCy/asCtVignAG5rfNBPeZHVaa7EWD+dS8QgbYzkPzXkBzOaXD8xYiGqWD8Vz1UgS1gAgM0eucmMP5uGr/XBTcDlzGpEDclUNSEUKgSMIS2YoEP4gPziXerIGP0OBb4xKhC7MMCX3I+MhHg01MrvJ8/9z64wCS/JH5aSlt78mAVWmVBun7zHkiB8lnyPPBUXAJUyH5MSbV7vYAKT9spCkUOSJsag3KFFcCbltyji4h69wg6YD9/7R/ILN2HWKTdzF/ff6ZmgVHtGPwhClwApc1Kb1ZwXnQA0lti7tCzWG4CQ9+wRXE4/rxh2rJ2Bc6eWuqyfxJsW9dH5Z8B9gfuUPnta8EEDtP4/dWAMbS9TMbfth92VTu3S7K9C7rM8DViwkRMX5fNpkQUYAFWPRpzgTCOT1YCnaJAmFknvneZE6F5zx2cAQMGDOCdxNtIY44yXg+qfXx9RyRLlT3wss+N1GGforioJZcmv/K4uTmItOC0hb4JLBbE4xj6ONczDmnEMdrnjsmpcZ5qfYNHKz8qofUpG9PjpZTxbSakHYXy7yv96uPVN3Xwo4OK9iutrbNb9PDLLMqwn2qRrQvpQzNhPxkdxLHhkRKd/F2E/YXE+Grp+IYaffSnbkvC3LJSIF6oSCQaP90qoj30l8SN8ZmVYmFAmqeOA8T7VclDveWaf6+3W7W0LCDtrwkkn6/RLKDezdQ1Ea/ni9tj7Y7fUKu7DU7SfnxipV3AO1axAeXjVPt1CqCOfp6yKriW7JY1P28C3EgENCM/szthwO+T3L+A07vHSycImj9KhgJL+xkI+OTXXyzthxaIUjORpf2wAj6F20eW9gMKRBULIcfS/iTqR0/vvaV2WzE0WnqhYLF6E7A0teiPAOGLr3qNPuq/x28Q9C4cYAYfwAAAAABJRU5ErkJggg==",
+    "FaHandshake": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACSVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8+w1HyAAAAwnRSTlMA/v1+yAF3ZswzBuYDAhQJ8fCABedQp/nFmuKZDQRr0h1qS/pA6gw6IPgaKa/32PxhpKlR9pQyNxjC6zHWdBK3eRdaouUmy6wwtjV4Fj/kgknujPMQlr8+44HEQ8ln7Qrydrndvh5W3y9Yrbwc1cqlD0KF7Iooza4Os9e4+3pbf0HHRoknLJg2wYMhxmRFiGkHSu/QsZJU2n0bwF6hY6bphyVobQuwkXJT2RW6mzneXR8kSIvObE3TtFI4XJ89wxO99d1lSUEAAAAJcEhZcwAAFxIAABcSAWef0lIAAAOUSURBVGje7ZjlQ9tAGMbTboXSFija0iLD3X24DJfhDNnYYLjM3d3d3d3d5f3L1rsr7SWDQnvptzyf8r65PL/kcs5xkiRJkiRJkiRWuQXolVaNrsFJz+AvSlr6gCxH/QvkQGliHCdXh4BQ8gLH/FfyXCY9cDLeADNoAbv/WCBO1iwGEIngwjOY8sHJ7j4AkQh8/0x3nCwNBxCJwPc/RZLBcgCRCDz/5N6ZoEwEnpVuEOc0hwAcIrjxhNviTvqpvrW42JlKmFsuqKQH35HjF3FFRZRUYvk37B+1ah7+sBAVdeXn5gD4LsH+dUpwDkCbh/1jngqt9n46uV0MQAr2P1gudEpTcZxPEjtgEvev6CahURvOG9kBu1BUpRX6eOPvUvQwAzLQAKf5LBycg0n7Xsb+D5QoOCsw0Y2Q928WoRWloWAdv0DLPuzvkypGMy1DQSbv/vps7L+iWpR+kICCWvq2IZ7Uv2aDKIB8FAxTd/MXWYaw0gwRALISFCVYbvZ40IOkQYSe/BiPjtPLiKIo7Jx1hUxvJb/YAZ0qFAbeQTO94T7xjdDCVrJAUhnZx6L3pDqC4rPfKshleqIpvY2MsdzpcFaAzE8wPZ1IxvlzS0nYEck6H+he0/aao7LpedqFfNGbD4wAkL14ZvE/cIS6ccuTdDl/RgCAV1s98vLwq+SvWjaRTqGolTMC0Gd09kfK/muUt3+SDwvzYgbMoh0uhHB3wkkAACPuKFzgQ2cBoCuH/AhvmZMA0FBDqmnwr5MAkHidEIaHnAQAeKTBhN9/nAWA6lYyjRptALo2ax0HQNJGUk0jVoB2VE8DQk27R1/HAeAVZh2wMEBt6uYfrQC1ZZ3jIADkxQoeAK/NfC2AchR6swAAUoNowG50pbZWkcn3qpoNAPtpQEMcx/XSP3nAv8m6nP7q6hpiPyCxkABSyMbFv33GZtphfo3WXPsJ5lkuwlY/6J+uSM4zwW6AeXr1GZodEFtPTY8BdvrLjpmf7NbNBtAf5k3wjfYBLlgejK6gAZb9Zl6dcIcbKrfDXx1HPRlHbWNt6VLsvP1jXzp0ZBThNZfx+ejLwrHCLlWpbftHxnCeN2/4F+c4fGwXk2TLP3wP+8Fg4XEbgFAxjh4FxxTtZdbrAHEON1U/KP+iB+YVhEm5KrHOT9NfTZ+N3EPD/vcWHDzfIt4Jrfu75jHltYtPzK883jhQMeWnkE6uJUmSJEmSJPH0D9jz7kS2af8nAAAAAElFTkSuQmCC",
+    "FaHeadset": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACT1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9W/TobAAAAxHRSTlMAAvIH8/z+AQYDBQQbz/1s9G3YGfEcEbWbtrvu1/tGbvklIU6ZNtBzOtkav+31O3cI+oiAV8iuuDfHZdFvMbfBRcDdPevN8OWqr7lExDj2CTB+a3XhHWAsDVAS27zqJrHaeJx9sJG6H0OGyQpNLtO095Ue7LJis6NBolIze6ik52aKKEzSDpR6GL2ef+aEakuT1lWYWp3gX0DGZKfLaUrvKwxPl9/kh8pJjAsvljQVOd4+JEgpkHYUmr6f4lRjXCPMoYHCaMIlowAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAABMFJREFUaN7tWfd/1DYUV27kRsblLrmRu8sld9mLlIyG0QAJJIwkkEAZpdCyoaUUKHuVFrondO+99967/sOa2PdkeciWLPND+kE/SXpffb+W/PT0LCPEVNZN9fddmGgZ6Wpo6BppmbjQ1z+1DrlVys71pOdLhuL/q3f8BnH24G8n10rU0n38bFCI/tO9xySbsuL7Q47pp1aVSiwlvcAR/eQSibkkm7npE02lEk9Z9QUf/zPbJc6SuS/ATt+xTXJQ9j3Cyv/SRePosfTRaG5zIREOJwqbc9Gj6Roj5onlTPSBH+r0W2pfT3NIDws170z7dcC6VoZlCr6qG7W4tZqGrW59QAc+FbYNOknNgNLDbdb4eUmttx23iR4PLtXAbxyyn/LQas2Qzi1W4C0fktj2ZWxOkdtBjhp4m44MDxLAht1eVrfzTpPRtraM6j+/ELCb23g25ucjxNB7ab70JLn6Cc7QsocY3GeOeYPwh70lvMErcD/he3eZIcpXqIA+J+H3JvUBt3cYzaFhlf8VZ+fHIlXhUeMKnFdnuMHpCdWjcuzU2/Z3Y9sV50fsx5hkbUFnOolNqwPOBQK3Y5o9Wss7qv9vFckSEu9hoqc1IfQrvH8XIKEyiff0reSGPoF1d4smUo9jqhcJF22Hzh3CuZo3hqegHlLPYdWPxHPBHCbrx3134wjkRi6LPWkx9LRhzXNuCAzhDQ0Ok4KOw+6k47XA95nSPogzkDZ3BOYB35uKy/xhWDOE7okOxqpmuqoGopbnmrd+QIbFBiMbkfGdKq8ZH9qtAIg/T2Q8FeV0/vIWInvahYEbcMYqf8CMQdoE+c8tPk2eUEGdg7dFA/Q0gi48XyZErlgaDo5KXTYVoQnU64CV9UVDJ/RMzjT+gUZP8fn1/NJCmsCdemRlcQ4PQ8f0TGMCGspHRNxnSGo9NAETqHJWfgntfxEqAdSYEjoeM0nMaQIm0JTyYQqe7wmgP8G0TfFPv5iAPy5bfoZ2AZ2F6kOm741XQFovW96FZiOahmpUtiwRFUgqngjN8+gUVHOypV1UICZbvoXm32gNVN+iOAangE+2HMKZMBqF6n7qGC4BBVyA1mvoV6hudVPgR2i9gPBVR9BNAS++LkE6FpcEgmpz7gusLFbev1YCvcXKB64KhNVmsHd2Dit7g9dKwDbEcwrU2AgIx6KsjYBL0bSMOjYiKvC6zQw2Cp5odXGbGaBdYgLPIjuBco9IVlFTbSuAGkXyIrhDCFnNvp45s4vq+aOIRQA1alepgnr/7a3Qrs9lxCaAOlKs2TWhUNdEXB6G7Bwkvr42O/sKfS9HLO/vg5GFMiybfCquuVqx9UDBMvcFSq4L/P8FAtcF5qTAspR8PTJ79ZH9adwOzS1wm/bXiDSct4R/gm8xGfm/zhh+zFn+07qE/6UyPn/GmD90fWMxAKdXo2wCS81SrE6LjYxPujNs79f83+IB+kU/xvzOJJAyF2iiXtodwVcX1UwCMXOBLGV9Fh1R/0ixvQKPuYBZxnfwuwiZy5wWErAvaxh3Qcwhf1WeUSDlUGATa5wYd8Z/B3ugG3bEz/EzKJ/hpu/exBXfl3fx+k+e8wTJd3Kw+2tPOzikDjRd9dlzzz82euYEGR/+A6GCBqi645IvAAAAAElFTkSuQmCC",
+    "FaHeartbeat": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACTFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////ocqefAAAAw3RSTlMAAfvCCf7mA1vXDBAHBvwS+P1s5PH1+u5tCAsXafn0xG6Cjw2/CvIPDgLn9lD3qc118OWItnhejKBidrk4ZEFPnNnHosq0sXfOBExRN+EiZUbMao6Tt53AY0TpKnK1XSTJZwUuvoAe7OtvFrvtmnETPFWrTmukQoVm0nCzlDK4vZ5ghKiJrUssMZg2eeB+HMbLSo0rkjARVNo63xs/IKaHJUnP85E0FbpYm3zjH6XoSItNUpUUGVw94sMvIaewU3uZhtN0pZsWAAAACXBIWXMAABcSAAAXEgFnn9JSAAAEVklEQVRo3u1ZZUMbQRDdEEIoIYRASEoKlOJQpFAKpVhpKXWBuruXuru7u7u7u+8f6+XuIpe7nd2zfmI+bbLv3uRl92ZmdxDqsi4zwVaVvh7S4vPiyjjrwIzpFhhsOZSyu2eJB8f4Ls+sHfmezl7UONmNI+1z33Nk9PzaVAnYZp3rAOl73KrEMrNVf1JGN9XLwdizvweRfvhSD1a2bc/l6GuDCeCshU5l/tntmGhZe6LRjWlkdMVtJf6RHgxZ/8RIcOwLEOy5JOef68aw5RWFwQnLKWDbymj+PjZMs9bQBnFVUMG4n5R/LGawiosCuLCVBb0+kn9EEssjuGdCAJw7iAkccybMf3Ixxswe8vMYwb5FQf5iK2a1XbGxC5jBecEwU4fZrb5eBbhGDD/TsElWwq8ZGopNM/5tSIwzz0FqICr9xCbaOs7BDzMdrOX+od5mOshyoiZsqq1Gv8x1MBR9N9fBYDTMXAetqMpcB6NRGQXxZYfzQp52B2koBgZU5XKviv+qZgfJKBMGDODDVYYOBXCuSV4mFBFLNAdU9BcuVsSU0Uurg2FoCDg/KlhTlml00Ib+QNPtobQ9UDaXOcORm0ENZL3QGmi6LuRguk0eBFjKnVLkAioWX3648pgZNRcXG/jW3g3mT3IhBFQ5ZyNKp41Rc92Fr+MpdQ4HySbOumfzHMJOjQpaVenCtxQJgfJuFfFVmyhwLBdOFB+VBFAklLmUN4hoI3iGr9xOCNi80bIVoEr4zUPGEMLRcTs/3YlX+IUCXEkAKMH7TYBshwpwRxbGGcKoIFyOpIcdABLOixDHS8Uw9JCfXMoNW4r5YU6UAHs6LKGkMPgjmm2KyY4/B7cExs38+EaMVEB8NijB9iYsM4cYhsbxY6sA2ydOpYjE4lITJIxnOva3CeAG/sMDyRbieLN1XyssEgNJufDRKhEQuVu1Wt9gTBkjLJZUgH4JiaGjQ46w5N0kAvRLqAkXma5gcpaurE4Jc6KzP5ecUyR7U5WEwz7aWYJLzvDW5K3yKMlDQwHw2CwhOTdSQ1xBA1nDFcDDlsi7L0BA2nXoX1p9j/zkVKYAl9YEr8NUcp0wkUVA8h3aSo8jV0Dz6QIyD9L30qtk0tOTqAIy17Hs1lIvSf4HigBvKdv78JZU0u+FBSQ9Zn3j1hA8rEiABCTFq4hBbiBNbyZUUbPUBKEpyld43j6uwg7ljeyuUxfmptAvCaUJuENtIO2uyoMtRX2o3qrGwQAtyWAGO/8xbenmBCv/U60JjfHot1B7ytzEwl9rRNkC2HhdWd8ygcZ/X2dlZHkH8z+x6K3tLEcg/knF+rtelk7gpsEAfi48byDxl9uN6dzZbxIuRYcb1Ru0lyvxH5hnXPfR2Sbnr040sr/plN367DSUnzspVEv5H6Ub3aPNl7RWrH7ju8D5k6PbUUabP9RLOpVrTie7UDzwDCoyq1fuOB3gv+syrxufMCH1WY4fdVmX/V/7B9t/SBMLQv95AAAAAElFTkSuQmCC",
+    "FaHome": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACClBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9nulMrAAAArXRSTlMAiPkLRAw7VQH+dwMcSfz7zPVkAv3c8BLBIQfa6PdmBOwJDq3REbsUgOfSmUHg5epK76Hk7ipOLxC1+F3jKVIzXD2pRyjNrjLXdRgi60sNMfo2ebzGpzXAIOklym3zkRU5PgXtCq/y07TYn+JM8VH2uFY3er2efx1g5seJJyxvspN0t9sXQMuNK9BP9JLVVH0bpmgGz9Q0WJvefBq/H8RipclnSIvObA+5VzgZYZjUZBoAAAAJcEhZcwAAFxIAABcSAWef0lIAAAM3SURBVGje7ZnnV9NQGIcDpW1aaMsqFJGlRUAUkCUyi4oIskWGCLgRce+999577/X+j1KS0OSOJE1yjke9v0/NvTfvkyY3TxbHsbCw/G/hqzyeBh5v/+GU8tFmorz9yHGYTsldtMhViOS2cUKTXyqS2a3suSkDgMdofWdSpEhWSNElrw9Og3vf7ZJXccWkWAuwrwIkO+ZZCUhIBCzBDOsAjrlASO4iqwDJsUCM74slgPgYoKZ4s3lA+gJQSWDcLGD9alCNv8ocoCwNLehHGtLKzADOe5XVYh/w/AfkkHvbDAPmlCNbW7op3NxcijSXGwSMB5BCCzPop50BwNLFyJrLZuVgn28BQC5PTG+8O9UkAKuQVafOjxKAybO+STytq6vjhV+t9SYAQ0FkpRM/hY6CVwCDBcLv9n7DAEye6/KEjtPPw0tTreIsPmwQgMrTVYic1qN7xIZsnwEAJs/tN8SeM6mRGSXeuqxYEjUgH5Wn/xrptF6+lepCdUBDJjJ8bbrQcW9E2Z6YQNkgqFOrj/1l8YrCdU8B0UukXVpNr48eNN8GsePpXnxf1x6jTAqvmybPnZSrOl/oIk7IsXjKtL6fR6pfQJOnfRvNChdqKHrtb49Cnmse082ZuZKi14onuuXZPKwm/y1xNDmGdMozu0f9oj97RFX1jv3DkgGhI2cMNPPsIWUfR+5esWPUclS8JzoEOvLmEmWWBIc05HlqEnRFulhg87zjsqo8PWmgM6ONlDM19i3HuZHBuzvF496XCrrjesFTNqqNQ+xzsUoYmfcOooqkV9SWldx1ojxfjkCUaSHrNcgdyJItnssRRvWWQNQp2ihO7VtyI043hnB5fk8CA6n9hes1Obx8Uqc8tVOcg0z8TzOLKWd1ylM7+5R6/Sb6vGsiLM+vojwnwEQUep2skVzxerDioKSmXDCVSkmffRWBDOJ1DUxG87aLARjgLwYMN8re9tnudFgOaFQO2285AHlb2WU1wIU+5zIAAzAAAzDAHwV4yev1oADKOK8m4BF5xffouCvkcZ81Ac2VxMeXAXRcbxHx1YJDxxcJj1OWzrhwHITPezbHTFfcLtloTz77HMvC8k/mN/55CtelD0ufAAAAAElFTkSuQmCC",
+    "FaHospital": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAUVBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////JzkR1AAAAGnRSTlMALgmCzfzcLwIBzgrQTDLHS9vGSv79gU2A0eTE+PQAAAAJcEhZcwAAFxIAABcSAWef0lIAAAEBSURBVGje7dnBDoIwEARQFFpAQEVAtP//ocYYJRC7LnV60MwepyGPhNIhIUk+TpVa496MsedtApjq4LxzQgipE+YCAKwEtADASIABAE4cMNDdgyYi4EsI/AXQLeMGDOhzArGA4zIegwBfefm36bqak8pLCcg1lzoEINScxQBtWHnpARNYXs+9NDrdfYQAyiFAgAABLJBtysdSmWeafDWQT4u5Jl8NFNNioclXA/JHquYqAgSib9PoL1qWv46EnSbncU2AjcZGI8BGY6PxuCYAAOQWAwDyywUA5OMBAAB+TREgQIAAge+A/bV30Onr/QyoHXzqGTDggSHK94T3SfwwcANynRXQ7GKfUgAAAABJRU5ErkJggg==",
+    "FaIdBadge": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABZVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9UqgXGAAAAdnRSTlMA7vNm5CgMAgQNJvl3Gu0OUZSZA61Lk9Z4GyVJC5skKdg9QmsJLbPXGOZl6wh5wUWx9JLAIERollj93uNDCg8Zvlzi5/H2vVs8qCdqb7K3VZjbO+AcX6LlIeoHStW2l/6hY+kGq5HUv12gPgVIr7RS95V2mt1hAe46pgAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAitJREFUaN7t2mdTwkAQBuADkpBQpIgURREFe++999577717v99PMgp34XJZZnC8/fxmH0jZCwkIpVdzaXkr5qrW6vdOlK0cTdhUtRfr97+zYJNliet+ftP9MS4o0wFGMEA10fs3Y5AaoAKllC2cb+7MsNvlpMT9VKCcsoWLHA9T4tVUwErZYpgcH6bErVSAtlPd5HiEljcMhMnxRjDAGSZ8h0ijEwwwWgIQgAAEIAAB5DUwFnyQo1G5xNefE0Cyqd85+/I6PNCi/Uxqi9BAm/131B6EBQ4L07P2FkhA0jLDnlpA4JSUtsEBY4WktCqBAW3k+CsYUEKOF4EBlJ+mc2CAQo4rYIBGjnvAAAc5Hvs7B9lHjh+BAf1qji80XEdKdwHOom3CeTQ0DjmulzLHdRXsghNMX3B80EtmlefX/nmCX/TrF1Lnkmqrzclti9S9H1OUWFG3JO7sBJBvwNntaLJGTfQEUk9tLYGehFqTvDnZBQBW6/ZS40H2VrpclV45NTYabB9mga2o/sPuhstjM0DvZtbH9eiz1wTQhRhqnh8IIKZ65AUmI2zAxgsnMIsY64IT8LICz5yAgxWQOYFBVmCQE0DM9W+Be9b+55zAGiswwwlcKWz9tQPeWdQ33ZG9fcdon1j0BSCAfAKsMP0nDL+wNlghw6/cDdYKFeiEASrok3EKon+7zujdqce5/eMGiheY7h/XXz6Kr831HynLukIN+EOc14M15M88vl/jWAEASwCXWwAAAABJRU5ErkJggg==",
+    "FaIndustry": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAh1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8s+2B1AAAALHRSTlMA7JncCtsE/AnfbxKIywcw83xI2iN/IutV+rxfxhZ9ggFJC/iBpdi5gMPHxWiSLlQAAAAJcEhZcwAAFxIAABcSAWef0lIAAAEESURBVGje7dnJDsIgFIVhtFZaZ611nseqvP/zaUw0RiuXSyEx8Zwtv/0WskMIDCu+yjKQKmcy2EVOvn9WXzdzISyVZpkDINABoQNA6gDpAFDaAQAAAAAAAACKAZtuuE26LUEHdsA6vh+fWnRgA8z3j/MFHfCB1bT0PD/QARvoT17Ox3TABKq1DjPgAe0mO+AAlYbkBwygF9sExkC9bBeYAqOhZWAGDI7WgQnwfvVYgQHwcfVYAQnkXD1WQAF5V48V6IH8q8cJCKBE/JwOhPI8AAAAAAAAAAAAAAAAAADwQ4D0+32pfywtvkTs/AKpiGY+v3+5PXlHWejpf5Bh6uTRHvv7XQGckwCMKWh/TgAAAABJRU5ErkJggg==",
+    "FaInfoCircle": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABwlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+V6nZNAAAAlXRSTlMALAEF/q75+oAOd9WB9y1v+K8usNZFQmx5IwmE6zESp+or85EQCnGxgthtBERUZkyPfx2y9cFArEqSNSovfB+qDzjdJkYkJWFr5+wozfFws9f7N9xB8DbbF+VpB+8RFqYGcjT9xKXokJUzvidDVWBf9jJ1vSLMaq1Ljg2TfqIC9Nq7fcAgyhW/yWcpTfJ2FPweelFSXsr0NvIAAAAJcEhZcwAAFxIAABcSAWef0lIAAAOKSURBVGjezVrnX9NQFG1K23RQVgd7FyhQ9pYpsyKKCIKiiIjKkOHee+/9/l9DW2jTpn333iTK+XzeOfkl7913RwyGQ4O0Ec/2RK7dnjuxHRhJ01a7ylPoqhVZDMRaV2GgShv18pYOC1NE1usnvWrVSxqvsJRw2M+qkM8pnWFciKUZRPniQROD4eVRgvybGoZA9gB2T2ZWMBRuWM9j9OdPMTTcl8HyxkwLI2DGboTpDw0yImpKIPpjw4yM2Xy+fsY5pgLXinn6nWeYKlR4UuvPOZlKODtTxoYLTDVO3Eyun3+MaYCykaShc5hpggVfkvOVzTTCtPKJW2GaoU5J/4hFOwNRIX5fAsS3suZuQXiwVsRnOhKzgjz+quZHYaqtks/9Gq8/0M5d8zHKXuSSn7fGGbj4zx9L7+HSu+T6p/nv3yYL6fzvIL9/2rj8h/In4n8GsywG8fOHbrlBE3fBankMvZS/LYS4a4O/4mqUfVFEG+QATtu3A3Ym4HCiXxFjuQfsKQB7TW7wGLDkw0H+DAkvRbJt6puErDkeYbeAAlhlrME6aEl/hN0BC5GLUf17sBWbkfolCxiEe4Yi72cduMBZEOJ7wGG+qLJJED73TIIXeEMGhUw3+EMGNfoZhONRrX4GjlCtIepnYKmXDK4DiKaTscfM2DcFdRiX6KPgdxlFH9QgIJEbALz0OINnUIPfEnkCwLPG5whQgz8St05Pg6DE/amnQR4s40r4BiiDOsIuAhvsXWo7kHNQbaMZ7AK3aQgUg1/Ag0Y2CABDBdlgDBPsCAahYAcO1wQDB+rCIRiYUVcmwcCPuvQJBl5U2oI3iKQt0MQLb3AblToSDPZTx169DPaTX8Nd3KUfLparuWXXW3gBYlbqPWTDCxBuCZWuZJDOK6HewYtAq5KBFV4EGspXtTcwCYhCnGJwH9NKoHyDDUwzhLCLulDtnIRLXzoHKynPQUUroSGFwa3Elppb08oj7d83BQ2Gap3bmho2ZtuM+raWX/h0bo6P69zeTzkE8Wap1XfO6TxiGf3fQyLpS8/S9RfuQAZpNvKgzrUEnDU2kqKGCB017sUlQuRzbODGvV9w8u24ca+EH2aMflcrYSbe9/Q7TN00PU+c6mcsA+o3cVlQ8V/Ckr6/PYRz71fvkwQo52b/J21+DinY8pvdsrNhcZv93gJtf3CpH99q2Ana7cHdBu9Y/eH5qecvkxK9q8EZgcgAAAAASUVORK5CYII=",
+    "FaKey": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABlVBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////r32jLAAAAhnRSTlMAfwkn2/wpgPn6Edoe5ctm7BIHDAvi3VcD5/H7wg0coojf7lPtTSFCluQdRlkoDr2eQSLwMbxkAia7P8XPkdm63j7jxM6Q04mGqYKbH5qZqNyBzS2z9hM34YRl68ytk1WYwUCn6iuSlzX+faFjRCUv1Pg0/RqgCg/YPYzmWoPQqkiL1xumxhX2b90AAAAJcEhZcwAAFxIAABcSAWef0lIAAAKqSURBVGje7ZlXV9tAEEZtbAnJcgMXjHGn2MYmtFADCSX0FtJ77733XuZ3wwsnWplodrWap/C9zu69tqWd0ZE9Hmfpra+uTCVLml6a+frty+d1j5tJ1Tb8YEly7XvKJXxwqQr75tPHHhfw4wM6/DMdj1RJfLzQAbZ5lT8rw+8MAZr2Nsf41mngSj7ujL8+BZxZHHLCVxPAnfbD4vxzXSCQ4Q+i/DtCfIC04HfInQfB3B4Xun+Og3AW3woI7oGDrAmcL3AU7hN3CD2/x0Z98XjfxQnLzfqOU7CA4I/O7q2cNJjCXT6+D+lvNwJ/1wYy5ori4xIMIJ8/YF7cwkyiN1yzUbMXDLLLZ801nWcCLSHX17p+xFz9gfPH5uwFj60bIuZqCJ/TNeQWariOfUy5hgo2EEHWuiHLlDdRwQlEEGs4lkzZjz6jgOhPpLL1XkRQxwSjthcZoI4IVjHBhHVHP1vfRgQraM8ssxsmLeUtRIBPGsOmVezmJCIo4m0/02LiZ6zVIiKIcgwW4+be6sGGh26IIgKNa3aNRNRYTI3071PSEIEOknmBCIZlBZcQQUhWMIMIwrKCMCK4Iiv4jQgKsgIvIrgmK8CevnpkBb+wgZCU4/9EJ1pFTlBBBVflBGWM3yzHr6Zo+bBMzNeDtHy4TszXh2j5UCDmJ2K0/AfdtHxYIOaHW2n5c0FaflQl5t+n5YdOEV/fHC1/k/b+SdCeL306S8nX8k8p+1tiOUfY/99XymPuzsf5C1uXiyVd60qGb3nbXuNvPQT5zwOCb14F+dUgLT/9jJavPSHmd5Ly06dfEvGd/nPyEGgF3UAsmKcWnKEWwP8jUKgFBrXASyw40kQpUPxep3wPTf85EBwIXBUoFP2H+08awwXBNkX/MafpD0H/YQ3NfsXt/mPKDjJJi7yNrt73AAAAAElFTkSuQmCC",
+    "FaLandmark": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAArlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+3y3gDAAAAOXRSTlMAROZvu6qZiAblVf0ZzBIB8/czA17ud+goDvva/i8f4ucJifrr9QLJ5IfS2zAg6RqAeid5foEFTXZXUdB/AAAACXBIWXMAABcSAAAXEgFnn9JSAAABKklEQVRo3u2ZW0/CQBBGhwKdBaugQkFRbnLxfr/N//9jEhMTS7rVbmd88TuvTeakPWk2u0tUguR9vVyu04RMOKw1z+STnUb7VX38Iw/kG/34VHP6rN04kW1263tK4w/iruSy36x1Kk9P6pdSwOh+rNPVz6a4Cxw/zHb1E1T8qJfT1U/Z4t6ufkoUT9KRBDHh8a+6HkswPxYf8q1UpB9fF3QVFfKLB3QtUfwuvRJlJnzzNd29VelaVLw324xfPSzEjMXTil7ElGca2AoiEmMggEBB0LKdf05sK7ggx4bv0GJHAOiS+QNVn0IAAQQQQAABBBBAAMH/Ebh5ZLv9M9jMckYQ6Qum3i+odogAAQQQCA42gBrqa9n2umZ8MMsU2QqmON6HADcgf3AD8gEOi4rKZxZXMQAAAABJRU5ErkJggg==",
+    "FaLaptop": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAvVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////87ucsBAAAAPnRSTlMAIfReQgnbZjP78yX+j9yEEvpASo3VEQaQFDhcYewm7cTDri3SUVZBCG+y9ZjQtlk6fUltkS/UEPjZXSQp3e1pjeEAAAAJcEhZcwAAFxIAABcSAWef0lIAAAErSURBVGje7ZlpT8JAEIanFz0AActVCsjlfYG3qPv/f5aYqCGwkEmZRYjv83nnfZrsTJvuEgEAto3nOv5GOK63Jr7ctNXG2MX6qvzugRIhl1/x/EL5M8OzVvCgxKhq99eWE0RnGoGrBDnUCBxJwVQj8CUF/t8K0iAjKVMQZH3RBBBAAAEEEEAAAQQQQAABBBDsnaCU9bCotCv/yRBA8H8FSSBIgkP0XaLbCxldcbJcWGOUhf089Vhtd7WUX6+wCvsUsta9vC8KJryBCIk5OR8LdwLHFWYhFZgLL4t3v2PUuh1wywp0pIzSoZFZwTU1zQqqNDYraBHdmMy/mDXcm8Ft7lhfLX0amcqPvq9yHnNm8l+HP2PZOK/Jxz/dN+ZH34rbviDt2MKHCoDt8Qks7CgoF1naegAAAABJRU5ErkJggg==",
+    "FaLayerGroup": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAB9VBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8OI5egAAAApnRSTlMAXqL4gG/+s02RxAEC+TwMBO79BffzAzfl/PLxLBfQESkZZuzf9frLRO0zVxZW5y0Y8A1VBzUVLvZ3mR2E0bdA74cGLxA0m94+Q58eusgoCNvgISuxJcrPC9Sq4hy72Q8jqc0JDvvceuFg5iLHqMyd6m70MNW22ng/IMWrsDkaoIbJCpDYFJrDQjLXE8JB6ycxEjY7xoisOn3k6Sq1fOPozq/TtLndrxdKcAAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAA/pJREFUaN7NWvdD00AYvTYJbaCVFlpoyyyUDQIiBZS9l8hUUVFREFGRJSAyFQH33nve3ymyzDXrjl6i78ekeWny7r7v3csBQIConD6nsy8nCmiD8KQzcBO+krMa0GezyXAXMfxpyvQ9fDFEYDXGUqTfZwqBYoSaw6iwW8xXoQyOGyKDV5brgAq4zNYGRR/HZkAVxPCH90yfe8gBMWA15lJUVhrkelvMtyAR4on0PsBdgsTYzyZg0uexdrgneLD0LsJTVhqpJwspKkuud2TBMUgBZUlHZZQ9BSlBSm8vWwkpwsO3IPQ1xlRIGRGmaIrKKuq9UAY1Q/zGU2Q6oIYongQfoaboBvna3iBD+xv80PYG8+BpsZb8KTUARMdrOEyf6zHRdCgVW22MarFzBhQ7Hcq1Dg1Hh5apR9MP0ra0/B/GSwfrqJX5tZiH/Ih9X7Ji2fclxL77h8wWSfqDhusQMsbE4BYg5/gUCC9yt0X0ZznXTg1JRxfH00r0HSXIEirT6N46PsauIvRX/tx3F+cNNtxFIPrDm4JzjLFNfN9dNHAncJax6Bu+I6qnW++iaF3qzyWXxgkv7xpl0PPMaBciVmmyFMvDDfm7nDLPz9QjenuXBfPbvuwVnkusZ+QmdyL4Jq9giKkC0Xu8YfsFjocLj1coTZjXQLnupGXZkDin1RPTisQ5tqw0RYJk4FEZ5z4uXCkH8Klcng9+qs5Ue5VXmt5bpV52p8ACRjmwNktkN7HNGFcyG53/bjtGvQkpb0Lpm8pxSmH7o60Z+JKwIFvMR3Cu+Pp3ojd2R2Bc4OIbszeytRu8C8cXdTcij9y2hteKGQbrZ461NpFofvYxLV+Uzy/KdIT7NOh/oZUyoKeFBkt/DSnhEhDXbiLHm47RmtHuQ4CAfquA1RIXOf3YKy+BZ9l0ACSQ6vNqHqaPRFmsRN6W9RbxRdFzWHq755C1jP9Tlk0+vWeMH4THOvkJdWWfiHyRr6RWPuMNGGkD3Dsl+vfsA8kxHpj/9/AOWV9UbeiVrcbcBVlfJMz/xbYH9UVh6SZJx1sQpeiLdixxXZq0L8oTPmLdyCB6fnCkDsMXpWUCMJmC54tmVwQGyrkyi+eLJoqACdsXJcxsz2/XTAK2L5pXiXNQX1Q9HGq1rg9XE/giO4gh80VhYWS+qBJMYfiixb37IhOoc2jpi4rvAfCiVztf1PtGYR4F74sEM7Gw303bF7n70VShk3fS9EVOvlMk2gD3mZYv+sI+kxx21YbvNOinkRqrf14UVD4YmATK5UWV9JJAQO9zDlleRJwPKiaB/+JjKUk+iJcE7vmDtSeID9Y6fHJXKZ00Ng3osO1Bj40bOmw90WHzjExepIrfPkK4GPZhrecAAAAASUVORK5CYII=",
+    "FaLeaf": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACcFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8h3Fl2AAAAz3RSTlMAGQIG9/v9qv4BcvzMVdQ5BfLo1g8DCECDtt+lvvrApPEHOyMOs5kYQUvliKwr0E99Gz/F7k74Gi7d4twhXqFstYDgvwTszUzSMuHC8G+ytzbbxqdpMNp4ICVoKgvzgcRDJMnTFJpcYULXDfUM6Zbe44v2Zl8msB/nqWuPLXW4N3q9Wzx/5iLHqEbriSetLNFQMXQSmHm8fsGiZEVK77H0ktVU+Zc1uzpjRIerSc+RUzTZulibfF0+hmdI7QqvkHFSlTPYOHs9HsNlhUeKVnenAsnpAAAACXBIWXMAABcSAAAXEgFnn9JSAAAD7ElEQVRo3u2aZUMbQRCGscBBCBYIwd3d3QoUCoXiWqBAsVLc6u7u7u7u7t7OXyoa7pLdTXK39435mJs872XvbubduRgYzMVc8Ix2j6fLxeRHAsAxc/H4B93GBWCJaHzj/Ak+hIomoJzkg8RQJP4ZyZQAvBeHv6Bhmg8tovDHts7wgUkVgR9WALORQZ9vncviQyZtvHmdCZsPg150+QF+oBbeNPFeGbHqfPhHEb+qHzRjlNbaW9+zA1TMowC3qTx1xRkwwdjrUcHqPxzd7e9ixo69ruEF8UAKb12XYIs7GYSLYV3wPo19wDeytOMTy6XAP9K14aN2MCAk1pHxDha2ICwsiXxDVxAaxAfB0U4wH3IJ/AMmwvlwHs9/aUqBDxIsfxNDgw9uOP7Ny1T4sBDDb/akw4dgTHGfT4kPVWiB1bT4EI62TlJqAoUovlEZNT54oAQe0+PDL1R3yacoMIQQiKPIh98IgUU0BUYQNVqi0zfP9iRZWbpfC20ipnsaaQpYELlMilNb5HBnrUKVX9JASM9GrNBGXLL0ooeFI8LnvCAI/NFMV6C7wOd3rxZj6tYNgsBfRBvTzOoerSNtVW4TBMa0XwLGvcOX1FcTQgh8OeIL/pyM0uM1mh5yW3Ra5BMnV8vWJLtYctsbQAi4s443xalNAwzzsvyS9WilgQiBFNXaFG/m7u7WngvWt53ZIARmrMrbMNaHb4J6nXk8xi6oi9Y9ZciiWfYuKHSQX51ATkMm5iT9abNP+J6QYL51KMkIJdADTO8yVeUOOiGg0H1F3tddfZ2qzia7K8hzRSEFfs5Mwszbu4RVaheyc38QI7ATmO4jGnd/wc50JWnPV2EruJUxiYTTd6LQK8vx/Pu7KPBto7Ab949Umr0Fjr/UlQrfygbD/5RMhS+xxvADbanwYQOGH2FCh5/tgOZ3UHLtdgFo/jNTOnyT52h+nIQO3/QS5vpSWn/cMLY2lhJfieb7yjlZzul8S1w1pnwWc9L2Jzjw2yRIhzAPANcvZo9baHs5n/tHhuGv4VzgmEkbbWil/2yoBMNXcM62ZdpTBLTqyTfDmuRGTh08rCqs2/VqABXYBjPCXqDXzbMHckJ0H+n4fcd3MHaDdHPkHJLpOHR5eJrQ4aPZmYfU2/NJHX6EVZoNyaGw/c8jTTfprW2yUxZBfqV4nb2rTUCNRu5k4stsirJe22jXg5VehBteD6B2B/E/bn3RYfK9gjU8yiFMsIvMqlT1XJpcmF79TaHb5H72HmW0zfqNfazzZLKdV1ON9XmBIRfvpddUZKl+wHpxBOxLpwXaxHr5W2M5ef5HjMUSMDCKuOCirJz7n8Nc8I7/BM1pGJP8QLEAAAAASUVORK5CYII=",
+    "FaLightbulb": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAB2lBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9F490OAAAAnXRSTlMAA/qnDXcC/vkaAfj96OTpyowd20TuzoVHzfvcnuao6/DgK9BPEVSXNQZY3uND7fd2GT3ilINZoedmBDfHzFCdfhyi5Qf0MHgbSU4Q2RW/oAUpD4AeiS6pCJpCI+xrCS3SDlEydRO4VhjhwoQik7xaxurLSu+NbgySttoW3z+CIKaHJasLL3K1U5uBH6VnSIsKr3G0FDjdviitVV6GVPje6wAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAA1BJREFUaN7tmWdX2zAUhh0y7CQQSAmEsEcIBAh7lg0dQCkFyijde++96d57L//XlvhAZRL73iuZ03IO70eN97Et6Uq6liSkvv389X1/dVauN6s6e7aldZ1kpXb8aPOpy5Q5F3BZZD/TnKUmlW/aivc49F5WDaX0PhC0P243sV9QyhWHgL3n9WUVlO8gt7/joYrSwDs+/303VaSyuQa7creKVsEM3T+2USWotpP8/CR/VS1+TPM/na4S5XtJmj+jiQ7esb6eifJxt1NJTghtIADaEidKx5bFSqfBOzTj/VuX9y0b9vytdRt9pR6sf3mRvmPdh/VstSGgBhs1ri8LzJv01ZsNB9qP8y/N1fXK2KqrNRzkP8rdhQIM6P2X3tvW6O9KTzGdq88x/lM6j8zF599bj1gaCiYovdWN7+L3jzShltt92N82yHZ4ohW6gjJuPdfA+3RAN/+1+emyoyNGDATMsc2HtbIgPiRVgIA8Nj5o6zci4wGjkH8/27pDOxU1UaJqPyEMebX4Vk8K21UAoIVp+1WbVrStYTsAKGTa9sVLGmkbjx0AhJi24XiJnwboBgAlTNuJeEkXDVANAGqZtkfiJRdogCIAwMbiaEIJQl4AwIZS90LBEPF0oQAA9irgNN+/DI5gAIBdtYrTbbZ/JVcJAOhWBZUBAGZFAfcAQFAUcBcAVIkCjgGAIVGAG9oQbov554E7WoUY4AwI2CkGuAMfW9JE/Ntt8MHolAjgBeJk51b4/ZUGvusNWvmo0/W8l9e/bgp3QfDzAqaRN5zJGj7/Ewewl7SAzOMvv8FfM7mWM+EaK42fpPufp1zEpYYCqv9gg0TSZ+JyS2mkpluu0gB76AmjbRT/VxwZr0dfCGeVazw5tRh+NeTwZQXRH6mXM6056UOmBMt5E6fnrLmWmWR+Qxj/MoEsfA4GEBBJjp+F/ceEsu+V4FSVO4UA0lEIcEPwB8KlFVpjS3LlmftnekR/sbSIZQ4QOUhzQKm0pjX9BzKfpisNkFcDQP6ngFQLAKmrHlBs+ofRAsBFkfwWRqa58cMWABwmyYs0hxWxYsQY8MyaaFTIm2nH6pPBRyq6ZVVADScHRKwL2fn8qRWcokmGwR61dNsJP9UNRPvHEWTH36tBWf3/6rnnAAAAAElFTkSuQmCC",
+    "FaLink": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACcFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8h3Fl2AAAAz3RSTlMA8QoJaQMC/gzCAesN7y+s1AT7qGruxA5bmLr8vhdPgK1Zhi7nI2tlkzvlB9XawJEQ+B8F8jOIxVMcsVTXhxmwjNtmlBNW8I6yUNa3+iGNMPk1eAZtCzT9Q5Ueri2EWskbqexMj9Kz9rgYPOEiJwh0EnmdfqJk9JJzEbZ9giCmq07zltl3WF0+JKpsr5BxtFL3dntc4tHkzChVyokrV6SFyIpRMjd6vZ6jS/Uxwcanlxa7nDpeP2NE6WhJKnIVmzka44Gl6Ejt0w+5n2HQy4tL4xJkAAAACXBIWXMAABcSAAAXEgFnn9JSAAAFZ0lEQVRo3rVa90MTSRSeEBNCAgQCGMALLWABRJoiRUBFBA8FBVRERM/zPHvv7e4sZ29nb9d77733Ov/SbWY3knkzO7uT3byfkjff++bNzNs3b2YXIQuyuvi/toxSB67/JaOtfdVqZK+sLJmNaZk9K2wbu7v5DubJzXkuW/gLpmI9mdptnX7zo1gkf5ZZ5J+ZhsVS/5wVetcz2FjyMuPmrziGzcgTSXHye6qwOUmJr4ekR7BZuRjPLHlSsHnJS6j/EclNqP+KOMoS6r8i+Qnmx/gp6/OTk3VqZcgdCudm8R7v4y6L/v9WmPoQ0T/nCxYw05r/w9UUqDqLQYxa4U8u9AKYd1cyBN2zwD+Og9wBUSP28iOvH8BaTPD3f2iaH6HgYwDYasjv3c3jn6gHXwKQ9w07+EnCf0UGO2noXSP+ZyfI+K8IWIUiA/7gj1L+K7KHBl836GCRpP8ILabR5WL+r3sk/UfoCMjZYvRRaX70B40PCMELA5Lzo0iZzAgWSfuvhB1tcUNYY5XDDs5qLVteq2nR2XKzaYt/RB0sh/yTtYZ0khB2OnlGT9ImflEH8wH/O1qpk+5T/7/QwdpU19A2M0Qd3KSxy3ppfowXNDI2I8Cp2wL+VJAlslR12DemqtwObDbsBVEREnSwFDjzKdGGrsXqxtPr4L4IbDJEM1QMCgh1Bd6jtR9RJrNgWBSKOljCy4sLlwGK4tgQZfbkW2zsd2/bqP0sobHziXIcUyC2Cvgb2P03X1EPqb/30eAr3NDFeHfUdhLDjwt09vfp5M9kGvwNTxkJlO9V2xV9TFOlW6d++JK3Yi8S5SV2gzioGueyLV/p1SeHyN+rNPpnFTSXHUI6aficaejSrX8eJ/8/AXuTVsgNMDn8O6J3vgXUabW69ZUakR8Dg+kacC2sA3IqiL5LXPnG1m/riKYjmZ9L0QX+OeAsrZxG8ztjz6fr64huAW3RdyQKPgM6GOKkliL6bOA6R7W+TJR5mJvtlMe5j5dx6i7HqKq20gMA9wPZRNkNp+JCFA5CKfkA0f4ecw730PwnAVObem0Aj0WBtfziB79CtMO6/JsdwGCvmoV3wiEEBrS0XErr1euV83r8iL3/WU70vWx2matarKG1O4jykB5/AfuQF3N38Ihc4hU0z8dmWobfxd6P1Wib7RR2CPtIwzZezC/l86NmNrvsibY9YNraeZuRmlvQUOR4z/CjO4L67Qe4/HgO0U+jlYc1+Mb9b7rZ+0+GPzumdRVonKBmsCZau1+09ZbADkqo5tfpxjfUhxYMrFnUAby/baIH6WyIbdz0LbeoTBfdP8M7yQ8AYHvlWKMvzD2I9SSZr344lUzjw6zq0zxdDKL3XdEMtdPYy0EW0jFK89c1YIkKtw1cePIwW0lU5kS3tPdhWEwRdZDBC3NGclvW52/Rfg9A/mteUQelEs6oGYdJH8IZQk/T4BVG/JNgcYp7xDagRAhK+4//QjIjqJXmrzktNinlFz+m+UFmMYyiz2T5N3kMOgB58YxofTn8AcOwA09y2qCU//iqYVjDhH9Fxn981G3YQSMw8QUl/M/vN3GrCPcDv9c0f4rHBD979HyVd8URPz8KM3vyLjgG92EL/Aj9y5hm0bfeB5qwFX40j/Na4MTYFcHgiRwe//hU8+/2eG8+HWtOvb0hs7X372Od2Jr/irwk//JEwv+IHEwwPzpdL8cvNT9662yj/7zznr3+RyKpKKH+R95jmX2PWOVB8UmF3xT/OWfc77ozzazDeVdCvwZwnLT4vUGZ+HuGrlobvsg4rktf+atN35SMcukbCtzILrk30gLvbwtvIXul9f7d4XXlnTjtxnX/jNshK1T/A5cWLGcTiJ0aAAAAAElFTkSuQmCC",
+    "FaListUl": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAZlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9FN16zAAAAIXRSTlMAmdYl7u0G5YjzJNg9QtfBRSb0wESbv0O+8eaJmJw+modlpBftAAAACXBIWXMAABcSAAAXEgFnn9JSAAAAzklEQVRo3u2WyQ7DIAxETTYge7N2b/3/P9lLFQGHXsA9zTtOJE+EEvOIAAB/Ylybaepfi9D408Bf5lxi/rPgg6IVeH9nPnNZew+r25Uj0KYiGvxs8woMR2JoDKPdLdCxBZoeYaTcAo6GmjDpExfYMLHSBRfpI8oSF6xhck9csIRJl/gzpdlPzml/tDdR/nNVGB29KqgtnfmtxDrNt+N8aqEbYVeZtZnqcPUCAGDXsGvYNewadg27hl3DrgEAAHYNu4Zdw65h17Br2DUAIAUfz6eJwR93kT8AAAAASUVORK5CYII=",
+    "FaLock": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABhlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8dk3SyAAAAgXRSTlMA+O3XmfYBgPPuJzHWfoP0JA/YPd2b8ELs8RNBhEbrVZjBIWQCRSb52sBEJQtTlkMz/L4bCbKxnFhXwwQ65yPIqSgt0g6zMjfcveHMS9ENEja8O+AcQOrLB+9Pc7v+5KbpygarSYwqTnI02f18vz5iZ0jOCpAu0/eVmjgZjo91CHQN2JbzAAAACXBIWXMAABcSAAAXEgFnn9JSAAACFklEQVRo3u2Y51cTQRTFE1LYDekFCL1EukAaJARFpagg3QJ2kKpUBQvW95/7Ed/sLsxsXs7xw7tf5977y57ZmZN9DoekSuO/Rsfiene3Hh9L/BkvOUiVK+Q1QNJGir/J6rM/a8FEtT+yJPUNg06wkPNrQ9n13s56uEItx97y+iPv4BrlF8vpn5mFa7VaY7//SRIkpDXb7X/kBCk5t+z13w+BpDwrdvpv6yCt+g71/rU5UNDGpjLgDJS0rdo/nFYDpBVf1tQzUNRESglQNOuYDDb6BgZ8jU2fzVZvKt1A88aCl8OX6/vLxvWPKrfSqSG+vosdz403uMqBviOGe3yi5W6P6HmjcId6hOytx0bT99fieY5IAwpidMnMdfFFsLVKA9xCstrc1iTYBqUB73Hw7YK5beop9rlk+z+9wsEDK2MA+z7kJAE1wqPvWBnvCcZzSUArjj2wdsbtHeYTHBuxdk5jZ6ck4AWOtUm/bnuSAGHvgtbOIHYGJAHVUqdAzckABjCAAf8N4EYiGoKyFXJ96zOt72oHMvX2G/uPdCCUHjP8ftJ+gKqwAMgAsdqF/QVyDSHAKD3AjQBRegD+I6nRAzQEgAqIAQxgAAMYwAAGMIABDGAAAxhgD1CBj8BkpT9j/QiQoAfgoX0fPaAODyseUvf3CtOWjpYKj3McsSrS/phx5NV/SNefCZtO7YbcfoLzoPnd/+7vX/GvahIMuju5AAAAAElFTkSuQmCC",
+    "FaMagic": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAtFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9vsrUyAAAAO3RSTlMAu8A8Eb9A0BTMRMQnP9ka5izpCdq5F9UbChO9d+j11gsEzRgDwWMqYSjx9sIiCLf67wz5IM/zzvK+w+Y0XgMAAAAJcEhZcwAAFxIAABcSAWef0lIAAAKKSURBVGje7ZjZViMhEECxFRI1GpfoODGJcd91dDZn+P//mqymgaqC6i4e5pzmLafIvXRDUwVKOc0YhTUipNT5zdOvx5+DsYo1rauEVP/azlqvE+Ebaw0/pDY27aId7EcewFrND634MYOZdjHcUJkfMehpD80MuXzSYOY9gHGur81D21tRPmXQ8w4aw0OKkI8bzLKDQfGBAuKjBr2M62QBzIcNxHtAQxgfMJDvAZtknO8bdoqwR7ETW6btlvOHXe38HN6iowefIvzQvPH3Tg7XwGfA8L7C3yoCvlKwIVXgbXYAHzOkvSJvuwb5qCFlkt2E489vdxn4eurOdAdbRwGeXD/dVcgz9MbgUqXxFD8wDOJbBY/vGy7imx2TPzH8KYVHKdu1UvH1U2qXZ6X4W1rCYYxfdXed1ZKaMivy7V1qZq/IL66Sa5NK/FafUV2x53fCb7PqQ2/835+j42+zKlyPb+3rC5+fvv6n7ejQ6XF8Jsz3DMdfxPmOIQu/ZMjE/zRk4y8MGfkzQ1b+xPCjFj/4vsL2Lev4/dbwG37Db/gN/7/gG5N5/Frn5dPls8D7pw8A9fn0EUZg/ZCHMAE+eYyUWP/UQViCTx3lRb5f4jJCgs+9v2XyK9zfcvjQrdlKUZsfuZSry49dK/ZbNccP3fiV7s7Or+uvH0wxu5q7EclfxL3lX6H8iN5bfojlX+RDGwnmd3Cr+C1YP4Cb3UCyPoG26/eeYP0DJpz7oWB9BabMzp5c/QYn/RRDan0Ily1xQ3L9iRReMQOjvkVKx9uhVP2MFb/UMzDrc8U1yPBxgxQfM8jxYYMkHzLI8kODNN83yPNdQw5+2ZCHPzEsMlDRV5naeHAxeijurmRo/wDDMIQ04lTHkwAAAABJRU5ErkJggg==",
+    "FaMap": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAA51BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+mKIV5AAAATHRSTlMA2zx/1HcBqtUqb5HE3SJEFwIr+ZkzgPsSwaeIB/3352az8NZVZCYRIAbu44tN8nsWQgkO9hPcQQMsUDFaHKKDT/S7XunzgRRX/DjDOQoFDAAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAblJREFUaN7t2cdywjAQAFA74AIhgE3vIUASOum990T//z0xsgm2LMltfAize4GZ1ertWIaDVhAgICA2OeQs/khF2OLq+oOZW0iigr+gZCKcoU1rCM2O6M3nlAJCFmBECKM56CFcSsnlJRHn1kBgozrvWHUtV65UbFs5B2DEzvaWv+0PG3vrKmfqYFddp0jAp3FzX7GX0JtnAZ6GnOsS6+nNcwCeMXxJuhbbXxu/AMM4SY8pK83X5py2CQ9wG46TdQDNhzZ9Bw/ACLWsr46vXmGsETSFVe4NLA28aMJeINyiSIB5iAon/xM3MIobQAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwfYBQ3UIsb+ORsMMG1aiSgrrGASr1k3VjqZTUscPo+ZDyCt+K+/dKVZ7CBceOO8Yxfy1XXvbEuZQIBX8/9S4F+iGL6mH71nU1n/AKilP8rI1KZvsa5vacYbqCg5GRbjT3V6n57zh9IgwTszRPAk/NkfRoOgGgeR8vKdebVAFOgVCLpBlzN235IvUEz6CDLMlYArXkcFzPjD2OqhZrFLQ0TEKUFc9XZox5hmmhO17IyjGYhIDY6fgEW4jwMGPFerQAAAABJRU5ErkJggg==",
+    "FaMapMarkerAlt": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACN1BMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////ZmOKXAAAAvHRSTlMAAQMFFwf5/fz+9xuu9ghzBvAE+x1QAu8MFvjZFe3xiUKp7AlRdTfCEuU65CDuEFfdez2AHsPSinCzNc1MLddW3HpbqNGTdLzBRYisK5J4fT9EJatyd1g5fMSGJM4K0w+Vdjhdb7uwY6QjyGaPlDITuL3hYOaEIsdlRusnzPXW+jZaO+B+X8Zkp+rLSo3QsU/0MNURVJfawF6CxaaHSYzPTi/Ult6/46VD6Its8nG0M9gUuZq+XOJhurIcNIPCva0AAAAJcEhZcwAAFxIAABcSAWef0lIAAAPFSURBVGjetVllc9tAEJVjxxCyXYcccpiZuYE2TcNMDWOZmZmZmZkZ78d1pp1OM/bu6UB+n9++N5JOewuKwgaf8rmS2eLcLKMxK7d41jX3y0fRED9Ly2KIG+w/pv21UU+YmjEREObvX4Kk5cOn0wgFJwrGpOT1SdFEBdFWvbh+/ihhwPtOQfmgcQthgqXVV0Q/cyVhRsUyfv3OGMIBeyyvfqIf4YIxh09/lYlwwrSdRz/ETLhhWsiuHxtBBGDcwarfFUOEYF/Bpu9bQQSxm+1/GCfCaGXKDxZxA0uHuv6CRUQCo+qZL4lI4Y1q/o+XM4gPVzHoJZKwqtyPL/BQc2PPpFOvd05aUyg/+mb6LTqFBgbejvpPc7oCUWId1WAGC4tzKyGCuzHmepq+P/LslgKdO1XXiyRcE62aKeVJlDmIwyuKQRkc0gaz82B2AOUvtsPvH6HrmkF6Fl5VlsPnB32pwfC9+g41OAbyh/BHdoEB31B+Cfh/ReEGBvDUNaH8sxD9Gu1cF/F9ZTBT99AMGqCIeyj9EERPphmkQxGPUTqYqqNoBgYoYidKN0J0G7VAgCIiULpZGwMzSg/U5hXtQelhEL2fZnAQbHpQeg33HTgBRUSi9G0QPYVmcBOKGETp9eAnc1I+AXgl3EL5BWDucuEGd8GAAbytgdN1MMYvhNP1fdTgA1yWduuQCycAvmBT8Uc+A1+CtTC7HWYPUw7FYeTSBzu8PuTSz6MY7ML6r1rPsmUA6xOpPXMKVk41u33pwgCM+Zla2V1GK0K/EsO88/8Sb6ND6O1HLqVPLWpIN9hshvSkQUoXfVVlFLZJtnyvU+ugIuX096rO8kLkDCrVu8CPMvpLGNrYKoe4/r4Wlka5SdxgC9sooVpUP5Jxytkh2Oub8lnHLZ/EDB4xz4vGMkT007LZJ1KVIgbneGZq9fz6y7mGgtlfefUzUvnGjks5T5LlDu/g9AqfwWLuye8IV1qtCec2UPo5ZqeOZJHp+BC7wQ2x7cRJVv1hm9gCoYpxAOzXogjCymZQKrxiCd3AdIuFii9x/KPV9cMKZdZQB9QN+uT2aMfV9J9JLuqyN2qb4zzxnLpsMcUq0lhNMzitwbLUtxjXv5igxTr2ghHTj3igzcK3DTOY0GhfHfoE1i/SbCueCa6l7Jna7dyPQAbXtdzqx3FNkAVw6alHHbdOUwOPMsZyStEYa2TLFNUF/MP5+tUjmhsoa+f90I79ihfQzjbvkPihG//pH/XxioGy9fVf/fNdipeQ+KeadIQoXkPy27CwsnKukN8qqy88IW8DWgAAAABJRU5ErkJggg==",
+    "FaMicrochip": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAkFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+X6JXfAAAAL3RSTlMADHMUREOigIh3PN9w8+11DXTgFd52mdbuJNg9QtfBRSb0wCWbvvG965ghnL8+movXQ08AAAAJcEhZcwAAFxIAABcSAWef0lIAAAEXSURBVGje7drHDsIwEATQDTj00EnooXfY//87FJpAAmm92LeZG4o0DymQOcRE35OuhnMWZz65GLLJbMrWWSzl/ec+K9Ifib+/qp+5PhACa1ZmKutPWZ1QBBz1QCwChnpgIgIiPRCJAP4jAAB4A5q18j0VF0DlUVYLXkDreb3oAig+P+Ru5Z3QmIIfoGBMmKf2+3W3QJbqZ517gP0DVb9Al/K+b3KWnM+faZagV7rHuADMo6wR4GEHAAAWDYuGRcOi4WkKAIuGRcOiYdGwaAAAYNGwaFg0LBoWDQCAv1/3bny/sE5EwEoP7EWA0QNj2bGErbZ/ITxXcdix34MbNKqr+sVHT4iWJ/v+9YBsEsaJxf8hSuJf9/cKUNyWsXzNhyMAAAAASUVORK5CYII=",
+    "FaMobileAlt": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAApVBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////Mid1sAAAANnRSTlMA+O3WmTDzLwIMNu7jJC7YOD1C15MxwUUm9JL5wAFEJQuRm0PO8pD3vs0ON73rIZzkzzm/PpqWWsoUAAAACXBIWXMAABcSAAAXEgFnn9JSAAABOElEQVRo3u3aSXOCQBQE4EF2RdS4xX1fkrhknf//03JIApdM2fPIHFLVfW7ehyhgwSj1e4br1kjDGXU/5som9wNtnekCn//e0II0OvD+i+ZrXWuCwFELM8DmD7U4Gwi4yoEAAlpyoAsBkRyIIKCoP+QzpD+Lt8UmdkCM/q5DIZCgQCIE8FOfAAECBAgQIECAAAECBAgQIECAAAECBAj8CeD8yS/87LovBLYh9BmS/osQEIQAgVvAYV9fLp9Wnisgy78KceYGOOQ/jdhzAuzLytgJUC8rbSdAWlZS18Dj/zxEq7LSqwTsDBt7xQ0onBgqO1XphXX2LYTPpoYPAWvjeeqN22n62ptUfOU+l1/r7rB7+Ek6fwr+SbicHS/cUJ2aaD689ESpxZv9/GNT2WQT+BbLHyI/MH2/n3mtaBdgTd8QAAAAAElFTkSuQmCC",
+    "FaMoneyBillWave": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACc1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9Ln5MhAAAA0HRSTlMAD8hYRBAKM/4E98dbqFU2iAVN/Pp4zoABqY9W+5lL20Dv9CXujG2wL/jtGQl6FlnpkUPoX2xHiihMcA5RlOF/HeaEZUbMrVAxF+AcomTqywxzETWc3xuhygZO1FO6/T7jpclni69xHmYTCMHQktpePyDF2ZugqprdQn3kpOcj7M2uLbPXddyePMLriSdqjtFv9ZPWdBK3vFqdO4MhxqcmjSswVPmXuzqCY6Zoz/NytTR3Od6/XYEfYoZI8pDTtFKV2HYUnz3i0jIY8Jh55QJFQLzVNAAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAA0ZJREFUaN7tmeVX21AYxtM2LS0VSqEt7u7u7jZ8wwdsuDuDubu7u7u7u+dPGhRYaXKbJunNOXzI86W5J7fPL3pfCYJw4sSJE6eFoZq4iGP7MpSvnMOVwWWPTwRCtD48kOm90dUJM9T+W8mCJWZ7W1dEFw1jxrWlxY+5OS++ZcgSM6k6dT4Dc6HqXLYNRlHuSfTMO3MdNEsxOvLPo2weWN+7l565TvZTfxUJTpahIhLvrqtt8gKqjraGw3QEcUuf3rA8et+tnPioxOV+OF5tS+eQtd8jon/2/R+KkfMe+p0pRyq1HYq3KJqlEPg8ufymz4n+NRnVHZlnwvbZMSLH4Gql3czJW8wBdkAGYBM4gBg2YMjOEIBBl5ptgE0UCDCSswIaQewtIgIsplaZgahf4WPDMBBNwWsAgBmNQDqNl0YAXZGQ7wgeEE06O+C03F4aYA5g8AfJvctxkUzPkbisFzMFdPYYn/kQ1S+CWYuZATbUGZ8o5RnENT4DQLuDP4l/Ii4s82kCRrf2kF1YL0IaUuhOD2BCocQ4J4MJKAFF0mUQAY4gQCg8QKQEBJCEQQM0g7MNOTTAIjBgOTTAPTDAChqgHQwYhAYwkvaJ2AaUQgM8BQNOQQNUsH2TWX9Mb4AB9mwvFcXwFjsBCCCDuJpmgwAamAFHRvTvhxrRvArx/mnu1Go1qtk1n4cL+qTxrDjDz4pu+s4Xzvcvryab+47HpD4oiNH7v0ghy947mBYgrSrd+2Ct8iWdFmxGhbO2oaroionkV/qH5RLqL8IugFAnz/5+9rxYZQkD8Ht8sn8iBFijIWlnoJ3HF99KYH2QAL0sx1c4k2wD7Loh+4vxRaAFZEAYoU7WwAU0zwEeZYbMALS0PS5tak1O3a2oR1G0VvEs1fnuvArx9i59O0f8tTfqWxDFrH+2pygdPxTvSQzYwsbNDbqXqqkRQVbjrhnVnojrKh+rGpJOYlDEnWuOQVMbYwz6Nev21H6k3A/No7dA2JR4q4T02rlJXlTNnfg7XRIZdKND1K9Nm3t0P48pZd5O94t1JXkZD366eUFi9veAQMcDGg986vHeN/b6NiECT/kPZG1qZbizg1LrI3A7a819PuLEiROnBaJ/46TpR0kNT0sAAAAASUVORK5CYII=",
+    "FaNetworkWired": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAq1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9Hbg9cAAAAOHRSTlMA+O4EhGExZjOZYws3GEFlQGQ/3lzvlUkCQsjCx61L1hfGSgw1Fv7fxTk+Bd1iSI9gjl+NXgFdkIkc+SMAAAAJcEhZcwAAFxIAABcSAWef0lIAAAGbSURBVGje7Zlbc4IwEIUjitysiIrQeq32fr83//+X9QGYEQlkk7hlOt3zxkD2m8kQ9uyBMRKJ1Lruh7bTIHvUNat/es0lmoxM6t92uFSdgQHgjAN0rl//hIO00Qb0YYC+NsCFAVwC/Aag51bUOyrAqd50CECA/wZAP2j0sWsLgN4yYU3/6lLfViwggBsDXzSAGK8LE2s3nMjqP4zNzGl3vGd+51nN+Z75vTM0v2V5GcBD8/IEwAGkLzMPqnUGWIMXzN5S9s1R9cpiXIDFOLLwAehb9IwLeGfpx+Frmt9aegpa5osOX9OvT8HJ0Om0RfcGPUyAlgB7uVDhd/PLcBvULdqtwvyhwgnX5kiNuZDli+uHMThHkuVCQkKokCPJciFLsEu7GJ4jyS1iUgWsFHIkuckV7FGkYIrlNr1xRpPbegIoAMrj6hQGmErH27qBW2sQdwhAgL8OQD9o9LFrC4DeMuVN/6kK2KrkSAsN2xJYCjmSLBd6FBkvXyVHasyFLFtsHX1LIUcq5UIlRUmt+Q2SqO4n6nFzJBKJ1KwfOo+4ZbZ7+McAAAAASUVORK5CYII=",
+    "FaPercent": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACWFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8Oxjt6AAAAx3RSTlMA+fvtBgwJ7v7rB/P8QewyKBIpMGYDCPo/Abr91jfCJhHa1D7TI48n0dtkNQv4zkA0rpc9gA69vALQkruw2Qr38O8vga8E6kqMbTnyFC23mYKbuZjnzbNWeuHHZSyy9fR9FR8kM9W0itJwUdd1E7iePH9gIuAcweWsK2463xvAROmHJcpJELXeGqWQLg+V2Jp7rbaFyKlHa/bcGB2j5oSojg1VeRedfl+ixsuNsU94WcVjaM9TllhdoOND6IYFqotsTXHdGeJhf1d13wAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAABNBJREFUaN6tWfdfU1cUfyEJCYgBAiGEsKE4WCJTUUAEleXAUZZURAVXh1twj9bWAa5W6+yedu/W0eX7t/qpCXjuueO95LzvjznnfO+765xzv9E0AeJnrm7JdPltrq0tS8vjNdPwtZXZXX5d10szexRh89Y06QBLViWa5G/dCMKOOSReid06h5Uppgb4ggn6SujTsDBBFyDhrVhj/q/ZmEyRT1KhLsHsHCP+84NsxKDAp92uSxGXpeZP/hsFXBLwv6QrMEM5Qt1K7D/Jr49dVyJOtUpXsfdoA3ZJW6AboFC+0w/cyNc1zPks1A1RJOP3diDP4HL+/CcYD5AguQ/vbcWeH/NOGboJvC7kDxzCfhvr+PyAXDLmziopSeqvZ391C7PGJsyfd5Z3WsN4LC6Y+j09jzGsFfAvD+IDPSDIn0x+O5D73JKbzRwOPoUNL0H87hcFXzGT+f5c5orOgbZ0HOnksstj0TKuhh4FrK0c2qrwBl/H/DWtogEWwf3FxlpgrEC2XZj/3yHhScsELnOxMRUY81nTcXx7GovFV8UDfGZxSQomJMayOQ5P4FvJXbcBHye3j8BYyqSvzzH/fC2aAaplA7yC+a9JS71yibySJWrD/L/vl6bbaDa50o/4Y9Ll9QIe03psrBEe06Pr8AS2KwrSUsVtZW75a9PJpQ/zv6kqqQzJG53yVFE59fME13eUqAaIZzJWdjLgZ5KdfSrZ9WN+1wvqrmMVm9DLp6c2R3jOs0qNaySLLSigNtXrdHpTa1AmDtfMD3/FE9hk2Pi9bKZkbgh3ucdM1EiMrhhj/phmSQOSd8FEb1xkPMCKkOfPXNN32EzznVZmxD871Hg1D5qpkQKcilPzLwsdxN1HsGHE7Asoa4ay+Q2VEh/XQNX6TL+xipfJ+e3tIZ8RbOgdMv+I03KkDXBZ+KK+j7vcxnlaJIgtEp7WmBVpIfsAt4pPtQjRfIWjd2/rChvP5pmukQokrnUxiz9/uqeu24D5P3No0cBRUFWR77HZPIWXqyodkqrxP9Yd1azEn8EIamQUyGnCExizlN+ZH1GNjBiBR1xqarB0gJ5Ia2SE4Lrc4BlL+fkud9JS/tj1mP/LgKUD/IL5F1+wlP+v6Gqkabzqj7JGmsStE3gCJy3lTzuN+et9ZH0S4iPMv6+TrE9CfIf5G7fQ9UmAcRvm2EPXJwH+OYgZfqTrkwAPs3F4X6jAFSuaNPu4+QEucjXyHFmfhNiDQ/2VdH0SIOUGjmyj65MAQ7047jZdn4R/BnDHfEEDWZ+EuM/VyL1kfRLiJxwSfJuuT0KxnjuIPXR9EiD3JuZvCZD1SaVYf6marE9C3MX8HV6yPgmxAz9j3D/Q9UmVWA9rZLT6JJTodmL+DB9Zn1SK9b2dZH1SKdaz78jo9EmVWK9/QtcnoVjvwvwXrRGhwygZxfzfOMj6JNzge5j/zjmyPqkU6/0FdH0S4DdOR3hC1yeVz5hP6fqk8hlTFkvWJ5VivX0vWZ/UVGK97B0ZiT6pesboH9D1SYB3uS53UYCsT0IBhxPrd1aT9UmIMa5GJpH1SQb4hLp3GCigHsX3i/5Kww/JP+j6JAv0kuz2kfVJhHcYryO7yfok10pvA26eAbI+yaN1+/eNzzo+176J/XR98jn+AwawVFHpZEiJAAAAAElFTkSuQmCC",
+    "FaPhone": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACB1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+QMwV4AAAArHRSTlMA+hY87v74CAH7Mfl9d/2fUMVX5wTl85EV3uMF9/yyT+rxeMQtMhPhLFXGAjC7Bgs0fD6BYu0KMxS53djs2Ys2Qq4O9teZelsdA+vM9RIXooOIB0qxwF7pJU5yWBq/hiR7GeLDipMonmPwyGapzWtMcLhW3IQiRktvDda3eVqdwV9ApybLrO/01RHa3z+CpofKqyqwELVdpc6vTfKQLnEPUlyAKQk3ajuXOmiW4Lz95gAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAA3NJREFUaN61mnVbG0EQxhPiQJImSKBASAkQnOKuRYq0xb0tUKBQd3d3d3fdD9nwtAVCZuVu5+bvze8le3Mz7wzR6TCioqnM56pPjdBpFGuiyN+occ5/tuLzM31kRdR67QYLrkARWR22Lk823n3FriVg1DiflaMIHCLUMB7HENhBFyC2DHl+BmHFgLyAkykwLM1PSGYKpGiQoyHRrVWOLuWRrICbzScxWuboYtyW5Edy+KRL0xwNRpWmORqM53ICbTw+mdU0R4ORpmmOBsMtJeDnCzRomqPBiNA0RwlZJ2MBMpP5An6ZLzAucEO/ZQTsAgLfZATOCgh8lxEoNHL55i9Sr0FjFE/AJVlLi30cgRnZdrP9FFsgVbrln3zJ4tvey7si6ycTXeA8ijV1d1MFzuC46/XUrhCJ5N8TBmF+Itqw03cOFLiPOOTs1gMCeZhj1NVw/i1M/ogtXGASU2APYNw3IvLfOsIFvJhf4CnwiEcR+RcBfnUHHr/vBiCwD/EL9AD8skI8fhbU2Hrw+LkuyHBtwhN4B5WhEjx+A3RB126i8SsD+FNByAM4DTYCvIVUCdgIPuAt6xwQfysa/w5o4KOysPjpsDlFS9GjMfCqDusJTxwG+Q6DoBVpL7rQzLSl1bBX2SbmpbaYg2dfM7xrHnw/5EESn540nvO/re6nGvcFmB8/wsVvjo5bURQfwYdSN1DMYjt3R9ka+tHESshR2x0UvodzN9n5YR/Jjw2fjw/SzG5OgfDdLMebsPocoPGnp7h5A0VpyLmOMTN1bZCu6G6WQl+8sjrsop87Ru0Z8N0sbyaXPKDliJ56ylRKLbmdvGl3779/AzS2MA4doPErzPyFwKXFUaWiinUkmnr/TQIbB9Kmm3toYh1gVCCjiIBjIIWo+/t1Oh+RDtMY6/1ySfP1pcz6UC/Lj+/nGANJfhxv2o4wSfH9U9wGUCfDby3gN7Cd6vHXP4r033nV/CuXhRr8nNrs9xSIGRRrrSp+i0HYQXnVvFy9FtwN7mr/rMjfGpTip4eUmUyLWRG+zK7Y3eYoqTy9T5T7ZPF6V3tX1fwrWu8ST6jcDwjVO5v3Va7qWYJf7+omJ2SGFU69C3gMkhvQIcbNDKYhbCfLYWthds2MNuMMdP2rt5IL/h+/fmL+QiXy8TCJN3ZWv6i6N5vm/or4O54/K1+fcYL81uYAAAAASUVORK5CYII=",
+    "FaPiggyBank": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACH1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9T2eBEAAAAtHRSTlMA9/zNAzsBVar79vgFKskjZgSJEnngKwZJ7vMQ/T5iSg6pa9Iyep7mqEbrjizR1vpaomQCpwf0MHP5eP7kIMVjRIeMsFigH+hITVeaGT3DE085CkLnhewJ8Y9wdbhWmTcYvVs8f0FlCPCyUPW3Nhxf5YMhxuqIJstp740MsZLVEVSXNZw63xteoT+Cys9tC04v1LVTltl3mxrjpUOGZ+3Or/KQLlIUe1yfHqSKlKNL2xaL0zgYL+eBAAAACXBIWXMAABcSAAAXEgFnn9JSAAAC+ElEQVRo3u2aVXPbQBRG1yxTbNfs1G7DDbRJ2mDDaaBhKDMzMzdlZmZmhvsDGxklRVIk7eqhrb8XjTTrczy6snb3jhFKJx12zrXt6qHai59Wz1CDfu2qDhKZW+wgjddnFwEz5vtvifK39wM3nQaCfF89jI01Qoxvnw+8mU6I7/by88F6hoyAAqF0ZpLgzwbhTCAh2CMi0HzE5w+BWA7jC76ICgqM2ILvogJ4jcsfEOeDE1fwexxBK67g2ziCD7iCQTD/+vQz72CbiS9lzuuJgRse19z5StGxyxL8GBqWMiyctSX5Jp9MfjK6sYpx0zKI441LaplV+Uyabytnl32SgvmyIVzIW2NTV9jhf8Tmyy1BZtnynFKx53Qi51xWCfSDt2pBZmS8wV2RsyA/0ktwcZoCvPQSLDhZp4QvuQSOK6AsEktwaq9CvkAJBgxdrPVBX5VSPiytHEP3Ry6PPss9jCu5G0F5Ntk4/NzYw0KlrqzcCTg5xuYXWoAjcPUDXs6zlp1xPkMwE5MPVQ2MN+2B+EXt4sSl/RpcAWzlLgutrfZUZWYBft4kaRei334z454ZCPAhJ7mJu0ufHmUW5QUJAaylJ4uAG6Egfbaewd+tBXIJrkEh7kYlD0jmObpJH6YwBFOJCrSoPTrpNSf5vUA2qDl6sLzriK/Cu0kLjDoSmCe9D1oEBKgE/3cbqyElIEC3rdiCJlrQJCRA67y4gnk0pkVQgIY9x/EEoW0IrQgJC0bT0XcithQ0KzKYGxvNICpI5hDpx5Qbr9oCndqCcrUFNWoL5qgtqFyosgBlqS3oVltge6iyAHnUFriDKgtQNtFJn2/rSnBhoePd7lRrSPGfCbS3nXjYovfxPkNgRGgLeBqHr5HQlddXKOfXrZayi/Ur3iSU7pDYBdmnjP8yILlTcUmRoER6q8VE7JebFvw1Aop3VFqQFvzbAm5bZxHvqAL2oHoZAlcG66MWH+8oTvvtnpzO+xFPBZXMK5/AqGX5qUH5pvT/Kv7H/AEHRlmk8JwC5AAAAABJRU5ErkJggg==",
+    "FaPlane": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABUFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////AowxPAAAAb3RSTlMA224BJf0JqlXzCN/1t3mS/sUGSe4Zep0gyJ5liU81NOLsAxwCSlTeGkgK2D3t4QsvxPY8HcJgk+BFB9C2ENmvkL5vzbn4UJqKLRNW3BijRmpL8BIXxohp7wzanBvAXqFojE6/XaA+Q4Zn8g8UV5+utvzaAAAACXBIWXMAABcSAAAXEgFnn9JSAAACPElEQVRo3u2ZVVMDMRRGg9ZoixQWh5Ya7lDc3d3dNf//jQEKrNwOabnfDAz9nnt7Jpuz2eRGiHT+d5bObF/Rrtn/fy8m9clZ4wb0SGNcTmZAhQkgPcyAbDPAUcxMyDATypkBXjMgp5oXUGQGyIIsVkBunoVg5x2C2wKobWAFZFoAsgQrKruqGVZCOVZUblWtojKrSojKrKqbALCqSojKq2o2BXBEsaLyquqlAEmpOlRvf0v9kLKoUnarq9rp+yhqbiJF7SAJ6qpOfBX5u6gfDJIA9Q2AX1dVVqgqahKqtuurKlVFTULVEn1VfpWqqOqqthmqfKWKoiahaouhjJgGWlT1VXXGWFaptqK+ZkENMG2sIqbBnQCguKq2TslvpiGBqMqqTprKGm2mjCUCOGzWXG3vtAWNgHHJnd3llcD3b9LPUruq03EYQZAtT5+AUYmJbT4O6AMBpCsuZL8DRViseyeMoAByK0Cf9vhy/Aaoy4cBjt6f0QAMcI8GrKMf0QV6ki/BmrYHsC/a/iF2qWiMghe7Dehy7QpDPzixu0LgJ9N3chOEffSfb0/nglzbFg944xVxgreO9t+x+U19+14DPoBo6COUamOqOcVDoOfXHGM7P4fgxxzExeN5vJXwgGklpNYMqRHYdo4mwA2pYnBLzQNuCkac4LZmmHEAIXRjtherKCmpJv5Sez8TqyglacQJviQKsw4ghL7m6sUqSkiqib91WQq/7oVfWLe6jDMcEtzZnNVt/A+aRDrpkHkBKmqwl/BIQ1cAAAAASUVORK5CYII=",
+    "FaPlug": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAA9lBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8A4nJTAAAAUXRSTlMAweXQz8j6B4hu9BsG8xjHbQvJbPzsDlb75vBFxbC/BaoPGT3nBM1wmTzCo0FGidEXWjvgHECsEfmXeLtZwD/kh6vuELoaPqVD7a+VFHuf4sN/qzSzAAAACXBIWXMAABcSAAAXEgFnn9JSAAABjUlEQVRo3u2Z507DQBCEzyZxSXHiEFJIT+i9dwi9N7//y4AQIhHiYMtZSLDze3c+S9add9ZKaeX6yVQqmXeV4tXolB6J3pRI82q0z/be+9rtcmq08qMPjXJqtCoMmnOcGq2yg+Ysp0araEicGgEIQAACEIAAfhcgEtGUWapGbNleRgvwIiPytICqGcAE6PRyJID/DLDN+PfjPmjH+qvCs+O9KvhvAv01FsAfBTh0/x0QYJwOGAMBnuiAdRCgTgdYIMA8HfAIAjzQAXsgwDUdcAkClIpUfyeEDXiHVMA+cIKcpgKgq8eNCs2/cgEdghs0QBs8ZddogE34HG9R/J8RQWGBAuhhokgb73+Fyjpd9J19uoJLU2UsYBWb13Zx/nfoQNg6x/g3CT9ZOstw/0SJEmq3C1D/qXtabD4DnrdmhxrMJ0Hz/EyLkf0Pbn6cVMq87UJ363v/k4C9wJjN6e3ra0Z2JEeNL7/SxdueMqXAn/s0sTpWPlBGFS4O+9dCZV6xLzEFIAABCEAAAqADXgBWRybatlcQQAAAAABJRU5ErkJggg==",
+    "FaPlus": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAM1BMVEVMaXH////////////////////////////////////////////////////////////////x7/yuAAAAEHRSTlMABsjQG2zHzwfzbvRtyfHGRnLvpAAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAMxJREFUaN7t2WsOgjAQBOAttPRB1d7/tBr/iIupiZ0lJswcoB8EWDJZEYY5LqlMa3tmnWrCn+/ntkn08Ot/O/8hoO+hNJUABi4aWMBA1kAGA20XAgQIECBAgAABAmcFXv1iPJ8aip8bNLqhJPD5u4ZSGjyh3y/Gs/T7xXjyl7dwPATOBhi8ptdjP7RqPSpShA87p8Z1tB3XIi4ssCedb8Hxp0+AAAECBAgQIEDACMj9fiH/v2qs1stS3VCiE/TCOtourLcN5Zd+wTADuQPgZ6Q3twbD0wAAAABJRU5ErkJggg==",
+    "FaProjectDiagram": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABI1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+GeTxlAAAAYHRSTlMA/QRl7gsBZsxjZP5epMey9frkykkQJCPNCVEyN1snaksSF1rg5UVK7wyx9BvFYu3igGHIqUeU19wYf2DmIgiODZMx1hzGpyaNK5Iw1fkWWSWrsNQ0v8TJBapICg+VMzhQHGfvAAAACXBIWXMAABcSAAAXEgFnn9JSAAABtklEQVRo3u2YV1PCQBSFNyR0RLooFgRpKqjYe++9d83//xUKD4kj2ZvNZC8zOve85OEm55vN3OSeXcZIJFI35LuL+DtV7HPikSlaWEQ+fK3a1aNuqfBcWtQ+fW1toUczjC2v6TzVPWL+T1GuRanA3nW+VsUADcBimyWA6o0YYBywmGYKUE2KAZKAhcKAoh4QAwQgDwK4A8QCdhpwB7CXnwAE+PcA9A+NfnbdASjuAfDITLgHwEN/AahmxQBNwOKEFUr86vmhEMBT5zokLr5j5Syf0CsYHZ85z++3A64v9yv8Zs07yoLpdP3SKvzucO4eDBuAXQ9KoO8xlzCCApicMABToyiEGXMJmyiA/jEDEB9GIQw5blWn+7YHkzCPQvjRqmfUqvatekStymlVY38dXzpGIXy2W1U5KG9gHZO0WvU2h3gOsxfT77dQT3pWFt9wj5JeT9uXWl7tHIhqxSsLo1atR7oWlOTPTx1SCLUqH6DJeEt5KNqmJABCEEDGO/Lb7tEIQAACEIAABPgLAPSRWYEALxIAXg05trAgH9CQE+2CnDVoTVnh1JsKdYbfUEpa+CWRSC71BQrVGLMe4KdwAAAAAElFTkSuQmCC",
+    "FaPuzzlePiece": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACSVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8+w1HyAAAAwnRSTlMA/AnmqwRO7gIBVQUP9ygIDfUhB+/5hjj7W/3+IELxDpl6PKMiRid0eV+xFqGw8/gVztHq9NobmCPI7GtMjy2z13W4VtzhwvBvULfbnTvG0G5zEZc1WTp95KZEh2iMkS/UclMaXaDjQ+gkZ6rtKfKQUjMU3Rlc4oAew/q2tWJxYK1kba/YZqSFqUeK0nD2lDJ/hMdlA6jricwssjFa4Byi5YOIaawMMFR4wD+CY+klykkQljTZWN4+xMmLdnu+YR+awfq18k0AAAAJcEhZcwAAFxIAABcSAWef0lIAAAOgSURBVGje7ZrlXxtBEIYDkYsQJAUiuLu7leLS4lDcpaVAgUIp7tTd3d3d9f6yNj/C5S63e02X3U9lPt6+vA8Xdmdmh4hEG/G/x9nqxYxuv5bCYTkR++hGMW2K9xWb8Pvv7adZ0bYZt/9DmhvnMRNktGVsdcDp77iTB6C/4ATM8f3pLTgBmQAAPY4RsAwC+GIEFIAAMowAMQhQjREQAwKEYQTsB/h/wrmL9ABAGk5AZST/JOPNd4OW/m4BeHNR524LwCDubJrF9Y/BXhBUsWx/dSD+gqM1sAD7SJTMJLO/kxcJgL8NA/Aj01S0MYB2MoBiBtBBBnCEAeQIC90Xkfw1Bqs2kd3CL7d5FH/FPKscw1q7PXNL6j/rKwj+tufYB80HJLGvyDdtNHeozenXC8OgJKD6nsBNdY3crkjeWi4xdzbL8N/TuKzLzT4+W+Q7EL36OUjHPdLuOvOydWrVIY3U+Gaakqefs7nrScIAc1AU9cyJhsckRXmCnndZC0ANd8KAmyLCAAlpwFfSABlpgD9hQLycMCBFRBhwgzTgFGnALtKAIdKAHaQBWtKA7aQBH0gDOkgDgriWgV1Bt7NqojEC6tltTO3I6kPd5UBsAEq6Zu9QG8+6UsxgS9drRzkgl/PYoMcFoOyN9qP1vDz+A1dXEdmccyY8ClisaaKhS/w7gIpaD2FWENDfIks0Ttd8g9+iNzTwtWNB5nZXUVSHBkiAA3rsOcfz1QTa/oICUnstx5BlKIBJKGCGl7Xe2CAA4mCABAU/L4YiAGJhAFfQLBsB8BMGeAm6kcF9PCckH+NAC0oYoBUA8ILZ2wTfM97aAqZ5K2IVDJD8LwA9M1C3HIauQHPRYwDgEkQbapaETXFWphVQQAgA8M6KtkhRzrpDTtnC6wHoUhQBljpzm/fr4WrTEWiSC1Q0dSXPP9kFLP3Gm13on4R7n2yQChf9ZmtfgN4mPJGAAVwGLIQ1MOUFNAAda8udCBXAhLcQAdxXV6VAda6oAPoOSxYMlyUhA1xKGNWowIRkCRlA5zF/Bh8BVSk6gC5cU10UEI2tAxCxpnIWELnZoQOKTSKpAfmCIwxgduCYkKoJGRDFDDmqhGR+qACdOWcnigV01wQB+Z6wnxvxYMmev4CclbyyR6GOwvPdXuUBSYzlP2wiM69KubL07h5WFa4rlWQcfaDtVFg95w3Tpoe0u3r39R30PuyjvKICDqnvewwplQ0nNHYbX6fYCFb8BopBch5NEncuAAAAAElFTkSuQmCC",
+    "FaQuestionCircle": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACQFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9tN2DHAAAAv3RSTlMArvf5sAUBd/76K237+ELWRGwJIm/V6CQmBHkthKesscoQCt2CJ2soDuF/A/USNkACadoq8zT9qthFQ2ElVCPIZs3xMtc3icyt8DHbO8Fk6gduDOSHBnwfLoAeRmBf5+yPcPbcGL2eQceO0ZgXfqLliO+N9DARNRYbwCCmCy9TlhXjxKXJZ6/yMxT8OBm+UVWFitKzlHUTVpkdo+Zl60ssDbKT4BwhxstzeLvffelo7ozU2bq/XYEpznEPlXbDUgJV/QEAAAAJcEhZcwAAFxIAABcSAWef0lIAAATaSURBVGjezVr3X1NJEE9CIHkJpAGaUAQUQlUEkY6oiKIgCKLoKfbu6XmevSsW7OXOetVerp93p1f0/WuGJCbZfbO7s+/BR+fH7Mx3P9md/c53Z5/J9NFYsr/hapPXZvM2XfX4k0cXe2JDjrVeURNMqbfmeCaODrqjbGGSClrawR3TjKJPnnlK5Vqm7VMD8MtyU1WhKbnZOuEX1NlVnL24qAP+UJ4qYWcHZHMyo0aVsnXLF8ngT5mjSpt7Oho+JSNJ1WGpthQc/r91qk7Lm4zBHz9J1W3rZ4jxsz9TDdi4BSL8yvmqIatp4ONvtqgGzVLJw2+bLYzvKf31Atdj/h7O/o7jBC7etLbxUnKkMlz57TXbcVU6kzrZ+fPt9XYqydN3LGY5dxYwzheTfb5+1gf4B5p+ZPib4RP3D8Pd/l8f4y8vKkuDQ3pB/mHww0kXr9xlwrUO4KUlDH7bdoCb10fMcKHTqoIsGH9jieBklt8B4/6n/T75AvTL7xNz7yYosOIQ5WYF8f84gSlOb6DQCaRTO4h/rhnF749WQ8HkPt8HJ/gLWaG6wcNA6BNQP9zDlsCps4DoWkeCRy74B7TVI+Co9LQBivE2FD4UH9+vgBNsoGA81opw7T3YRGd5OcSSyvnYeAZ8Br4iQG6djY9Ud1EzbIfivbHheQwWqithlWrlGDnBMfAQxQiFydLVR9/7DJykhBZJ+o/B8OLoaBmngHVHXH64QY88IPOoFopeGh1dyKuAO4+MxGtLRSu5Rp9DsZej95c0/g0g21R+XPvzE8QEFl94rEFQ52vnQcXxbzJPYaUfKSU5etTJJJLGN8BehRwi5ds2Sjl8xyjO4cF6aXj7cR910K4xJH2YzhVZ/FldmqJTDXsmBUKDRZLwPd1TNWTnYjmPFJQVUvDKGkBVpWxhuXtCoy1Sq+OA6sE3TP+3odGVEvhrlkD4w2xJPhgadqLhazNg8cWRzF62IALsOYjf9TMnJEtmglxQFfVyb6RZEktUcwm6UbzkB3klNjlHC+9bLrpxDUqkqbY11CjuB1zBH7ROGv4AhiQ9eKqwUvjtPZioZjzZbSfxz6/GBIXJDknXheQEv+A6MBIFZys5wVZUkFmiZD4kWLSgVOJve3C7XLrbFrPdOPxo0RfIFiN9Cx9CeBmxjWLpaMzeS8dpYzVBsUi+a+RKa7/T2X8a26/NF11ANDdTf8Td34Hz94quUFTX8kz8GFSlYgTICdElkLQziQetChEwJLzG8m7uZvGGEQpH2Am3+8kJiuw4Hoo1i0TuW+h6c1oUMR3TDIlbPz3BXLklZbVzYhakJxCIkYoBZENKm9NR6+X739S21NzcgF1yS/Q78NC2jyvRWmn3p9wzBj7qrOWmaRHpXMxNUyfcfONmUodE1nXIt5ZDVpXoGuR5Vhfoao6nJswQ5JEduzkuau+bo/tQzF2f2Xt43TcXVwDY83c5nXPzuftr2TzGTywrPvQjkck0Y71+/M50TBe0RPdDnXUvstE6U9dTo4J9ahzhJbc8fuaw3HPvOTn4Crnn3pEKZJbBn3BXx5v40Z0XkILvyyk6X/WzDyMUmXL4ewPfJewd288eItr7pz8ZBGW5vPTV6Hwc4mssNLuJs5HkNhe6fKP7gUugubFlZdBmCw62uMYHPp6Pet4BBs3mDK+2IlwAAAAASUVORK5CYII=",
+    "FaQuoteLeft": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAA6lBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////XnmiNAAAATXRSTlMAmdbb8wzx7fxExiUkmj1IQqkJ1wMIDZPB+RvA5O5DCuKAyEH6F3OhtcRmBCgOVtx6vcfrmCEC0LH0kra7Wd+CY0kLm7+BztjdGb77e2TTpygAAAAJcEhZcwAAFxIAABcSAWef0lIAAAHHSURBVGje7ZjHcgIxEAVZ8pIxGQw2GZxzzjnN//+O04Eg7erN2D64SnPuVlNbGyQCATt2/mgi2a1h56lZo/jm5dKvW8+DcY8ms4MVYKs7itPs3APLw5abIGVCxuVhq54nzcQNy+PWeZS0478+bJXSRPwAbkXOSBDArf4hCQK4tf5AggBulaokCDCsNEkCuLVBkgBu1aO+pMeDxrDy/j/F41WBW64/SW39+we3Ev5kYkEbwK2u75UMtfXrM6yRHlquZNduvJ9h3Oq/6sDFlVXfVyjDGujIo7LhG8Cwxhry5MD0DcOtSE8lT4vG/QNuZTVXsmz8CDOsNxW9Mm8iGNZQvdOK5gDD6ihoBdgGMawLBb0GAgwrpqBJIMCwagoaAQIMi7vNYls2YAM2YAOiwNwcF9LuTyxCppHkBiYWhFIzIwh8WxhKsZQg8GWBKFUlgU8LRaklCXxYMOqIAg6OFkSBAo6GRYEwjpIoQDZgAzZgAzZgAzZgA/8lEEbJ6HSAYT2iaHA6wLBuUXRvOsCwXBTNcf7bn7a2MbIxe4ZiWPu7giMUy8rEADIzf5DlWMk7E/mSUg/YLKvlBD3v7HDQyenP8DLLjh32vANRCBkHH2jAEwAAAABJRU5ErkJggg==",
+    "FaRandom": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABVlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+0VpgTAAAAcXRSTlMA/QnhzNj+zhMRAQr6AgXCJxLpzx71Fmc90A6Yp4jutNHwMX7GB9q6WMkPMvH2A61L1ttFhwb4Yi4zV/yfmdx/HWDmhMeoCHkXHMHltvl4OsBJC9R3fIHEkFIUe4CFZlEYb1/q9GOmJZYVOT6l6Cl2udN+2w8AAAAJcEhZcwAAFxIAABcSAWef0lIAAAMJSURBVGje7VlrW9MwGO26tYOxDobjMmATGCKCqJsoiKIIoiIo4AUR8X6/+/7/Lz6lraVN8iZpE/TDzscmzzlP0+a8b04Mo402/h+YT6zZycYlbfxdT8HFrU5dAjfAQ75Dk4DlC0BO0zsUQbMChNCzSqBbAXQrgG6FqACc6NAsoF4BWAozozZQsDLP5/ywAhj8/VBlDNsDPP4BG0BAIcMazizi/FMZABEF9nDxAsZ/8TLw4X4HZLhvkM0/2AciOGNiAjA2zuIfHwMx7KIC0NtD5+/pFeSH67gAZJdp/JWsKD/c5wiA1U/y91vC/NDiCUB+Os4/nRfnhwOuAHR3xap7twQ/5y/ycPrUUf7SSQl+17X5+xFGnJDfWZPgP9zJVYGJw4WAv7Aky2/MVG3+1NVAoCbNT0GN7XsPKDxzjHrArpqF4bhzv/RHblJe9lqBLoBVZWckOveX//zZVZL//Dl6RcOrfvRXfIEYdPgLy3UV5r1w7mf/2df3JP/EQ0ZfVOaVw6FcMPe7vwkW6iT/aCejsyvzC/p+05v72z9RfPpB8k/eZfSmZZE2xLPkbZNt0NlKuu7aLSq5IbZBx4pRgvPBQj1Yg/CLhDh7JTq7IbU+HrbW2QZNNAT+pIkEp4/SJqWl2SGm3b7zqG49L8nzx/f1oTlNqWtqCWcSaislQDPoxwr5EYNWAsygVQA1aAXYKZL8myV1YQitgw66pPWt9GEIZtD7zbhVyIchtA466FRdc0prdphBm9vp7fpLk+R/9zNasluvk4chmEE7H7klk6twtOgHmP3mD+4JFH2OAq2D/nvmnEvftqAG/Uas8cKiCtSg39qCrSOigBn0K9Kc9pKFIVHUAvFV+fZd5ACyVMCWL2kYEmLNwX+ApGGIgkMgJww5nmNsyoP4ru4ogRuGVGg7ZVlZGJI+zmnpDqQO/mWkpiAURMMQXge9mEkXhigLZhlhyIZAtDy/kSwMURSOq75C0M1v6OY/5isWmcNyomsuDfyGbn79V43aL0sbWtcnXRgiiMRhSBtt8PAHjOXjUDrV3ugAAAAASUVORK5CYII=",
+    "FaReceipt": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAvVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////87ucsBAAAAPnRSTlMANckHjewIBuUakZL6Agy2e+37PCIn9Wn+XgHp+NlDr9MPV4Bt64wDeXyP72YEHfAsb08wykmw8/3OCuLukDeQEVcAAAAJcEhZcwAAFxIAABcSAWef0lIAAAFSSURBVGje7Zppb4JAEIZHXZTDC3vY+xRpofd92Pn/P0tAE0F2LZu6qR/e99s+LDwJhMwmM0S5NNw4HodUTFNYlmhSKVIeinjy0yBVXE7iFZlTT2HdWd4r514KI6XATy/zKI9qdsbYrhW3yvkoY5ZSMLvn42lBLnZ5nqP9/E45fx3M2C8Cfn+erw8u93gRt0Or+cM9VxOwfZctu6dcSO+cVnHnm6sK+LObrLbPeCnHO6TmXy9cXcC9W9o65FL8E1LxzhvrCNgbtlmS9lDFPdYT/CkQQAABBBBAsDmCqxZppNXXFmg9PznWagtIM5snMP6K+nof+Ro/GgQQQICKhoqGioYfDQIIIEBFQ0VDRYMAAggggACC/xW4N9K27uBRxTXbvaYb1qZb7qaHBkyPPRgc3LB4LaMngVIQ8VqGZ4T6ABhZvmz8JxjLx3/KPBSTQBQOnVMKPy6vyyEZYAAAAABJRU5ErkJggg==",
+    "FaRecycle": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACeVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+CY/WAAAAA0nRSTlMAAvcStrIBB/4G/ee1/An2+vk6+NCbBc4O9dbp7QoEQcyeIgjwMbc21RBdJLTI++u8ZMvkFR+NpNIy3Fs85itP9BEWnKEl7lh8xNM4PcNHN9sXneUbaDnqSsmFii2zE5l6GGDHZYlqjpN0O35FiGm7fV5jREkqkVM03hqqkC4PlTMUmmbRolSXWYzPvlyjQqnsKGuPlHW94cKERietS28NVZh5HMHGDLEwczXaeN/APyDFh8oLsHegPuOl6IZniynYdld7GYAdIW7zukhsUrndn2FelKmJAAAACXBIWXMAABcSAAAXEgFnn9JSAAAE4ElEQVRo3rVZ90MTSRQeEg1LuAgJJQFCU4pIFRBBREEOpQooRTzLnb33s/ezlzu9qlf0eu+9995v/qJLCJudt87M7uzOvp8yb998X2ZnXptFyLT88uvV9Gq/f/TS2T9nIemSeaUAEzJ2IU8u/rJ/sE4GFkuEz52NKfLJFFn4Q0FMldrDcvDrszFD3hiUgT8liJlSME0CwQnMkU328fcpPAJln+0DdAhz5YmXbRJ8jQ3kHnv4K1KNCKqK7eAnVAIw//7XQ6GeR/1AWZlgg2ADgKp7NaY9uRSoN9ggGCCBXAdV9UEXqS/60TrBWyRQp6b/ASzhIeKd7v3+PhGCKz4NZnqSpk+aDhiWqfpAI8ZZ80UYSi/FXaqX1M8F7ncod1xZ9pw3OgoLxY+811pjIBlQnwGWsD6qWpQ8MVohtg+zVkYn5bih1p1DEqQeQ1NL4qMFolt9oA5n3ZG/msESXnozK/57joWEXLzqTuVOlm/fLSnPlacwCNbJyqSdDIL7ZRHonEGVhQmyCHTOoEqFuTB6bMfsgg9mGFhl0AjuNQT/MH9XSVHMeDfXsOwsjeAd7pzDzx6trdKMG3m2F5Jp+Km5zAlTd6/Wb5tSz7YuoZ+hSnpqz++cVEQzZ0XGzOdZXtBAsfYsb2V55Xo6fqCbmaMPUMz3sFN6FxV/nY89g5ZvVrLN0xIp9rdT2BOoke4IpyrZQrEv5thTI10+Z8XfUexDLrb9A9R3+kwLc8IrNPuH2fXqPPqpOH7Cy5hQ7aHZN23vcwlGuqZaBsN1VrI+eetIjkiky3ssi0qwhxctnlrTnq2YjnRDT9MICo1iY2jvTzvVc+sr5zdLX1AIvjWVewKbP4q8L9dMvtmX1B6m3nSS7m/jG8yj9wLzZSXAhC5HWhhNvmKc0/ck4Q8uZMW7aXIIPgeoY4RnzxXGClSsbdbrngT42Un96fHBx4LwZecj/07ZpnOBOeBofhrx7M2t1mrNiSp+AN7FLAcLaI/V7RWx0SMi8FotcBO4AOhMR9Ve4Fy0nSwqF8Af1gKan6hRPX1gAVpBF9r6eOE3Ih0XCdOnRfqZAL/GY/korgFA8ci0IAza4Q7rZ/0FkIbCai8Fb+R22fGmrQDq6kTO17mArZ4BXr/lj+8wuPBQHrQXEHpBgquNbuc5wLnEbshZAuD+imguk4prp+wSwAb6d4R+9tJdgC+JG8Phhkzqoxkknm8IDVtxgcS7otYbqc88NbDS+5cM/R0i+Lia/rQjDezpGWKUIYSPMeN5OwEZRGSj1SOGzyIIEJBLEVlKHBfDZxG0kYEHkdGjzYyvTsZGBKcIyN/AK9oi9P+ZBL3kTSUiv5ycFsPHJi4AxsCoakTg/TAJSsltPQ+TTUsp//9PwsYEPeAC4D80CBq0tNUjbtP4FAJ34HQauNmOlM417I8D6U1cfBPyd/QLFud5uk18/Ec0OHG+0Xht4heMB88RL9vCHr6vPzb5qAmC7Rbw8UX1buayMUGyBfwX4/XDqm5DghZx/DPEgXevNSJ4Xxi/qwyU75sUuZus7Nc3Rou7ZR7Txm2ULrP5hiLH0ZS3FzHuRN7dURisSyFCRbFoqEj5LFg4bPmDvC5YM/OBjdJ2ssME5hKORAbkNANymgE5zYCcZkBOMzhFoPp0NXKYoQE5yNCQPHox04zl/0V7LYFy91m9AAAAAElFTkSuQmCC",
+    "FaRegCircle": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACFlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+SsMzEAAAAsXRSTlMA+kKu/gUC+fgB1hIKBPF/wRGwRHfw7R7slNyeMdvLKzWrr7GCRWxUayMJMhMdhK1vp4hprE/VfQYLFR/E3Z/D2EYkUl5hZs0tcNc3GPWTNhedB24Woabz3nyB6MlN8iYnbVVDeeeFyLNR+6NlA6jriWpLskDG6vSSGyDFY8ruKk6RchA0/Rq/oIZnqiku9xR7voAleqRM0vYsWn6ijTC7WcDpjC/U2ZtdpdNxdpo4X2AOgsFVAAAACXBIWXMAABcSAAAXEgFnn9JSAAAEqUlEQVRo3s1a918TMRS/tlBoC5YOWyhLKpQhsqfIUMCBiCKKCgIKIuAAcQ9wM9x7771H/0MrkpfcNW1zdzk/vt+SvHxfL3kr71UQ/huK7svqb/Y5nb7mfkdfNF/suKwCe4POT5CuwV6QFccHPd2aEOOnUmzC03S16JZVy/1hqcK5UQX89dG9/oikK76uED7lapSfjV7+UAB/arFfBtlr5Opk0Va/LHp0Z5Mc/A0tftnUsogZ3nSBqpcLd2Qkt5WUtCVnTC6krcesNTGq5mGKxlv1rSRPq55mHXYLC/7dbVL0jHNUm40rL4uVsNaujIy/5I14T2qpLTSzbdwj5u5eEgn/yALRhi9N8eH5jT2rRRu2rgjPrxd99NgEw7UZ9yeKDlQf9nzI3x/1MZ9NK262kya/ICU0Z243wZh4iN1uesiPOLYzpH6S+rN8qRzLdJ8mtnpCqIWJ1P8tMmNW9D5is5d+dRcIlvNGuc7RdJDYXkTjWEdY5i0l7n074TUofqnKjNfblAWQtxjhQ7BvvYVX7xuVCTDVYQxnUHxZj/VHcU4SfRRAjrslazh+JS4VFJPbBTAGyQ1j+y1Xk4UcwjYtvudhmP+uLs9JxsGBnH4Hgl031QnIH4OjWENMj4LcCbWp2hWAKsaTmyG/emhSK8AI9qRbBpNrQeor9bnsJwDrgDkISp549QIOpCK0NMifQWYpj3Q8B+DOzs9YIdzZeAiwgNesnJ9JQBNX+bwoDAjv9nx+A4H+HB8BI3AieXPjLPDinN5EcXBGfzOMAjR8zetNV48QM8WO1MpLQJfYpTaIP4gDORCieS5KwPt0Iy8B03Crfwx3J+T//B7WkCD+ybZXoMEOfgLSEKYjMMhGgwx+AgoRZmNg0IwGyfwEbEGYTYHBLjQ4wU9AEsLMCQzuocEefgIuI8zd/0KA5kek+SWDmpZppKaaG5rmrgI7u1Ze+CdFzk5zd61BwMkUBxwImQkahUwc9Kv54FdLgj5OW8r5CGhEeDfyJIkXp4jglSRevFPH/KDUESe/4zwE+ADuWlD6Xss1fZ+kPECeqBfQBGC78BMKvMV7o1p8YwvlCSUUg9T9agWUAlQnMZs+Bc/YZSpVKJH6jCUqCe3qBOB6iFdcrOZUSngQqpQg2GHB5VaOX3MGYAqlS7icc1pxOadqCJdzgmo2u3ExqVNpQWoWY3wLW1JLUibgOdE7opzCBqIouF1lUTD2Eo3hK7+yZgedxU6w7JN501Wfic2GEDUbSy3BdFSWttYMkS2Hi6HYcgfJlk02O36PiyyO9wmM5f12Rr+0uY61vC9tULiuMNy1sfQMe4Mi0GIRd7A8qyK1WPrNslosgQ5mt6Sx5AvTu7L4JC2rwZTIn5zrkTbgDCPUjKy60SttpaXmstyZzRvc0q3vckyL8mdHV70uiM1wkdEoi6itxt60srqkkpKk2bK0XmqDvIO9JrrILL9ZWnFJkNXu7ZUHv15euzdAboMc/EIlPYEXz6bY0KOG1ykMgWuKdQx/Guh8rCJLsGn7t4c5Ols5E0sHvzFTeY3PiyJvINNgFtlGjNmQqc8TuFL83YHsXzlOZ87P7IGV8cJ/Q78BO9UXgVts/fYAAAAASUVORK5CYII=",
+    "FaRobot": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABelBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9xrg87AAAAfXRSTlMACATFzP4BmWYzpvcNDJxyx8vQyhD4xGIFe+fsro+zVtx6GOGjqOvR1nRVF1qdIY0rc1klaAbU/TkfpU0ZXD0jqSgt0g5RMr2eYEZqrSxvslA223m85cYCp+qIaQexu8BeY0SrjM8LsE7zv4YkZ6psCvKQLrRS2Jo43b6fYesmeMgAAAAJcEhZcwAAFxIAABcSAWef0lIAAAI5SURBVGje7dnnU9swGAZwQSyH4OxABmWPsveebaGDTkbL7N57Dzp4/3cIjX1OYsmqXnRwVz2f4lPu+V0c21IUQnR0dE5b3vX1nVNYX/MUAOj5GlX92TgcJVCpCMhAIVcVAfdt4KUiIGUDKUWAYQOGBjSggWMAKmajyToKwqF1yehshXD91qMNkMjOLcGnbG8AJJPuFekfbQPptI3691+cAER++M92HYBKtV//GsUBdMoHaARkVvj9kVosUBvmApcAnVUu0I0HhrnAIB54xgWCeCCoAQ0UZ/39dLa1hzFBBHpas9Njzb5AaC9tHCbnAczcO3qH2eLVf7swvVZ7ALl8Yzp4Of86NukaKAauOHNgQ3n/oD1W+aYcKPRMxgi5RoEF0CHnU4bPlPafjTiDi0wA6BNyB5jAc9d57C8Foq7BTiYAD8hrNuCenYZLgZhrcJsNfCYgBnTzgA42ADwg6epYljxFXIDeFPuSv4IkAL+dy/RL+WXa4FymD6UBmPm73jRzXjdai8m+0UQBaB4bGJ9rins/Kjab5sYH7v4CDCD7sNOABjSggVMGWBygK2SnPn84bx/N54/qncEuDmCRBAcwild8IWepVryCMzhAijxWC+wTs10l0H4465mZhKUGsBIZU/8A+Q+BXTzwlgt8xAPXucAQHrjA3zCawPYv+ex4fccCr3wA8wau/4PvruOLOKY/8Elg3/qP/JZjv9j+9dQ3qa1Bq/Gn8PZ4eGGk6h8zshDR/yXr6JxUDgDIcxHYFsJJ/AAAAABJRU5ErkJggg==",
+    "FaRocket": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABwlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+V6nZNAAAAlXRSTlMAFAnd8hPz/Idw6u79hgWL/udm8Znwjvr0BpEf256F+/ir3uutmBfvjTog1IH39YIQHYQDJ8ZprE/VEfkB6Xel6CRnHtzYgJJCDQ9kMMiKKK5MUZQYW2VGicxLLDESt+AcokBFiErQlxa7Wd/kaIwqzwuwL3y/PmIKTdOan+LDxbTWV2OvuahvNlqnDJwVONc8alOQlQEEpl8AAAAJcEhZcwAAFxIAABcSAWef0lIAAALiSURBVGjetZj1XxsxGIcD17WFutACdVuBUmGCDNjQwWDu7u7uPpj7lv93rHxo73K9kjfN+/31Dc9zL7lckxDSeNbMfpi5uyNpy9Kl2G0e5fbrSHH+4xciI98+fU3S2nErn7c3SJ97txij9VJoyLBhn4mulvfi+B6/ha6epCh+UyZGeeLeJsY/MEY5813o8ROUO/MC/O4X/HwahfOv5gF8GoHiR85TUE4C+eufwfj0IpC/BcgHLoQRP5RPPSDBTTCf+iD8R3A+HYa8/3FDTHYg0JWw1arE+Pl9HiN864Tz/wDnwVF9zcLNbz5ixM+FVsZMPtUV7dyCjOHzh6qDJlvZapCXf85tJPCqh3lF36IT1434bR3qcU52psc4BcYrOK0dyH7JFT7+XuMXvUs7cidTfsWQzkaUOGwlBbQAF1NOaPcJD+BLdbdWMMCU/6iLgwWBbwEzyVmm/EtVPBSjIulXCybY6s9qrTQqxKepniojxC4091y16KCCGaoYQjm29kO1RTaJCmiqvzwPHTd0Hwr6V0ID5ZlOBwLpthqF3zIaqJN4SU4DhllAboC+rQisKPxUM3IDUeQGgn3IDVxCbiB/eoXfZEYROJAbOHUHuYELyA1kkBfx0GPcBny3cBuwP6n+DhQxGmhR/UxPI/B71fuAuHy+drM3hfgNLadX9vxuZk8uG6XyTYP6s9HWsEUaXznGe6JZJ8R/eZmXf1gEb7E6UZ//2kPuE2VUhH+G/3ruvgDevYf/SH/cLvL/B9xJPKfIAgVb4MMWhLEFfmzBrmFkgf7KRLaAtGALBAxAAdwAFYANYAHUABfoDC7ZAsbgItIFGoOLIAhUhiU+hoB4g8t/Xd5MYQjI+EzOFo7cI2gCdeoKCtiCaWyBH1vQjSy4QnAF5nFcQfAoQRV4ZgmmwOQoEURBe+daQvAEMvE1BHLxOkF7534iN5qzqNnaRGRnChevuhPAwVfuBLDwy3cC+TdFIP4fSyY4BZEayEIAAAAASUVORK5CYII=",
+    "FaRoute": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABv1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+2elNiAAAAlHRSTlMA7BXVAwwv/vj5zgn6Agj3ONfFNpKCygsu+6YOkzHjI8LYzDCRBWnylWrWZ5k3y5Y5xKqQ/JpCIiBa6g3bF0Bk0OTPbaXipKmoIVlETl1XZUYao8gEa/aUE8dLEuVFBzoBBvM0WDMUs1ZPl9lDZtJUPx/NUTLcHeaO0fVVmDscxqwrtjXawGjUge2Lr9MZ8evBXrTDhSwsuAAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAA8dJREFUaN61mWdDGkEQhkWEA6QIIkXUgA3sothi7y1qbLHGrjHFqOm99172BwcUw3Bt727W+TjA+97tzc7NPmRkMIoLFfkWndWqs+SXt2Qwj6w2F0kF5xrLYqt/OUR44RxnKJ/dRESiOpuVfmYtEQ1PJiN9J5EIJxOH7FoiGR47A4MmIhM38PpXiWzcQtf/TXmDSux+aCOUmEQavKQZ/EX2Hw6KORpzvd6aUhPMcaMogwqoVeQ7TRqLYLYKZZAPr993ljXCexhCGViAUmMq7QbpYpSBDijlptI5IH0RZWAGSoZU2gDSJpTBlrhBAKR/oAze0ZcohDIYAUqlqXQBSI+gDKrgYhvPsiXw0UyhDL774UZLOpT0gqR/Gtcr3sBNa3LnGAz1BfD6yTVks7tOa3aXkAYbHynvAxv2jTMhbzCBfmXaPHL6PQwGvHVOxqCLxdzySlp/mMngNeqQ0r/Syma0y5MyyGM0m24+lihRZtNviVVM3/+W3fwuukifGB4Q5u4I9fs2kRNReeJEJl2hJh9qIt2JcpQmN4/RH3fSeihpwJw4qqnypCOAODF56PqOQoR+JV2fdCPWR8H1kzrEA1Cw/iRYdm4nspMY7ETUP70+SdiIWKAxun4MNUa46Ab9GOaTfiIzuWu8jJlPOdTvNbJnPgOioy5D5mMRH9bZMR+JExk75iNxImPHfKBB+3kwH7hENarqRyHzgQ+54DyYDyxTcyFD5rOT/OIHmFwtZNdhoskvtqS1CvNCvYE184nSm128jw3w+pgK5jNJlAUXnbRpYj5ZeqI09M2amE8zUR4RuxbmU6fCYWlRtsO0izIf+5IKB/3eyW/CdINwKr2nV+Ewe7JKIXXMZ3FWzXNI/GJYJfOxR1Q4JGppSjXzaVZRrfH9MK2e+dj2g5xCh/341/9oYT6tVUPFOrOCQZU18/HmpF8cFz/t2/T0dVQThav8PvabMfO5B+9hJtHDehgznwV+H+sibJmPsI81sGU+Qnb94AlT5hMQNkq2zKde2OrtEqWq1/RfXkTkZbXtF2U+21r0d628MpVeJE0LtPsQShycpcv6RJiP+hOvYT2SBnm44/8f+UxSzOcR0R6/gPk8/8OK0/zzGMLgEN5egyjz8d5H6N9Oa5SBDjHm8wyhzx3xGq1DyHzuIvSJm18D3QLm8+IzQt+1JqiyOh7zmXuP0P+2IizjsmA68/mCuf4VsY3SOQiZz1NO+/N1r4lvRWM4xXxeb2mvzyPJzb4ciy0nyzak9eqDh3KDQn+S+Wx81aBt/lk8c3AM5f4BJc6WaVXtJ2kAAAAASUVORK5CYII=",
+    "FaSearch": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAB/lBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////unmXlAAAAqXRSTlMAA5NA8fT5ATvyOuz6BscLJArn6wcMLo6JiPz75icC727+kVNGQg5vDRJU6e74pe3TkgREDyPIcFEiqMyt8NHG0DCXjHK/44aQgDEryrmkhYrN0tdWN4RL4KLlJmkR2rs/5IerSc8v1DR3WN6gBUhNcbSV2BQ9jbpryalHKK4yuL2ePOFQt5g220/VczV4333AIKYlKm2wTvOW2YvOr1IzON0ew5lqRUNsBTqrZAAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAA/1JREFUaN7tWWVXG0EUnaSQQCMkeIA0EAIBgru7W6FYcStQitNidXd3d5t/2dLTnjK2O7Ob/dBz+j7fd29mZ96b+yYASEZ+3rZ+K3sh3WxOX8juyPmSlw/8F7me6PYYiEXMjuOrzi/0bY5QyIiszxfVshufFULJsK4Y1dD3HoKyUZ2mmH94C3LF/TZF9OEOM+QMQ1O4OP+DQigQ3TZR/mMBUCgqBHdiPgEKRkKLyOmpgwoi5wAv/4FBqCgWeUsiCiqMdT7+e1BxzHOdH+X8MCFRnv8R63zGZT7x2EaXlkZtnviHrP7nKpGt39fUxDD3OxR3OyeMCmy3yAg4aFmN8XYSafdO0rD90vyPKf3H7I6gg+0tGZS+dFqywhrIjJ5INn72OIkflxLoJfHTEVIJEeVkRrHEAsj75YVM/etqiZQZdkHfIMC18ufaTSQNMLHEFTDN0b90xFeqYkFbceRYCk/pR/TgeZGcTc4Qyde8avCz/Yrhr/D6P8jb36OxxCG6I/Pg9WvnFQgZwlKTuH5HPP8VuMq19nasv9n5BUJMmN+j+mfM3zaLmAQ9mhubTMHkYcs8KiJwjWMTvmP3i5CpNWIncER+lZliRqpU/vt2KD5Du+FFs69QIHMoxCMmcATNrqRADqOQEjEBG5p9lwLJQiGpYgInsCKiQAwoxCImEI5mZ2gtYND6E6XLb3KBqk1upECyUcgpVcc02++FVoRmr1EgOapaxUk0W0+BbKOQULFm50Oz6ymYb2ra9XsseYLjwnGLCKxjTzFUv7njvyuzmms08PIL3MJSo6ko/M6cDOHlT8Ed1Qaf8XLwCuBzexjjKWwTt46zfPxnceuoZ3lM3MReT+Yyv8SYU8OCWnFkOcezn+4p8czGxK4Qs8RVYc8lOUMZuwnwhVzhEWpOYmpJI0e6M5JDSPIbMkPyOeE8iX/Zyoa3jpH4BskuOUwZrWPdKaxB3EBBy4xFTdR3kFVKUYfUx9GwU3LuoIz6xmHS9yErN/bpTVRgmawbKahgvNT4SouWnakWS6pzuajUxwAFOuXPdZrwgyO+2k4ZR3IHqg1XkLTCpmqFwH3SN/iiaoVg6TUYu7ReA/AmaK2QWCHIJ/qVwMcqEf4yp/gaLP0GXnrzlAWI7zQAznE+/obdv1igEgVQPCNPX5n4q0uZlCkYB2S2wvr2dxPshMoUAIisi2N2Hf3f5m9zKVYAuqQmayzxV2N11wbiOYKClSvsXr5JI83nKj9kGWLTL91c09dPkFeQSgWO2B+gqKb/K/xzCoyz5CrRWmEQaKzgAxorPAcaK3wCGitcBtoqRAM/B1YPUQBoqqABP6KgCf8eBY34f+60S5v93fMUmWnKsP4ZOn8AS2DSTnTon44AAAAASUVORK5CYII=",
+    "FaServer": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAVFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////9FDDDEAAAAG3RSTlMA80xL8M8Hx47JShtJjGwGyI/vjdBu9Mpt8cbmxI83AAAACXBIWXMAABcSAAAXEgFnn9JSAAAA3UlEQVRo3u2WSxODIBCD16qAj4J9aG35//+zWMeDjNPT5tBOcsopcUB2PxGKUpAZhykCNA2zWfK7e4Sp7tL3A/NTg5ExQuWlwRZYKbAFhUSwNAqsc/bIKxVc++Vnb6vcqxX063Mtc69VYLeB0Oy9WsF5C73tvX6B2/vfOaLYrpmn3KsVVOUns8q94kNr3OVx5NUKvo8K8LB74sf1jF44poauzJCWfo1d+iLBW8hNFy8fCIUU6Zp0TbomXZOuSdeka9I16Zp0TZGuSdeka9I16Zp0TbomXZOuSdfUP+oNfuugtYcRKQ8AAAAASUVORK5CYII=",
+    "FaShieldAlt": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACFlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+SsMzEAAAAsXRSTlMAgLuqBAUbAQIDVer9+0Rm9vD+8g8H5Cn61RTznswIJRpFd93XmeyKE1bcPCKoJw2TEjY75Su23+nPkbXOCjNX/Fyf28Yml15TYpj4yLN1uDd6HcJgo+ZGUPUcIQwwc/k/xcqwED7jxCSv9zLRQMva9Eepa67x0g5RW+HrS7J0F53gwV+n79CxkhE1eFmcoYKmaAbuC0402RW6WDm/oIEf6Mnti9O0lbmaPR4Jia3WQ01IyOJhAAAACXBIWXMAABcSAAAXEgFnn9JSAAAD+UlEQVRo3rWa51sTQRDGL0C4SCehBwldEAGlKYKISK+iYsEOFkTsvffee++9e/+hPI9LMnvZ3du7HefjzMv+knvZbJnTNPnw5HUX+v2FRXs92v+IlMRMg0RBfhb68DuK9hggeiLLMEdPjYkwwmJ64gKk4aNdsQYzkufPUh/dkxAZb3AjLiJmGpaxvFAx3GQsLxwazjSWF/YN5xrLC1uGi41VNlzCWBXDm84kiQdZv1hUHW+5pmqs5QPkGy5nrISSbXheX5zUc/6nzunoFRresNc0fMUmWSNDbmUL3dpUAcff6DNsAzRtzvqZAqFvS0gZSDacACxmjC99SqYvMxwCxIa36kSz0s5k0sP+PXI63nK0CUTxUg0wGY/YhreQ8mJlwKThpxiGPybFJEPBA5HhSaQUjwJgGN5M8j4sgPnXbJxk5+EBNK0SzgSSm4tgcjBygfYdyRViAtKB9hjJNWIClgDtIZLbhglIANptJLcdE7AQaD+S3GxMQD/QtpPcdUwA/LSDJLcIE3AZaBeR3E5MQD3QTq1pY3YAFuczHS6Oa6ZWjGY8wBq4t3BrDqayBWAVkG4NZsvxPHABaUMwO4gHgJP2djB7Au8RpQHpqmB2GA3QBqXDofxxLEAiUMaC/AEswAWgrAP5/UgAfQVQvuIsQyoAuNoY1TzzFQAzgPB+FKwM4QDg7m4fVTkvDRAdVddBYRdVKsnAAMAn5I2ma3UIgHtwBzdhKi5H8KAU6vJNxc096gC4LY1baq6eVH5EFV4geyrczzgDZBuM9T4U7jRFwNINQOVfK16LnACo7dtN1r47QwkQDQ9i3lqWpFwJcAuK+piSMhVAE3WVspEteqEAOAc1I5xv+VUGEMX80xuUplNmKtr6BlnUOfISd7Y/dwqIpCR5/F+TOmePqJNSNIiOiBlOvsG3Yup4Xyu7qMoC3K2UoF24r1mbZv8RXaHqsU/kD4lygC66/szqruGzTcBK2rZRy7vl3GJbgNqL9J1stPXleKkdQFsNXV0uc/0+JA8ImP4n7sjd75+VBQRMn//DA7kGxbrVcoCqN3TJny7bAjkqBThi/hyl8k2W93zA1NlX7zff1rts9IimDVgBro6aC9m6DYB2eJcYUBV2zzfgttfnysoUAL7/CLtqbay03SKdywXsDL+Lbiyx3woc28oGtP1kNIbmOGk2vt7NAnQz1qSRzc6apafr5XaTESmOu71SrZEWt+Y4Ur9YDu916ZpK3N0gHv9gjGrPvXqFaPz6gHpXvySSP353DsprCTGcVbTmIdZ7FbnlXoa7nyo1vKhqNY/fW4376omnqwAOv7sT/+UZz5/gT/hER9R/eT9Hzyv65fdltv+2M7X+AojcI+FjhuxaAAAAAElFTkSuQmCC",
+    "FaShip": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABmFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////ZTaigAAAAh3RSTlMA9IAJdv5lzGZ+PAPBAsQeQgTsHXkr81PeBff83UeK++sn0RJa4OUh1cDkRAYqkXe/Q+iLKQpwN71giUssb/WTnaJF6oisSrb5PyAl1BD4/V3t8lI4wyNr0rMyE7iZ3MKjQQ0x1pjbO19AZO8Mc5ffXqGCAelojHI0Fbp8PoGlZ0hNM9gUXGE/IhFWAAAACXBIWXMAABcSAAAXEgFnn9JSAAACqElEQVRo3u2ZZ1fbMBSGlZA4e5JBSAhZUDLJoJRVRoGyC4Xuvffee7f62w0t6UnMtSPk6572HL2fElt+H9u6utK1CBESEvontL8iWQFJ3g4c/1ddVEFdX1DuX9Gf0hjGM1SoirwIAEkNICEArGoAqwD8twBP3GlpqE8N0PenmXOsk93/sIFyKPSJ+f65/OsE1meIU07NMQKcvIAyI8DCC7AIADpg0sKkSW6ARZ/2AiAAegI8wyN+/8iwRx/AvoNu887xAeMQNiBolOWPWMn+FA0QNH4F5+OS3aUd4LCXcsrZbXbmc0QLIDU+nWiXQRPT4ykx4eACOq2ne3kB6+7BFXX3psHEK9kgbNExN0XR8QOw/+VuiqTu25C/4yFFU8wFAN5RRNkBwC1MwAZUFGACeqCK/i6e/1HwC0AGDzAKx6kJy9+mNNJMOvsjEWxqyciksz8CwdYuXZt09tdIsLFMOSad/TUQGP25Ccz+hMzz+M+z+99LcGW4K8yAAN8rGmT1X97kAxhOsPm7ytzLCRcT4AX/OIjr2AGs3eCb05aLzkfarB2dWrNpdlnFfq12BGFZN7YGuzvyMwaKotDjSks4+YresFTLhjDXRZvZmhT2Fn3b/vfh+67m9mKYq8JD7yUhd+ArqsHnewFYk/3wiR/kFLw8XiGFa+z+qxGShLd6UgSsl86l6+/uzCKr/+LVevOzb6BTvQQKtLeOX70/ylhOrT/6HYY2KMjJbpNyshFfJ6Ms/tGPjfZDu4epmVyQHbl4qCmCe/zt/f0tF8jLvBvkSfPfZ1Oy+u319TYPEX3wTVZJTs02nzeSwoedn/0LgZs+YDPh/YBiV5hXjcCWQcQeWGgE7aXC9teajcxWfkJl0zC9FIY2S8NLaeVrOibyW5nvRbHTLCT0V/QT+KpNwXT5OTsAAAAASUVORK5CYII=",
+    "FaShippingFast": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABYlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8CSbcJAAAAdXRSTlMA+wMFBHyqZswzAkYG9fQpR/ZfSNjXmY3nawm9b7x+RcABTtm/peiaXkJqaf6RkA/3/D2kyA4Tt8HGJtpZnDp9P221ut4+xGxNuTitwijN8ZQy3DzhQYTrJ44S+jsh6svQsZIRxav9XR+GZwoU3XsZHmEl7pU4H/tHAAAACXBIWXMAABcSAAAXEgFnn9JSAAACc0lEQVRo3u2Y6V/TQBCGJ201tIW0lLYCgiBni4ByKCqXgjen931yKCCXuv+/oQlJ+stmj2TST/t+y+TNPpm9ZhMAJSWlRquzWtGFVKl2hmj+1lgLEZYx/kG2/bUHREqH7yTfX7J9Ql5sSQF+EGm9lxpfQx5gyIx0lYTQawlAJQzgpwRADwPQFUABGgFYIQgyvu0dBwFGCY6M0wAAQdMFOkCLm3D0tUlQX8LmIKrrb+MmNPF76Qo24E26pos4OZQCF1qKR3gpchTaZKxkDuHXbtiZ6WwVbEKaRAZAYpAx0hgAJuFkAgHA7KVPnPFdvCGyXacizNYpoXoQgVAWKzjMkcYAeHO4JtN+Ylu0ZLqEjzkrsiiyU78Sr8kuYQqj4FCKvkPYSCKUTNqpwhnpzwhFn3psSdk3n9eudkbRAee9khaaQAffQ9PFALAfN0CPGzCCBfidpmpyHQugE2wpgAIoQAMAK+V/lUycgDNdCgC0lEqtMu0E+v9SAd09Zr1OZi+LNs/yUwCac2TqEDpysP0UwIgbuy8CYPv9gAHv1Ormt8/x+wE93gfyfADbr/kARtL7QDP3ZzbHv+oDFOuXXz8PwPRrq3/cW3NWrL/+gVkrWvAfBmT9cM9eMvUp28vnSXQ/3LXTynqDbXYwF90PmXbrXq83aC/OoUx0P8C8Te9wQ112qIzhd9LTHjv+CVo3hPXD1TvO4sw3m+PV1nt+/QjFDzDpTuDWYtHz7b2A4wcY5xaNaH5ILNH8yyksv/nf76nfP3MTz29+v4358k1g+k09u+21Tz8EZL85+/LDQ5a7fTgL+P7aLpDrKxT6chmIya+kpISs/9qZVdWcgBHPAAAAAElFTkSuQmCC",
+    "FaShoppingCart": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABqlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8tn/2VAAAAjXRSTlMASO1NnQcGqvv+Nm6CAZ8VCNZ0EqJFyww1Ot/PThD4/R5BQPrje7Vk7+cjCfEOdTe9fx0DrdENvOBpT/Q/yjS6WN4aXQryFL7D13rm8OUhCwKewCqG2IUEqUfsKK5ws1H2mdzHqCfMSyz1mBdaXybQkjC2+VmcfcVjJWjukZa/PgWLry4P95W5V+KA2R+11hGZAAAACXBIWXMAABcSAAAXEgFnn9JSAAACoElEQVRo3u2Z11sUMRTFs7hlFhCWqiC9SlcBBUFAASki2BvV3nvHXrHN/6wPfpvZSTLJZM99Uc7zmfv7ZmdvcnLD2Kb+A20diyb8ujXeC6v/vsWV6fI2FGC3K9dXFKBJAZiMgQBJBcDdDgKo6ruD1IAoCDCpAvSDAB9VAGcCA7j6SkWoAL3CnkSnHJBHsnAMu0B19r0UAHtrkQQ3555AKIIC3D4BUIoFzAmAPCxgpwCowAJOCICORijglPhHvQ8FbBEBT5H1k4UiYB0JOC3p5REk4LgEEK8BAlply1E5EHBSBngDbLNjMsALHKBFumJ/wgGapYDeIRigXr7pPEfVdxT58zUKcE2xbY6jAA8UgEUU4InqxDAHAtSposVbTP2jyuzyAQM4pwR8wwCWlYB2DCBXfS68gKi/FlcHyA2aQMF1hihQpLVKFCh4pCcKFFxHaAIF1wpNoOD6QRQo0rpOFCjSuk0UKLi+0wQKriWaQME1SxQo0irLsv4X3UCrJJkdQD9KuZRV/fLPWsAV7p5OhNTFu2f1M4Vi6qFFAweUkgA8Q4simoEtH1rUdpEAPEOLBhKA7dBi6NFDM4D90OKm2ch1wrEmTJu9Qr/9ft9hBIjaA1JGgEFrwIzZTzRCuJRmObRoNewE66HFDbP6uQO2gB1GjXDnseeRJv0m4L1KqRnT149k9FmjdjmqzxgmOmU6f3Wb78S4EOxf8MXltq6wl1Ozwf5mv/+Z5vZuIGTz/PT7K4P9knPmryD/vOifDwScFx94F/LaIfgzV4U7csn8VYGAnjDHags/KxF2G6ca6Wdsyv/ALqyf7Q/1CcL7GduX6R9F+1lhpdd/8DDaz9ihA571tw7vZyzVnfP3Mqw4RuH/o1gkv6AgPxJnRP5N/SP6DZi5eq1D6RYpAAAAAElFTkSuQmCC",
+    "FaSitemap": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAA5FBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8fIpK+AAAAS3RSTlMAkl7k7PZlZpnM/Vzr/i2UwhYkI8gyqEYxF+XGKxFjAZEQZ6pI7eJL1vqYvGTvDPl9h+4LBPFREwNqjnSISo0laElyU5YVYobyLhQM2LS3AAAACXBIWXMAABcSAAAXEgFnn9JSAAABb0lEQVRo3u2XZ2/CMBCGmbELCat708kqs3vSlm7///9TlXxx5LMVekeFyj3fsN+7R4qCfUkkGIaZDTo1Txh496dU/b22AhnsEPVXVkgMnbZdMKB4SjXl4IlAcOISUDwj4RIIFrCABSz4JwLPJfAIBCOX4IJAUO7a+3dfKe7Mvl3wTnLpn70EcPugeEU0t3z2mvKHeti4Pv7R7BXIBzAZCuTUJjwWsGAOBMO71oITPxT47lSrX4H73zYUEY1nqP+1IuTR7P/1QSk4v5zsO2Ny3gzBDa3gwfYKUiFtgpJwUIqfkb/6E6EyLJgDQX487Mi8q5gqw/w52/tJGaEq9igzh0fmWZhZjdZiMoUsdNpmt/RaVOYAPs9X9GJUJgNv+HoxKmO5kQK9GJWx3XkxiuNlWMACFrBgFgQ5eD2nF6MyaXjjWC9GZYrwRlIvRmXWN6D1dFkvxmUqS+b65mJ0YsBldpdT0c+s1JoxO1FlGIaZCt+dP10KJj6xaAAAAABJRU5ErkJggg==",
+    "FaSpinner": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABSlBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////k2/KfAAAAbXRSTlMAJD30me7Y8+3WJiXXm0LBRcBEQ771TwHxZTEK4gT7veYSNuUhjX0LTr8+mmYo9jLrUJgwEVSc5Ix3/Xylex6PURNW4R0ijvrgostKDHhZzy9T2R8FFAk3eqPMavB5fhxkad8gaJEVWM5N8lJXAlspLgAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAArlJREFUaN7tmVd32kAQhTcGI2PcbYSRsEMxJQmYOIYAxsYlcYtb3NJ7b/r/rzkHEtAWiZW4evA5mkdp5l6QlmG/WUIcxNR4KBAYuzdDvInRSeNfTEe80L87bHRjeMiDz2/SN4yRW3CDOYOKSbT+lMHELNjgIWsQBBuEWIMxsIHCGiheG8x7/YjCrqVS33P1E1Vnro6jXvLu+mK7fnnzmro+wxpMuNM/mu8qJNPUndu0/rQ7/ZU1k0Zg1XwrgmgVu/RaOcibbw6NmPRdNrt15jlvUHcjd/5fn3PZ6lKLjEEiRifMBsOKEg5OuF2gp+xKMZ5if0w5zuAca5DlDOJYgxPOoIA1UDkD8J97fhnW0CxikzH4gDa4zlD6TxbgW4d0wKSfeezB7ko76H3+957sD/WNROf9xheIRxFbPY8XRokffvhx4wLLp5walk95NSyf8mpYPhWoYfmUV8PyqUANy6cCNSyfCtSwfCpQw/KpQA3Ip2La5fj0wSAGAjUUn1rTLoZPbWh36T6yVYjUEHxqT7uD82lf2h2UT7G064cffgAgUKsW1ZLzupJarGqxvmnH72rtPhL64ghjrz5etMtqubx9YjnRbYU/WvL6rbPeGK5sl/g8amrmSelRQitpKoumrRO/Jam/o1eST+nqjCrLbFtmfmX+UItyBq+Zsj3pgZTkJu+CKYvqFokr3EhNamRRkh71veUyVRmDLa6sQaBjzThXlrXIbHKZv2UMqlzZCwIdLWtc2R/icjgupt1YjSnbrxBX431L2mVn3ofW+z56e/9JlzuNPX5Elf26JG6OWOxot2xuYWu2a/voTa+lpOVPY7Xed1C27JfE55edNx3Nppycxm7vdb7E/uFl31VX2WnWGz+fOT2o0wuNenOn4p/G3ojTWGk+xQaWdiX5FBtY2pXlU2xgaRfGp38BfMPAsn4U6ecAAAAASUVORK5CYII=",
+    "FaStar": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACDVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9xxQJjAAAArnRSTlMAKPuZ/YgEAQP+f8zWVQL581N3qk0jZvH2E71gS2/6WoNFywdUu0T42V3tzg/8mjhhpOfsa0yUWzxB5iLHRusn9TGY2xdAIWTq7ytu9NVzeBZZnN99Xj/FBu7PbU4vv4EfQwVI8vcz3b7igEJHCS1wUdd1VjfcGKOEifDRUJMSNp07waLlxmkMT5IR2job5CDpyquMKgvUEDQVm3w+4+gkyWdsLtNxUth2V1yfPcOLba28AAAACXBIWXMAABcSAAAXEgFnn9JSAAADMElEQVRo3u2aZ1caQRSGRZooKN0ooqjBRkQ0xl6iJhp7iybRNI0lmt57TO+9997L/MZ4OBxgl93l7uydT+H9unfe58xhdm5ZkpISSoijLPeI/9Nzdv4rzWRZmWdZ+ddpSFCa9Wz8dR0kpA4dE0CAhOVi4Z9SEgEcY7GFUhKlXww28D0acDsFHZBHOBrG9k//wgUY05EBRwhPJlx//Rk+4BnuFiwkRt9QN5AWC5jQIwJuEAFtRQQ8FAL48LawhggqBw3wQRiQhrWFXUREe5EAf8UATTj++URURSiAS+KATRj+9URCGNl5uxRgt3L/O0RSb5TVWRWlnn5pQL+ntCJLvnNhj8mq9jYQoLak2bTOulUQ582NRW61d95AaLTMWTTNXRfJ6Sr7QHv2Ap0zR4aF7PYBu4pbFQyNlBFkrfa/jPg73hEGaugM5ysfYaICffzLRpn2hACprACvQwAtK8DJEKCLFSAQAtzqY+NvDr/bw2wAY5EX4TAL/43Rr/I1A7a94Sv3LvqoQfbv5d92XagEQ7VAC5OM518eELqxf6IRysdEJgW5SP61YvksZxbDP+OgRBW6Qrl/sWTfMG5W6r82Xzrr/5lR6D8Vr664mKnEv68+fuUypyD/n66A1EZtLbT+3Uuwum7bBjr/shfQylF1hcb/wX54bdp6T75/VY+c6ndSPmBSVnl9Tj7gJl5bg9HsUJyjFjn+x2lO0ToZgCIawJQMwAEagFsG4BUNwC8D0EQDuCpjgkZ1Zc/Apzv36S67nUonXPEEn4AN0gGsYMAJOsBlMGCCDuADT/Ipq6NZ6MxfRZuTW6Ffs2gBFiBAqm8uKZF4mAoEPBJ1eOvUpZvmRR/bgIBDYgMU677gTMlZJRJgBI67hBsRszbc9j61dguGJBfC6i7Bol/NSVjntYJH+TMIUBu7MFd9lx81pC2OjcsDAXbwl2kqHUJxjsqYxnQRBHjMW+VtE4t8YuP176dAgF7ueHpcKvZoNie4GgTozIiaijXHi24uiGrPgCkn/CMYLYAsqLcYBccfUks8wYZ51AW8HVNco8GTnArP+u8Hf9fYp+Hx0/aaCz8aE3+q+F/1DyGomHjC4DS6AAAAAElFTkSuQmCC",
+    "FaStore": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABj1BMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////EwBIFAAAAhHRSTlMA+Pzt6BT+3RHgAcAkbUP5E/C4+71/J/ohB6zVFkQGq+5I01rqCPep7Chw154DzG8SVZgcwUpuDE+cICUq1Lo+Kc602JpdVBWU61JCI0ez9jLcGFtg0dZ0t7ydfkAm7yv0MHPauxteoT+CpulOU9l8Gr+ggapskHGVXIAeYQmJy5fnhslRHc6HAAAACXBIWXMAABcSAAAXEgFnn9JSAAACBUlEQVRo3u2YV1PCQBRGF5GgAgIq2BALiL333gV777333nvbHy5YCCSLIt4744x7Hr+dfGfysHs3IYTD4fiTWFmu/h1DGl1i4H5DCwWgsDhQf1QMBWEyKoBgnQLRwe4v3oESZDuZgnwKxjSrv0mAEwg98n7rOAVkP1MmuKagmKT9cw5YgaJZsgXiKDDl/pvhloIz6ndG2OEF2RYfwQZF4Fjs3xQwBDTae0jnofTTlc/NsEWROHnvNyuwBPr6N4GGoqHx9HdTRKrdghZMQSEhgxSVJWLCFRyQVVxBDInEFajJAK5gkehxBQ5ixxU8kQdcwQt5xBW4SCeuoJvcGTH7je6RcI8peHYfdk4lXn+XwXNedzDX4sOYceyPYtv7SHOx+veuWM/Ed46w4tgSGys+/5jJBTWyJaX7RlBhDDpOISR9XhaXFngvjheSsdy/5olrGyVPtJZ9Ed9IPsAcRb6XR3OW+IrClPdCk64Rb0xCXMo3cd+RGIdt10mu14eVp21dCmVG6lmCb6zNTUpO88S6YOLeoqSGNIU9L0s3zP8J/EEuJ2brVFZLc7WpKvSSqplds8Vq0DYtt8vWxOGvCl2g8paEcwEXcAEX/HeBNiJktEEJQOACLuACLuACHMEYrKBNJiiFFeTLBDmgf7D1C/J5WgJo0NtYEzunvUENQnJNPf8k5XB8eQVALxMbhs7tbQAAAABJRU5ErkJggg==",
+    "FaStream": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAHlBMVEVMaXH////////////////////////////////////Z6AnKAAAACXRSTlMAiOUG5ufkh4nWCmnpAAAACXBIWXMAABcSAAAXEgFnn9JSAAAAY0lEQVRo3u3XuRHAIAxFQQT4oP+GHWsceSyy3QJ4GfBbg9/GPVepHiMFYpWLFJj1gSMF1gYCAgICXwO9/vxz93V95Qcn+t4HBwBjxBjxCRMQEDBGjBEAjA6jQ0BAwOgwOuDlAfYcnhHmZ3cuAAAAAElFTkSuQmCC",
+    "FaSyncAlt": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACQFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9tN2DHAAAAv3RSTlMAAfsEIN/4gHeI/P4F+vHh/fce0LVxzAis9JI1BvMf8i5BsVb1MdYHMN02thAaySIlVXp/HUYnkxcRFpx9yquRL5bjJDMUe7M4GdzY+UJuzQmujy3ScA5RMpk3o8cDia1L8LImy0rVG0TpSYwqzwuwTnI0WJt8qtO3c9mBD28jRWznqeyKKPaUuBi9nsKEqI4sUHSY21o74H6iQAKnaY0rDFSX2nhZoYJtujnePsSlQ+iLKc4KkLSVduJHZmJlYF/KtNIAAAAJcEhZcwAAFxIAABcSAWef0lIAAARKSURBVGje7ZrnQxMxGMbT0g1FS1sotLLKkiVTQIZMFRAcDLcCTnDvCbj33nvvvbfmX5MWwV4ud3lzvQ9+6PMxlzy/u2vufZM3Rei/UUTed++PfpNp78/8wbwwdb07iwt36C04QNZdU5+s+qiO+6GC6LGYKuur3e+DdZ9UsALLasbGnCDs5y8wYKas19oU2rufYZjCP18WDU7fXBPnlZ0KE13hGK79RcLR8dG+VnujpL3nqgFzKaUiJmC4Tj/cmquR8J+2HXMrLUPkj3ES1V7zUIsVyODUkP7YSfPPTsYKlVVG+GMj7ddtwoqVphP60wCbenEQ2ueOGo9lAcXjcFCKrcWygBYDVlUkIFPu/g1pji2zzebJ8xzN0xUC1hyQfHLXrbkBH/6i6qfbIvkB2RLzR5u8IUY8G2LObdPyATQ99CBwe6VUQIlaHckDmELrYakplc0XFyxgQCata3Q9K6gnzgACPJT4Fj7Zw04bYUYLCFAovhrZB8tMfQkAQJ54auvvQHNf4hg2oEp07YoOnFyF8YcKcIvy44sisL8gfkoAjpNXuteo4T8KcIumf7Eq/qOABeSFUyq8/wBAKRmkcyNUuf9RABkkLBkq+Y8A2onmOKh/vB4U7CYSreMagP7p0bBwXUG0LoY+wCNgPlhGLJePQQFfYIC7RGJaAp6iR5gA/8puFdHYBQZ4mYBMXzejsC3BAwaErWX4T/V3cyl9Qwg15sr77/H3eids3cyzC9Jc32iWUof7b6ey9baAb2D2DRRSSCGFFJK8FpXE/guctvVlI8UVp0lKHUkaHsAlYeg/OLy5zJLNGpU8RblZwrEuf2MWI+/Z4UXSdGIjX+h/P8zM7QUDNhAj3/gadzIB4JUkIipN1nWURQVFJVD/lcQKayGCAe5BAWeIgSYYoBK6WShNIUbWgQD6eOgD3CdGrkUQgB68m623UN8QAwD395CbBVsDADBmAniKLibHliM2AH7/aLnokCGDDeDwbxOVpnYgJoDDXycqh4xNZQI43j9lN/4asQGJ4HLON3ENdIANwAnLYf5dlILUFAQADJXU0gHna0bKIZU9AgTA+EM18yDJTqu0piIgAFvmTZKzz9lCPWM7j8CAoV9idZRkqaLERh3i0vAAhh64ag6ltDxzjkPihLC5E/EBfBXOqtbUgNwfkdmanCLVt3cp4gf4M+yDrPI4s/lT+dFdcqcM3alIIQCmwy+RLKA2Njj/SPHJmVEYfxJrg/F/OxfJAnzxU7dCuf/FPCQLGI7P2Q6l/rP20L4Wpyj+a/oVnUVpd9IX4i2U/FKdxu9v3yRVkcml5K+YrZyzyVYgvTzL8cfDSmJ9VXST48A6/HSdbGXMG1eTL76B5z1QhANcKSZ09rEV8HJO1CPlanQuk7dvNzWgILW04qTErNUu/FqnzuZ0ZtLuZOEBqbbJsTVpnbpb4LCBlvzfe02m1l/5gxNU/vNMMPoD2rJisiIZAJAAAAAASUVORK5CYII=",
+    "FaTachometerAlt": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACQ1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+2X7EAAAAAwHRSTlMA5ue3AuXWVf77FAGBHRX9ufy6BQQtuAMsZOROZWFQgwulyA5R3A367wyx6PdXo7yCpoCKKI/CJ/CyWsGsT/Mv1BC1Uz7EqtMPHuy79fQpoNsgQmvxs/aUE5k3x+uJ0ZMXiMuNkjBztpcWWRtEJcqrjCrPbfjZORrjYmyQLlIz2CahVD+RaqJnGUCkhWapzQky13VbPGAiRsxLbxI2eX5f6mnVEdo6wMVjBu4fyYvOCq+VPeLDTe1WK76GI44c3kNZ+cR6AAAACXBIWXMAABcSAAAXEgFnn9JSAAAETUlEQVRo3u1Z518TQRDdQCJNEmNUlGYQIx2kiSIIKmAX7F3BLmKXasHee++9997L/mnmLneXvdu5uz3MftG8T9n83rzJvZ2d3b0gFEYYYfxX8MSX7G6prGzZXRLvCbV22ZPi7NYMrCCjO7u4c0+IxNd35jswiMRDKe1/q346ak4MNoCr9sSwv5DfuXcaNsWY+v49lF9VF42ZED1nYU/kp2ALGLDTory3KQZbQsyBdCv6zTZsGY48ZvlhabhHqJjIpr+lGvcQrVUs+oNy9RUWr7x4e5lB6c5NMdcvMviFJ8WJbC8woNwykU9Ya1SLCQFS1lYD0lu7YcPcZLSeymTaVaOJqDNotXbD8lka7H8u8Ysr2/Ka7tC8/DjdBDsMayRb4W0Wxyv7+T86z9LEFXr6N42LcLTMi+sQhssDZg900cxzsP54k96WKzfmh+IwWRoNAWarEtK/lGm2jgZLzFKx+cRKo1EA89kMWv/pRtOF6i4POPReGPSVAxsg6hCPxQmWHr1wf1ZjUq3KoYEwlZroNnICovPfeb01aUZzojjUWwxISvfWFJJ8l2YP6kcuTrfUeJvd+gkUh3qJjogfy0n+qQRVgmtkcJH87WD9BGqHVgP8WaT+kdlkS8xSNoZcRoeeBwbpJD9zHZGgFFxQCI2w4pCW/zKo45wKtwSwxvUd0vDHzFd0jus0NTSBzaFJMF9emGjsSHW1lyibJ5tDi+TRdDUrU96ju7ThUoUlFLA5VO3V4R+UaFSTqBNTj61gqyGMHzWKfGq3WgQ+mLi5L0tJmTeZcZUJ87ngMMgPnPC/WT6eDJL0+5sRh4u0X1b1tQ7po0Fgfbf8AH20DulD2BeS+TmEsXAQK7TskFNKMNyce8i/P0VwdAg7EPrJ0yGMj6DfPB3C+Cg6yNMhjA+jA1wdwj9QJLdVJmIcWs7VIfwCdXN1CPdCiTxrCOMONJurQ3gkUh+ubOPWGK1st2+f8YmRinej7eT7mST/5cSe6tD79XmvleMAWENA/HZEbPiJ8YHgeDCD7zJ5VIMcguIzUU5wkCRHDwWiH89XnWVfARQo3obuBTufcnmz0/MwIUt9WnbSjwDGV6PgW5vIYPgAbfDUDdrzfhX1OgaM74v2MiVYQl+JSpkS1BPlYLPrWqQsLwIztPcTML4IfQ4yUpX7pu4NlkStlgXF70NfiFmSymySTe9+qUIxNctA/HTkIY7ujqH+p7Tvol933YUSbKPriIqf5n8b8JWkRERG5gAVXg4lOA8QtfEFjBvHLChBF0OgcN07ysBbCyVYwBC4X1j1n8x5DwD9OJ953GThhQzKZ/glF+gENQxh9SIzlYE5IorCB4awj4HOaPnwyIocD/kCiwPkDlbm4qPvUlrwGz4JKpSCuMEnQVuw5Kbw0O9Dbk8cZiH6DLlq0kKf4JhqWV73hVq/4b564ccWZoRSPiMtluot62ZGhQwzneF/ZsMI45/CH5SATvw7+r+2AAAAAElFTkSuQmCC",
+    "FaTag": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAA21BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9mHHyBAAAASHRSTlMAEl/9iIAM2ncbZsInS9sRBj4pduAm+Ci9Qa28wWRFu98/7gvZutj76pcaCkKuDmVAB0r0nGPzm95nrxTdvuLhhIPLJcrPzvecdD4yAAAACXBIWXMAABcSAAAXEgFnn9JSAAACGklEQVRo3rWXaVfCMBBFI8giiGwKCCggivu+77vO//9Foh4OTYA2Sd+br/N6L2nopFXqt9avB+diVbWnw0RJOdZKW5yqW3DjlzfEsZJVp9/vzB9WykHwKD41b81fF7+yXsOFp8B6DQNfge0arrwFlmsQIRuEbRC2YeKarbXFfr9+3EHttHHBZnnU6GUwBj3eLo47xTzEoP/+YrA1t4QwaNlVY84idlrbX7PZAux0MHhpNnOAf2swt2g264C5FIylzWYa8MSFCo4Az3ToLaoApncws2Y2bwFzKRjpmM0G4ATSIgd6r4eYrVri5t5jVEQY9ER+LsDPC+KcNhKZk1FjdUkgbwITkVaukk5Xcg0BvWsIuubZAtMgbIOwDcI2CNsgbIOwDcI2CNsgbIOwDUyBVNmCZIEskOVTskASbEFT1cj3SC1zBd/qjivYUQmu4EOVHqiCV6UKSSJ/e2X4LGeJgt2/ecczfO7/j+wUiZ/ZGx1rnDVkFsZHf5bMZxh0Pt5g8tGGST7WMI2PNEzn4wyz+CjDbD7GEMZHGML58Q1R/LiGaH48gw0/jsGO72+w5fsa7Pl+Bhe+j8GN725w5bsa3PluBh++i8GPb2/w5dsa/Pl2hjh8G0M8frQhLj/KEJ8fbkDwwwwY/mwDij/LgONPNyD50wxY/qQBzTcNeL5S1cAX+9eeItRZd/T9vruvKFVKNJ9rO28v7w7X/AC3RXgpPtAwJgAAAABJRU5ErkJggg==",
+    "FaTags": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABm1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9INKl1AAAAiHRSTlMAPgX+EczRZivOZRXpE67WBxgS9PPotP1iFAPnW60CVAHa4/xaiwsEKNIOvahGCFU76j8GsLXZd6APLZn37Anxj3Cz9jJ1uFb7Nx3Co0Hm6ycs+jbbeRfgfhzGaUrvbrH5l3gWWV6h5KZEyqtJjG1T+JY0Od4av8SlQ4bJKa/ydpoZPYAew9yefCnHZQAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAArhJREFUaN7tmed30zAUxUXahqYFWqAFkoYkTduU7gmltKyWvffee++9N+/Phjq2/Ow4sWRfc/jg9/EevfvTk6V3lEiIOOKI4x/Fpvzi2jFyVI4tNZWl7N6Mqn33BvKPzqw1vKnOlMamJlTsM79JLTYm3AR6nVYA9JBqLKsk9DX7L/9qZQCtajWT1sikluV+gBmiaAm/dABeq5T0WaVZiphAmqG9ShQ1wZG89cvu0buPXkFXiafeMccdLAIJLHFbwRK/vsAR7LT9rHnt6IIR7KxRLh+AfQeZc7rA5Qew8yBTPjrkU7Ddandjh9wKO9MyYb1D3gfrGnL8xQSXs7AzbY8f4fIArPPZw0/022oe11vZ8F0lS3z+Cde9+fC+b4Y0PPVEubeu9SCka7TrVM+la7c263RvXwKFDb+9RFETKGoCRU2gqAkQgL2XTpJ7L2EAsobCG3LVAALIGkodrhpQAFnDeXLWAAPQ/ZwBSNy2pWQ/EkBnyiVcZdJlKGD2rAG4wLUhJIB2GoCXXBoUe4CASQPQyy9tRVEEAs6VP8JhJl0Rg0BA+WKSO8akdjEEBHw3ANe5NCfEJMy/64MBGOfaDSGmkyjATOUP73sLhy8NIrzfUm537I+JQz8Mqb4B4Z9aUXGlam80mziCYPlnWir9EavUUG9avZNSxzp2twhbgzV/8bjOY/7ha5DzfzvvOf+wNcj5L1pZZf7hCGr+wQmq/kEJ6v7BCDr+QQh6/voEXX9dgr6/HiGIvw7Bw3+Jv786IbU0mL8qIbi/GiGMvwrB9m8L4O9PCOvvRwjvX5uA8K9FwPhXJ6D8qxFw/t4EpL8XAesvRHMyWn83Ae/vJETh//fO99MyG7Dub+KpfB88AnjonPg8ZtwFt/ey18nOBant4TTmLTVzPNv9LOfUGvM3x4fjZ+Y44vg/4g/d5zb57c6ueQAAAABJRU5ErkJggg==",
+    "FaTasks": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABdFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////89ue+RAAAAe3RSTlMAtMIHBQog5YgGDPTfvknzrvvx1735ARD4JO2vHudH0uaJk9bgReorFd7JTfzkh0IEzS0TmVvhA9ExEvohVBvAzx/T2JrdPaSPcFY3fyLwVZgXWtAw1TUWnH0/gsVEJcqr7ipOkbXZWP2/oD7jgUPoKc7yD1L3FFc4XMN0lUYLAAAACXBIWXMAABcSAAAXEgFnn9JSAAACY0lEQVRo3u2Y6VfTUBDFB+1qsDGtLRYFlEoRKIIIAoLs4gru+77v+wbOP2+bmPCazXM6Mx84vvvpncl5v/sySd+7DYCWlpA6Hhvza5L8QUTs6pflI34aE+KfPIaOqmOyfMRBCf7xLx4fTQn+whYf3zq17KGD2JLSmawNSF0Ydfk/rynXdyedYgZbVqYx/85rfHTFQR2ZCuFDunWDdH36vcZgec7m9yjXduxybwsJAvjgDNpnI/k0g3PuaCB1aymsP1SDqjc8cSOCTzNoDy038WkG32sh1b1NfOJD/mUFisrzpb6mw/XpE7X49ZN+aEcb86/W4vmQzaRpW8V5K6Y/LLpkyfIBXlmR/WHSKUty/bbDjCwfYGh45kwSRJXQefD/UmluVJQ/O4XvNwT5Bwbqvzrjriy/7vBOiJ86/Hfny9+U5SMuCPMxL8FXc0wvU7qeziVD+XsSLOm6dBaxsBjDJ6brUq+dG8v2+3lauda2kyV4OXznT2sEn2Zw0R11PV0M7Q/VoNMbVqP4NIOXoeUmPs2grxhS3Z9gTNe5H4Gi8nw50vVQMX799HTtcwjw6ek6ty+mPyxSHET4AM+Kkf3hvQeh9XsOgnyAvsL6cx1/tbS2ubpvLxtGYeWBEL7/vrtdzz8UWf7XrQPnySo/f9pQz7nOcuDIJKbryaXm8hvgO/Ttb9eb/upHYIstjW/X8MJfHfcZ0IIXgOkvFngNOgJFk9fgW6CYl25RhdmgzV+8zGww4S+OML+mkz2+b/vAnK7h+r+2Cmq6hu68wl+V2E4///b6U5ZKjisV06yMj+ijV0trG+oPaQyDIY9CR3AAAAAASUVORK5CYII=",
+    "FaThumbsUp": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAB/lBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////unmXlAAAAqXRSTlMA7v3T247+/AnHAcnr8AMM6BUE3Mazf63l741JjAVICuE4uBD0VIAjTHD2+0vW+nk7StAw1RH5eIIlytRTlt4+JPIzFJoZ313Y9aRq6auBH0Lnhcipa48tDlFWW548QeaoiSfMCCxvDZMxt1XgHMFfomQCRerLB26xT7baFjrkxQbzL7X4NNl3v8RDhu2LKc6QtPe5V76fPfEiWYdoqhOZvDaDoW26D2Flfd+e1gAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAvVJREFUaN612nVb21AUgPFbp0a9g3ZQCrQMh+HO0OFzd3d3Y+7u7na+5cYKrE3upUl6zvkvlLy/J2nSwn3CmMbpOWl5XVD4LmpjNHPxKSRmYJCEcBXA7FjfEADVkDSO1eh9rzsZgEsXsIF8SJ152MARCQBduP2sRUB7CHelfbjegAoskwGwFhXwywET6l1WJQfOUV6kU3MTE9jKARyYQD0HKEPst3D60IgI3OIBS/H62UYeYMAD1vP6cAatn9fGBZrQgCC3D6+w+mf13H5ONlI/Wsw/gPlI/Z06fl/fgtPvz+H3sb5v8u4I+uYeHGCPoA9jOP2wWdC3PETpe9yiA3iJ0rc9EfUtJSjAiKgPW1D624aEwBKUK9Qu7J/wYgAPQNXo2obbs9T0j+tB9eQcVf4B6NkMWuZZkdIrNADaxqBQKAWtU6joLHU1agbgvYJ+yX3tfXC70vZ7KyGTeZuuv7s1oz58YCzS7LNIPr184zN3SdbtzPqwmEWsvJ/7p4W+DPtQzJr5L8QTwJVMASfz8V8wJoBM+1DJLIJvESTgmjCBBJymBrqJgUJGDESJgQ2MFlgYIQaaGDGwnRowFxEDsIkaGKQGdlEDK6mBw9RADTGgbyAGllPfaNXEQFkvMRBitECBixgIMGIg9xgxAP3UwF5qoI4a6CYGyk8RAwbqyzREDWwkBgw2acJqMlkRgRhLTeSGp7ZqnVjAPiYBwonNCiTggEcCWGe27ThAB5MAs6vbIRzghRAwpQBmrUAnU3aKDFoBoxSA2sTmgtQ3+Ua91n9uZICz4l9fcpkytuZqrKNTPdAnAwDsplWt0htteuoeO1QC7RyA91ExO5f3+1Wt4njVAn+nZkW54j9K8//vNvdiSOocvKfsTJlLk3YSLOec56+w7XgeqErbH12XvMs4/5eC4mXg7/Y580OfPqY+wsB98ybnXNqe+D02KlhB+zHyU/aQRNwoXRQ0BtMvnU/E4t8OGd1TT1jk6nS6gUefh7/++iJf6v8DiQcaDWn14LUAAAAASUVORK5CYII=",
+    "FaTimes": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAk1BMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////bzZmPAAAAMHRSTlMAHhIg4SEfI97iE8rPEM3zBAkDwNNg8PX0v8m+0nC9wswIdHNj1Apxw8jxZMvuYmG/HkQ0AAAACXBIWXMAABcSAAAXEgFnn9JSAAAB0ElEQVRo3u2Y6XLCMAyESQgqvUgI930fvfX+T9dOCwO0sSVH1nSY8f6W90tix5a3UgkKCgoKulpl633am6+avOrtstFLZ+uM7x8P8FvtKqe6uvmpHsRc/8d7POj2hq6G+rH64c7Vn0M4+XMJ5/404dyfR4gbeKGkZquuJZfVDXIeshYin/DbH3GUE4AXRD7hrz9ihwDskU8o8scWAUgLxhhm+nJ+j+oSgH7RoMJ3KHx+xJQAvCKTYPDHIQFYIY9g8scJAWi2WQSj/3hBbl0Jg2D0TxjbY1Q3DD6tJaBLRAShP0kQ+xMED/5Wghd/2zJJENk/e6l38PL87gR3fzdCGX8XQjl/PqGsP5dQ3p9HkPhzCDJ/miD1pwhyfzvBh7+N4MffvD97AoDyJwLlSQblZQrKPxoobxWgvNmB8nYNygcOKB+ZoHzog3Lbot14WfrDyEfraO0/PRCI/lZMIPtnIYHRn4sI2pfA7UZ2jW1TOd9SehHfEYC5dpTQ0w5DnvmLo3gtvRGAmXYg9a4dqWUjWSg4zf871nQNZiPnYNY1Wo6co2XXcDxyDse/5uEw02NevH9I4aYx/0jLP1rd/tNkwatu7ob97qCTV4KCgoKCrlafyu7GQ7M9mRoAAAAASUVORK5CYII=",
+    "FaTimesCircle": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAB6VBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9MyKhJAAAAonRSTlMA2BjaFtX++hcd+Br819zbG/lU+9TdVXcc2dNSsNauBUI1IAEesxIhKxVYGbEjCS3SMuGEb8Gn6ll9vx8KLhSCRUZDJAREYWtmE3/14MsH0BHp8xDomoAmJ215583xcDciqOvMrdGyNlpA7270tt+mBipT/ZvexKopr/K0OCV6bFFeDvaZW+bwLDF+ouUCMLvKq88vcrWWNDlxD/eVM3Z7X2Bhk2lZAAAACXBIWXMAABcSAAAXEgFnn9JSAAAEaElEQVRo3s1aZ0MTQRDdJCRHQAgpJAghdBSRJh2U3hSR3lREFLAi9q7Ye++97C/1klBSZnb3SoT5yOy9CXs7b97MHiEbxrLGW9xdSx7PUpe7czxLX+ydLZVeg0RDTDJ4K1t26oO+dU+1nYKWUP1sq1b0wp7LlGlmT7wG+F0zTso1qWaXSvinVyxUzF7fVAGfu50qMG+j0jNZNUQV2f2xfUrwjyVRxZaUIwyfV2WnKsw59lIM/9tbqtLmC0Xwb12iqi21nY//c5BqsJEKHv6JKarJhlrZ+NkJVKMlZDO54STVbNcZu1QyQnWw2gmUOi9RXSx5AMmva1QnK8gDA3ygulkVhJ9j1y+A9CUa/2wm1dE2R3Prb6qreaLqSy+y0uL98Qg9kA9uYEXvdH5EAKx+SW5Cdh+EfelyvXdLyIO+cPxpZNmmbX7vcB9YYYx+XwYWIbz+FLDwCRk4Gu0zFAd9WARvKP57CxOfkKZyDB+NYCkLCTAD73/G2ooiF7Q/zAg1ayviJPbvD6wJi2BKDPXBEZxrmu8QHz88gikl3AdHOLXqh46hxR2ZKsUGDJ8QB/QS+1b1M8iI0WySaAq6bGnRPjCPzi0790DOUYAPU2wBurcCrk8QRv2ysxpyHjECMNZUWZrkA47dByCMhuX+BS70ScVghB1bgD8Pv4EFQGnA24LkugtqLRpzod//DoFoC7gr0e5FsHlp6scQmplEKtNBogh+UTkKEKRUA6MwCUSIK2d0cIFeQ2KVvhQufjrjcXuHvGKCWfpMnAjxLubjfrXdyi6upjQWfqKB/XSnn0Y45ftMLo5v5EmRO/KiLp5A2LsFw7faeM/elVdNUrURrMncR7vlZbf5ImfHYQg/n49P9/+PADHfIu5Lxo+R2EvmHVNWIqTZBI4pJ9HYZJFm4ifahAZ8OdXMXKpgkh2fsOPNPLJj0bVIQWDRnZlTcMCyrISwfeySmR4nVjLxXQqWzE7EO1cETdoalexSNku29DeJyxakLC/LFlh4DUL7k+8XXpCwM9YyhJe4dAySTzKU2hdZ0hEUvws4MdiA5PsIYVxd8R6FvHVR0teEqxk3U74jDcjDiKOSiTU4hJwH2WCS10Idxw97+P9wntdCkRp4EBrS5BiTcN3qgNlsMfSO4AJl/w9xLrgNZ+CHtbFkHmnE63C6WYmA4EfMEo5RVoQikM7mAqnucAqNEoiXMQwxInTZLyd7HYY/G9m5oOOcGxePYGQ5OLqAuU5HEcp+fQdSv2I8UjNnxXgoCF7qfNUvwKn1GcySwlR98G3D6HD8gC7D8fHYjvenKtbzgkK+Ynkc2ysWQspexPaSSH7TyRrOT4mIErx3RS2+t1BMa5IedVeNnjzh28wcFcxn/qzsuve6MvheZde9fhnqU4I/a1VxJ/7q+QUxdEvBtMpb/bIaSYD7F59o+C5hILafPQTsXH0DQlDfG+qv6vNxSGlbsy8zLDfsmb7m7FJ9P3DpuNXm+Nvt8XT/cbS1d2ycj3r+ARanBS8ydAnSAAAAAElFTkSuQmCC",
+    "FaTools": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACAVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9f68wEAAAAqnRSTlMABAGjAxB4SvjK+U7IC4ACYJ6n9NWqdYefEnv9RyvOD/fvfNcfHvV6mPHwnE2dLeaojnSixo3+SEvyYZD7Zo/2x3kgSSpyyR24Xd3AboprVpm9VTshDOTu1LV3GsTohosKdrm3HAVsmk+Sk18524UjrkyzUTJBImVGzCxvstblZOrLsXNUuzrffRuhROmMz7DzkZY0FbpYm96BZ1KVM9g4GVzDcNy2lD2/0xKLXtQAAAAJcEhZcwAAFxIAABcSAWef0lIAAARrSURBVGjetVpnQxNBEF0CEkCUnoixEAlBIgFRUIoiRToIKEWaYAEV7L333nvv3fmVXu6ScHfZMnuH85GZeW9nZndmbwkhs7Jw0QIiJ2kl6b86tpemFA3k99ZWLxVYLwTI3iyD/nt/KRikRoQPkJWOhZ+sPghm8fSJ8BXBpckx8wYocliMj0tTQSsNHjIw+Jg0fS2i4mcmoPAVWctP0/A6Kn5OHBafn6a4INhcf0g2bWSWNwNsr5+bpq45wgfIL6FZb50zfHqa+gKy+GQRsCX20HXI1peQBdkcBnOauqXXr8jSLA6D8dBN3pZef0jSgSf63dRmYf2iMhjSlGwNn18G3W46YRFfUAZFwmY7YjXl3PyP3MWVIUKQH6tJ5U28ZwB7cWXQbF5QmmiRg42vNq1zqDJoNvNpqhZmU1yp6qtRZdBMVtBU67nrB6hFnQbNYhVNdZ2PD72o06AZ3KSpgnx8uIg6DZpBKk1Vx8l/SAZQp0HTP6KpaNtIhw9VqKbEqQFlG6Xph2oeqilp2oR4mm4Jb/0Al1BNaV6YIZOia+KtH+AvqiklcxhWcfHhD242cBiu9Jy/P8LEh2nkbFiWy6sDBM6uHS4+5TDlPyQz2NnAy1JEBkdj7wQl6NkgiIEhpQn4EW2JoUYw6pan2mQ4IBqm85Il62C6MDiE49peDG2IC4EdhnbUlcNGljAB2IlhCPtJTI+hrOZy462PJ7cW5jyg43v3EFsMugZ94ENVLP66VxKvBgIGQnLf+s0Ei6VePYQMpGEXt41zHg2wDI5Ej87kXhwS/058ApaBdCdFDdwOJL5ym2MxTFQeejyavPt1dUPU2hlmGHxP8Pgshv3e6HZ52WhkOOaTwmcwGORCwSzD9mIiiY9hGPsc9llyI00eH8OQ5ySyslPvvzqO0pcMkjLfDv5/YHCZ/eeYwRXrH2GYhjlgWEzz71JVE172AEhyWl+/Ik9VXSVvxCBjoOPDFtbXuCxDIcNZi/8If0wisuRi+Z5R1d8Eg1gYQyHT1cn+FJSIgY0Px1WDIbDFwMEHl2rRA3YYXDy/IOZhhl+Heq7bVdXG5wHLMazhe3m+qFa7wGoM9SKv06rZetS9lxKDEB/eaYbXrDEkCl0SI//+GLPCsEboMHsVfO4H6TrI4CuTPU+WQQ5fngGff/MdTlSHbap1kzQ+mqG0X7Et9sjjoxmUBtZSZAUfy1DOeilDfKqgKu0lvg1RsoqyOvT6sTFkkc4IlfqG2+jF46MYskmr8Y3YKYGPYagg7dFi0J5fEwUTXMSQ5CPhvvIw4lIhgy9kUO5S/kgoYSmTwhcwuBWDdtO/Mprl8LkMIfxokSs186Oy+BwGFT+6TQPqt1txQBqfyaDh6w5ac1ltM1jAZzC4I9qgVH9Ad43x2V8YVEn1B2QMbp1yn8fm+ikxjBuU300MniYiL4YY3CblPkOWApWE2GNwx/7SIxjdSxv27iHWZFv4pzQpUzStr3P3D7//4M+pAmJZ+l11T5I+1TQY/vgPU6XtzIAFW7EAAAAASUVORK5CYII=",
+    "FaTrophy": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABwlBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+V6nZNAAAAlXRSTlMAd/z68v6wqv0Dp6tmKI8iAgELNN3c8a2NDERtqSDmWkDlPuikQgRHs/YdYIknjpM2O+/02t+haBW/4wVsr5B2gBP4Ec+9ZVUhZLqaDs2udZl6nsKoRuvMCLJQMXQSneCiReoHrEorbpIwc5d4OsDFpuklBkmMEBofhsmLcZUZHsP70TWcYedf9zPSHIO04opb4bzQWEDkncMAAAAJcEhZcwAAFxIAABcSAWef0lIAAALRSURBVGje7Zllc9tAEIbPEFlmiJ0YYg62gQYbZmxSZmZmZoaUWf+38tjSSYpsa0+nmc5Y+8ne2X0f+4Nu31shZEbNxpZuByii9TD9nXUcMOqugH4/WJ8nQP6DjyOIKADQRAJoAgAcJACHCahdgJexcwaFfaKL1+/jDIy+LsRwhkYjshsLaECcwWECagswikf4IIlUGPePqgIkZ8lzEoBP9SxTBzwmAUyrA16LHxlcYCEBPMP9h8WkDeXFzxFc4CEBbMb9YTH5Ab3BFW1iwXkSQFxs78XJefQOfzkYFCoukADuCN2BvTi5it5LSnYLJTECffas0H1Mkl1HM7OSmiNCTR4O+C70LrE4+XFOPn/775WKtsEB30qtbZJfzLn4xFup0bVailU/4ICvxc5Fm9QQfyqk3LK61bVC7iccsFToW9ulYlf98qmZ/cvnluGAL3xbOiWfl8niv1pRlP7OIfQLqs8/ppmFco/eLWX1nxU3FOBa/KxMnRKfvEOvjJgEN+7is2Nmnr7+9jmpf3xwk7b+k+NyhxqboOzoQkoPHLRY6clbpwMqNjsXpqUfyakb+VC3jYa8LRoqe/HwtuvXb/dWvNvUM6wedZapft9f7kyRyqc6/ZpuaIFMzwBcfaAnEwBcA5PpyZGsVu3syGQ6SbI08mu6/jT4yddSW7UAPDr2XkENs3khqGez9vJANf0zm/Tt7lqqnFDsfr3bwWuVAVP694+XKulfpbDgdDaW13c7aaxQx8oaAPcYnSVt6x51/ROt1PbAHpVBIbhMOnH6tlI/H6e7yx5WAoZpb8s3XLBNgAkwASagOGqOXvQNCVuyDbv2Ugz5EpfJxk7MclKrsxucCsH1e0HXkch1qH68A2Z9O1pg+o/6wS8jYAZsB9y+n4PovyC45rAPabtqPS77PgngKQDQTAJo/p9e1O0jAbgAgAQJYBxyzCVcDmC4xp3IjBqNf0VBdwuDaRgIAAAAAElFTkSuQmCC",
+    "FaTruck": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABO1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9uRaD0AAAAaHRSTlMABQJGfqUEZjMDBvspR/b1X/RI2GnZqo3na9e9b7xFwAFOv+hsmpnEkD33yAkOt8HlxibaWZw6PwuRtbp8Pk0Pufw4Ldxe7sKkQuzxMjxBhCeOEvoh0HMRVMVy+F2G3Rlhnq1aJf2LlXX8UmQAAAAJcEhZcwAAFxIAABcSAWef0lIAAAIvSURBVGje7ZhnW8IwEMcPUBALCuLeE/fee4t7773N9/8EFgkdtk1De/HxRf7vuPx7vydNLxcCICUl9Udav44UqM2dAf70b1XEg5I9p3zpoy/Eox6PuQCfxLM2rnhe/4d3ADnhAKR95CdJjpXe8AMgh+6APl+Ae3eAr/wkIgES8P8B+Yq+eHgSCsgyngUDCFkQDSBFogH2BCKaQEQT/CU8KvlRNWOlUQotWuw8B5xKZhCQtgpnAtZe5EhA2+ycCHi7qQMBcbu2J2D2A1sCasOxI+B2tLBe05ViWqZOOIuJ6ck6YVtQ09cIewFBpwptpc9FHVvCdHBf2LmIDpYI6GgmSYAESIAESACGXtNfm0GRgKxqHADl9fVlheRx9G/Blk20qVnt14FQA296lh9uLCElf2SCOoUnPdsPl5ZQpd5cO3kAbD/MjPyer7F9t3O8H7YfoPfOHGk2PhB3B7D9iho8MM0hGTA+UFruegnC9mey0Znb7l0tkjIfcVzvzZl+JfOuD03kYlXmB8Zz0YT1dFWoH6ZpyZinTMtnyb8fxui0QsZgBQ3G/PshWJsbazEGaXF2BP37ASYpvU4PNdJQGsOvTU/p1Pyrdq/Bqx9aR/NfV3u8VF2vipb8724Uv1rT+gdclkoZ7v2ncPwAPU5NA8kP0Tk7/3wYyw+wvGL1Dw3i+dX/b7OW+UYx/arWho32/kVA9qtfX7yrI+eu7QoBvv9nF4i1JRJtsSAI8ktJSSHrG1KzFEYLpFEnAAAAAElFTkSuQmCC",
+    "FaUniversity": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAA8FBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+f7GOoAAAAT3RSTlMA+SNm/vzciND9CfGzMpk8zG9VArtedx+qTYAoDhMDiQjR2xyiDPTVgkSR48QK95rihfbmhMcnMdb64MbvK9oWfQHpBhD4fIEkBe0uM9gZeEHrYQAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAWRJREFUaN7tmWdTwlAQRYmkGkKTGlQEUYoi2Hvvdf//v1FmAmM0wZfHro7Mno/5cM9M5u2dvE0sxjC/S6Xa71crVOnz+ZwKA9KZBfz0uVRyFUZslMqLqPHLBR2+sGbMYKUvZRMaBGCtx1cQ4l86TxCK3WhfTpT+lqnBD7y6Rdn063LpEASwcvlZifhT4wqEOUmmoqXfxNMQkWbhXPjItxtbIIGSyD4KxO+5RyDNdudZsA3kGdMj/jaQJ6RHAtpAnm89EtYG8vh6pNizgQC7N5zxAyCi6QmAjKkR1KnyzzzBw4XxAW72IPHOPwwkL+czFuqcBQhMTIEZIHBMFSteNff5K3giwk5b1OcsYAELWMACFrCABSxgAQtYwAJpgVNDvCc7f3HTJ99VkG9b/r+AGUe3pSOvrgE0/X70Z6e7S7PVPB4aWlR7U9cT6FSCuifQqATa1CzHFar8W0+wSWRQdrhiGBTeAdMo/LVf0hY3AAAAAElFTkSuQmCC",
+    "FaUser": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABpFBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9bMWvtAAAAi3RSTlMAEwWP9BXt/vzzjPgk8fvrb/r5JfL128tZbRiRuUIEa/bXmceJ1hcHFhsBU87YVxnKhSPsza5RdVY3f2AiJ1C3mOWN0LG2wD/pBu4LTv1840NnLrT3FD2AWm6QpMhmiiiz3L3ho2qODbJ0ElWdwSFkAogmDHNUeCBEaM+W2Xebvx/oyYtsld2+n+IclCRQlQAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAAq1JREFUaN7tmGdPG0EQhs/9zsZgG1dscMHGNBd6SeiEFjqEAOm9915Jb/Ong5QvrH0+b5mViOTn653eR9q7md1ZRaGlaTcaCy55vUvBWDTcpCBj2gsBQTFiQoz/sx+AMqyWDqR4s0cDXQJnsxj5YzNQkbdPxfO7NDDAPyiaf6IeDFHfiOVvQFUiQuujVheo4/z5dW6gQLvEm784A1R0mzkFL4GSO3z5HVZagVbgEuwDNdNc/S1AL7DydL49YCDOIQixCL6w5xccLAJHG7NgF5jIMwuibAILsyDGJjjFLPjBJggyC+xsggZmgY9N4Dp+AulLdEX2R5b+m0ovtDCbYJhZ0Ca72SlFFkErx34QYRHc4NkyrZK3TMVCL3BKPrb4OSeqD7SC57yjTTddfr9Z8uF3jP94PUhzfF8WGRAuVK/hR5JHqA3RIW3cb5TvXlaEaTT4l/rrMAblFo+/0iC+iDTrF27qFLV1GvNGxPTtPLE/OFrjd7EvXNrzlomc3eez5yYs+XalRo1jgO2ecyvZlzj85z+nGys0kfTC4eNEX/Ly1xc2xnRP6GhdOeaGNktf2Rx6QLxSjNA7Tk66yjvD1EBPeKTXls3aekfCPQNTOiPCu1dU8c+c9cCJN326en7zGgjwe75KfOeoCkKoq52Grf8+CHPd4BBjvg0IzLZUXJ9fgMK5xxUEo4DEqn7+vIolWFnXy7+1Bmhc06sHJyDyRKc/1GMKvJ/KBClA5XvZmcGFK9g+UyLwADJxkUtMjsnZ5sAWrJBrNAzodMkrgn9cJARb+IJZQvAeX5AkBA34ggVCsI0vSBACkEBNUBP8bwINP99NCHL4ggwh+IgvmCQEr/EFzeSeeRU7f65k03+I3LDtZVdVO3bU/B2dqfcAL/+n/lXbeiqDUA9aJnX0+/4F9ltf91/nTXoAAAAASUVORK5CYII=",
+    "FaUserCheck": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACPVBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////pApiwAAAAvnRSTlMABfkGCgL3Zv4z/SIIBxoJDuG34CG7tdh+sAQos9dWhGXwEisMNdp4wAHKvyTy07SV3R6b/Bn7is1rri11E9wdx6hqrdFvsnT6mFocweXG0DAWWTobICptC06RU9kVuqAf6EjtKa8PdhR7Ayzbo+nnI8ipR9JwUZR6GL08wkHm6yfMSw31MVV5X0CDZIhK77FztlTfoT/kxWMlq+6M89RyEHd8XeOBxGKlQ8lnqs5sTS5xUrma4oDDYYmXj9Y9KLKUSwAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAAA3RJREFUaN7tmfVbGzEYx0tb2muLa4u7w3CGbcCA4TJgDNlwGTZ3Ye7u7u7ue/+20ecGTe+uSbgcz35Yv781yfP5XHuXN8lVpXLGGWf+cVz9+sP0NR3BmgWh39OHRAIfXfL9pUrjTdU6QGO0xCqJ9wxXgzDcpWbF+PsaQSpTmxTiX44E6WTrFeE/14GjcPkK8JtSwXGMXcz8mEDA5XYwq6Aa8GlwZePHGgkCeMomWETigzdT4RjkiAJYwSI4ReaDD4ugm0KQ6yWf3wo0OSBf0EElMMsXLKcSPJMvyKMS+MsXpFMJNtCgmmulWjupBF8p+CfVxu0SzeFUggAy/6V1wq4Vt0dQCdKJ/Ai+ookNu6gE7SR+/mzBKRL2uOloBE0EfrutoJUJ+/wp+H2EFaECKZgDws5vFIJOPH8LWpBfCHsP3iTyuUIs/y469lGKqP8xUXAWHR507OGY42Lzeb34ArzqCXz1IPpQnAewoCvciN3aZ5L6ihcIgnCU72NtGXKZa4hHR/r6Sf+In7D8EhtN5R7Cty2bbSsiX/9MNGsw/IwdyA55buBfwwjN9Vtvw1WHfF/0qSi1tb8KmvlstruSTMyTph1ywF/sgQ47hPRsDFJ9QUcuwR9YEs9JlQxum5vdqB60s/QE+mmillSuUipFG6SkFsEYd4ebtLhWihXjcA+6y66q7BcPcQ+Q5nd70K2f2tN5Hy+egdS9CelhxZIj+HkgTKCHSrFoQhaWL3UflOWL70NojtIHak//efI1bdEGQ2GiVNd1g+GdSSt6Fnba+JtX4+Gj1ybjcvmZeFQ41aMikvjp5m2psC8z2uRZfjme31Jgd7y/c+tINF/EXE1vzQ3Z6Jyu+4Cuy6sS+ObGURw+WGq9r5rO2B/XJ1U30o6jhjpr0+ti3IubeDXML1wWcjdids9Uwijc4TgA5p+0XuQ+xD/AnXuikkBOrqykfJS1T0Be6tvoBDdAbtK0NPwykJ8sCn5OJIMA9pAFkyx8KE8kvv3LZRLAVpLgJxsfEgh8lylGAdeLF/wG1rzBC8zMggK8wMIs8MULfjELjJ5YwQCzADKxAjW7YBwrYOeDwSn43wU6dgF+6Z9g5nPDWMEPZkEJvhaNZ7MKSO/KvzPyfUh/WIxlMfGTh8nbirBQ2fh1712otnbRXXo5qYll/D/HGWecUSZ/APaINBmvVv72AAAAAElFTkSuQmCC",
+    "FaUserCog": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAChVBMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9Rucz+AAAA1nRSTlMANAZv/PcBZgL++iXy++woEvm7Sf0Kwwj26yskE6M8ZZh4tTMJLdrtOsrzBNbpCwV+ig5W3B2EIlrg5SFK38AQ6JAPlbndGdcD5yfMavARxW17MkLIzWt/wo4NsvU2xuqIJgesbgyx9DBUNRZj7k7UU9kav6DjYmdIKS5xFIBLFxxZm6Xhx7dkGz8g2Dhcj9uHr0euTHCzlJkYW57mRq3RkzF0VXmdX0BF79BP1XOcXqHkpquMz7CRL/h3WDnefIHEQ85sTbSanx6Jy5e6Xap1ooNEHyM9UegQcwAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAABIpJREFUaN7tmeV/FEcYxxe4y+VyF9dLLkaMuHuAKHHFvbhb8QLFiWClaAst7u4VoAZVWqCF+Xu42b1sZuWyz85cP+2Le95c8syzv+/tyDPPzHGcxzzmsf/YvMs35JtKlvsP/VfUR5uOtSLBjKu/KXS3fHGcEZEW8mixO+UTiwKR3Mx3lrhNv+kaUrPMT92k39uK1M1gcov+D0bkyswT3KC/0IpcW8hKZv15e9FglubPCohDg9sMbzb9xSEaALSODfBCSx/tYkocG82aALSdBfCBtj7awwJYBQD45tHr9yCIfUwPWA4C5NADzoEAO+kBuSBAED2gBgQYRw94DAKE0QOKQIDh9IBYEKCGHhADAnTQA8KNEMBChlQRBNCvZNkR1gEAVSzJbsoyTX1zEtOG850mYD7bjjblroZ+4EbGTX+RBqBIvQ5vK7cUVsMIPw+q/3268omAuPERfOOysC1e2oDZqwfRr/tM5QkTERAJeIW8dpf6pVFqDwwjIoZAOin0kAv98R9ybgFwXjfVUob5eDjnJgDHRU1VFEipI1wFHyWipoOn69k1ZJXtM3WDPCApUfi0SA5bmc8CBPfmYu2hqMitHXkVWU+Nqsm3q5Roa0scczLvpLyYTZvoqC0TOxcYrjOtx9tYq31IzEiVwXoYtQi70z5i0J8lrKwQg3rtJ3zUh9Of0CeBtr5PqAF/gvSRr9q6HNoXmZCQpJpSLAkJ/qH4j/RkGAC9lilsXhqdLPRfwYVf5RktNhU3TMZ/bwfqI8M/pMSIw5Lj/YoH5yOzhR4vfp4zwzmc/Gp7CQWQdbK/2n7vY6trTq4kF1KWI3Srcu6MWr/PEhOfofDvFadFfCDsK+Hla0+ROW3BgkrDXB9ZS3v/4Xg49J27cPi2nZJMZbOI/VAhebmIN1nOAUwFd+pk53j9TvgqiIHcQvj/6nM6s3aD9ZHRuf69Cwb6X5LAZor+aNF5H+mwsi7hIT/Rs14ynW8p65sWpMt8cnGKyTa72AJaFOeUHivSaTgB2Af+nSUBlIj+eqcnWqf8zEs4j3gPTJcYCWCT/CD01qBP/8etwnONoideAvhS9M8RHAf06fs5Cwv7WtGV0UDoj5k2cNLib02yM/UBOnmZ9A5yMc8lAGSHr8JXAu90jgB/4TX2hnReBYv68bJ7EwuXoxOAX7tQnnF8J4YK/aOYMAe5QzoBox061REKt23HT99umjNN4U/lMnQCvsDf9B44vIVL0Qn4hR8DaHRaGxeoE2DlE3AYMNpRVuhNE2gpBlyGxbbaKQCl/PJZA4rt5igAKBYD2sqEde2nGvJUmMdBXlSAMjxTuSdfO6b/mYAxtSrniKrwJrwFl/K/N+gHoIv8ovo8ohafx7wmNMqaT1/BzcErKr/iKAFmITP031jM7i4gGicF9xeFznYjBSHFouMIdZACgDKq4YA/aACoeZtQKHd0aQKSDFSEBQf+burt3IV2a58yf0Ms1owl9hOOcgWgYQcLwIbnTHbsibA6P2tmclDVEbVzRX49tX7jK9j1WuRKE43t35fu+UHZYx77P9h7Snhkdi+7Wx8AAAAASUVORK5CYII=",
+    "FaUserFriends": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACZFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////DzP8zAAAAy3RSTlMACAL+ATMDmcz6+fdf5w0m+DIt+9ESwfTu/cnYuRaF7GsJ8VtBIusx741uT17kBgvzkS9TfONipUMKkJUU/JrDYeoHaEKKrg721xNWwseoJ/D14EDlgyGniMsMMHOXNRuWNLqgH8ToJO2Lr9MPn+KAI8q1Odbf2bGkyGYEqUfSUZS4N9wYvTyjhGVGiWosk3S3VZg223m8OxzGZEVKktURVLtZoT+CIMVjpkTphyWrSYxtsBAVWN4aXT6BhkgpzmxNLnF2V1w9Hp54Tk3u7Z8AAAAJcEhZcwAAFxIAABcSAWef0lIAAAO2SURBVGje7ZhVVxtRFEaTkEBjhRAIAYK7u0OxYsXdKVK0QIvX3d3d3d3d7f6pZhKgk8mVyaykT/M9Zu05e/TccyMQ8OHDhw8fG6blTnjTkbjrkc5iW1TPU2xXg9nktkusXV6UXwdMstnZqvUbygEz6jf21qtfGwog0S20Vv09cgCNB9rQciksRaNJCUuIYVE/JBYgokPcJdWT+VOSF7aS6i88BpBZATtg2207OuO+0wsvSEfXB+p4cz6+hkklYV/q+1kYAThkxqe6mVNuizGCRQAbFQN31MKogX5k/ZhYvKDTFPfzhGOTQpQgAV8f3DXtS19RXBtKsIkgAPvptKsWhQ1cRAh6SYLvdDoczfkiBEqSwORTOIHmuhECOUmQToOHpWhOWgQXqEmCDBrcigMn4IJQkqCJBp/DgaVwwXKSgP7wFDgwGS5YRxLQu0AEDrwCFzwm1Jel0eAOHBkIF6y0wwt0dNgLA9uhmnY2XhBgAjejQQ9Ur9iIrT8abQInosnjKIHYAyfIMYVvyFCg0zJkw5ZgPs9sMdvlLwyz5BxE1vf5yWQzfeBk7hLcqnkAUb94hzn7A3qTpIHYZd8evmz6p8LgfMirarebMLmI2yDPoQQxnT4vZpLVpeThS8V8l6QFyJmti9G/XFRsxkdxRBnt2v07G3C3NGfqH/pCIWI7ogb5Vrhos6qVmrgIP9LpdHhn98lkyrJdXTbZrPCxdpa+l1RCfhZKJEGwHYjwlLOjybQaEiTEbD68bxqm5TEFo1bloKHrRD1Y40p/QVPbXahpPGrklSQzOvqZJLInitoibO05DJOIvn2g9Vvdl0BjLVF/wiPajOs0MnfCeR+T0I1XW+9qtpNYbUZV1biUKM1mMele43dxUoZdnIIZi8c+J8A6G4wXkUzAGmkTgngQWJLgLYajUghY7/C84C2wLKGfqaOe9hEwzdyzjgSWZtSwZt0iYQ6z05CbxQIwZHjDpknYH4NgHHDIJ+rIMyRqKk9PTXCpDy5QjT8tloTl66kZTgLwkLqEVSRqUj9iSrkJKihBABFT4cd8TPzXUq2RiP0W/OIoAEepSwgmUTOCMa4CwybmNImaFuRyFdRTgkISVSVw4io4TwmukiipgGt9Yx9wIFFKWwvGbS0IsLGgWSSQchVksBDU6fdSSVwFieT/4C6/1CONXAXXKIH3AmS6414bVoOzHOt7sv43e4hTfff1rIfFonIu9cMtGEeFBXKL7887yybeTMU9B/bJSKy153cJfPjw4fN/8xc/fknGoMq9KgAAAABJRU5ErkJggg==",
+    "FaUserGraduate": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACH1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9T2eBEAAAAtHRSTlMA9Pnt/gJmgECImfx36xMI3x9VBVaiJPGPnqPWX7Hp8/jeTb7VRPag8qrn++YDb/UHK24wAQZtkdT32BTdGcyyFcQl6DMipELI7M0JGMdlahK3+jYX5SGNlxZ9XqFOcr+GzgpXnz0eBAy7C7ANs8qbmoVrUde43Hq9Wzx/HUGEJ/COUJN0mNt5foPGJu+Sc7ZUNVk6G8CCY4eMLxBT2XxdQ4tskC7TtFKVdntc4g7h48liYODXCRRsAAAACXBIWXMAABcSAAAXEgFnn9JSAAAD40lEQVRo3u2ZV1saQRSGVxDWRRCiIood7L3EHrsxajSJib1HY40tvffee++99/mBCcICg8vOGZjkyYXf3Q6H731mp+ycMxwHVsTPxe86hUI3v/CjjmOttWrjL+Sm+jltg4qRd3a+Ol2HJJQ2rT1Y5Kd5WIN27jKSUUCtkLzeR/OpZH66DAGUWSVYHlGa11iE2s2IQsFJmtAKoHllaElVIPJFazT9q0iTpV+ThPxSVro6f7WktypfbfyMmCgjPWfZHFadj0NM1fkB78cIYq5DGCCOPaATA9SzB2RhgKPsATw+yE8Zv6T6c56TVfWMmXlGevFDia02yPbbK6PBP3PDwL1LXlbxEiDIr63CqO6S2SZEgE1fkoVaBe1mV0PYh9wBNs2mwv1TZwG7qCdg8isc8C3MB0A4zSsK9wFQTQPYTg+YSqEBpMxQAyx0U9RCDbjrz84jJb3ZFmfW+zQECMUSAY32QLP4HE0HSCL5F4qRhY6GDH92fwkViJHFjoYEOkACCZAjRhY4GhSMAc5X9NrRoKQD6IiDbLQHDojPe+kAZ4mAvNilJZ8nPu+hA1wjL7QoW1yU87GEDhBJBiQufZScjzfpAOTt9LA90Hk87qD6bAZ2EAEx9sgYZ8M8DaCN/Ia22SNdg1BMA9gIHAKEEp0NIQFw/4AQov+EGOvKUSLhgAccdAjcB+E2uAtpreAhcB8ETgsFXAV8kZ0nRoNblrwV5t8COLRMuMLdEsUIE8Q//higA+HSa3JXMODUOAhJjq+7/vDYvV1NXsMbQNn36LD4ByteelAT+hAM85fRyTQ5f9Mg57fqZOZSSwSLgtFkjpdO5PJFHBtVnpBY1AHdrRw7hbxswr4PgW07N7Eu2/WORbaXKxUKZXl75Fgvt6IV/QfSHxlKtZb2kQP7Sq2pQ0F6SvdP1bnA3It3rOvYA3nwZTvSDM7ueFdk8w7Y4i76aILnjzwWenwf4Ou8pZQiQ+U9Y9/cIPmrJVInAez/p1KulbVX9dBk2bxk8HuZi4vsRpo8nvcSbM72Cjjl9dsowP0RWvTmr6WpRfAywae9zB/ZKwkB7o8yb0n5zxgo6im8fGziqATgPukMJ4D9EbogcfmRAK8JEf1R2fK7lh7AOVqA+iN0xdO/IgVc14L4o9wQb+UcYh945FPe2QStzQH90UWPmznfyuFyeQN+bxfK/gbkHQboZg94gQHesgfghc4n7AG7MYCOPSAOA5SxB6RgAPQX9G8B8ez9TRignD0gGgMssAecwQDJ7AHr8N1uP2v/Ox7bdRfjpaZcVmQYVzL1H5coegyz87dKF0mea6IZrIf4aI37+P4GzjnN2oOAN6AAAAAASUVORK5CYII=",
+    "FaUserShield": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACdlBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8rISQAAAA0XRSTlMA/Pv5AgUBZv73Bt+KhO+7CwozAwQoCRNbJ8Ylyv0aH+jyLRsQVsdlCPANshL6WogHrCsMMDWcOsDkRLXepSSV2N3NKX7pjK90WUGYRWtwDrOU19wYvTwizPV54Bzq0NpjpmhO89RT+Nl3uqBiQ6pIkDhc4vZq26mjD1DrPbfW58hHrrh64X8dwuaoSzFVF7ydooMhSm6xT3MRVHgWfV6hPyDFq+5tsJFyOXy/XT7jge1NLtNxtFIUuVeagB7DYdIyidWXlpuFI4+nh1E2ZGyOdpZ1VTEAAAAJcEhZcwAAFxIAABcSAWef0lIAAARLSURBVGje7ZnnX9NAGMdTwA5oC21BZcleIkMURFCRKQoquBVwK+69995777333ntvvf/IXJLS0F5yl7v48U1/r3LX5PfN59bzPCnH+eWXX/9ZQftnp5iyJ0QE/xP3ZFNdBhBluT51s972w2ssQK7YS/l62re1BQJvmU+f0M0/cjRAqXKtTv5nMgBaBpMu/jMtQEnm/jr4d00AyoqdzOzfpTdQ08QIVkANUFdUEJt/fiwGAGawAR7i/MFGpoOj3IwFgL4sgBy8P1jJAphCAAgYSO+fBEi0nR4wgQhQQQ+oJgL0pAdYiQCh9IASIsAaesBlIsBLeoCNCFBMD0gjApTQA4YRAS7SA9ItJICuDEdFKIF/PEtEmEEAmMNy2HW8gPU3JzIFnNtYwCG2iNaxO8Y/sJwx6B/DAGzMecszVf/UNsyA4Gkq/qVDdEjtBp5T9G/opUty6uij4F/WQXFtjO2cWrCMePiMR1BHhrk+XeH+qwUThTtW50STInpl+iRIMd3Qt7YbMEn2EoXz2hIidkyXZ9lZmbPRZWLRtmavF7HXkx6GjgPWJyF2kLC1sCSlHfKOxms9kHM1YvxSHZaCq2hWgOJys8wqMrLZRz+fj9nyU6buord3hvomya8X+Bxbexsp/fuhVrEpeWGZd1/3OMRJcTbP6UxEDmC00xnpgksHWWXBCvTNhwzVJPDx2CVjxIkbPOqFl3untBj4A1xOcUAJwJfwp7bIR69JbtFtXavyflLVzjxx7wcNv1sRZRB7w/n2PRUALOOt8Z7947GPQMX7rOWlI8bEy0c8DA6VOoDj2jwqlt7H3rIjjwcSpUTCECXhALyypVl2F8fFgFCRcJzNeMB4sfOdNIExpP7gJry/CQ+wyeu5sFRif7HELMMDpJBSIzTOk/uDTfCBcXhAqdj5B14v1OAv7pxqLKCD1FkL10SCFkBv4YMPFtBeij/J/PUSLf7iI45mHGCx2LeKv/xs0AQAh5WScDkgbKTY95u//qLNHxRAgysYQH+prx+/qys1AoTqIClWFRAuRdLl/Fm2AmjVXGgxVBUgTTGo4q8rNANyoMVTNUD4fWlBlHt2nAZV5kKPEBXAKKlnPWys0gwAr+BzB5UBEe7jfRhs3dEOGA2fyw1RAgRHSR27hWagdgBcfJ6J9AYYp7u/W4m1HIU/iIIpgXEoGnDSqxilAYD2Qn68AAV44A5Gi7owAG7ByMyZfAHGby0f9uZyDACwj/MNCzxg6eKW1gCOCRAg1AqOmNaAFZ6VtYdjA4CGo/DhIfLs/dNXTy6Q6SmmLJSEzsLTcSHIH6fJaq1FlACwQSQMQsFzZSf3e1qA+aeY8RT6/FLlkse2RAMtwbBMTBOtrdMwe7ZX1vyWFgAs30WHWvlE1PmU0q6P1ATDLykC26QQDObfQNUVKYOoEdXuNMhqh0VFmtJ/F3mTTTTq+8Pz9c5ROy/f5f972S+//o/+Al4W6s/djpZKAAAAAElFTkSuQmCC",
+    "FaUserTie": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACB1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+QMwV4AAAArHRSTlMA8xMh/vQi4e2gYfu2YgX8j/UCYPHrEvqS+SRtpZnWoqHy21oYkbnu+LTgBGvSUW8XjRYbBnfO2FcZvuL3hy08agh5B3jfPSBCZijN9scnUHS30NUlSU5T/RrJZymVFIAey25ZypBpn4UjyOwJTJTXVty9W6MD8I6yVTY7QIPGZCYrDLFzEZfAP2NE6WiMz7DUcpY02RWb3r8fQ4aLbArTcZo43XtcSxzCw7MueENYIAAAAAlwSFlzAAAXEgAAFxIBZ5/SUgAABAJJREFUaN7tWWVX40AUTVtqlELRosV1cXeXXXSBhcV2F2fd3d3d3X3nRy4lTSYTmcmkyTl84H7j5s27PbmZee8NDKMWWZnZORm5Xm9uRk72QhajM8zzcwDBYpJZx/S/liKBBFZPhU7pw0tMQBaRuzr0yD84AhTx8HLw+bebAAbpxcHmj3YBLCLuB5d/GhCRFNT7iSALRAxpz58YA1TA1Ks1f+UIUIXqcI0CnUAltmrLX2FVK2Cq0ySwBFSjTNP5FqlewKrl5JsHFCjUIDBHIzBFn78uhEYgpJRaIBNQoZZaIJtOwEMtkEMnEEYt8I1OIINawEEnEEstkEAnkLf+BAx/RUeMNtnwz9TwjbZAJ3CYWqDU6MOOWaQRGNBQD5JoBFq1lEyrwSWT8agXeGBw25KucaKqUitwXetoU60uf1+4wc3voPb2ulhN+z4ezICwhbyHLxk8Qk0HO6QNpePyx4wzQWMb5lvqS9RjUN5Ukq40iFfqNOvXnZLZ1NYyPW9EzB/2IvUhZKAwTu8Ll/Jaz3CNIyHBUTPsqS1nNrCBdYD9558460dt3J9hir2ibbTe+fl2G132th+n2THczTEzXjS/d4Z74mb39aNj6i/wzO/2cXlSeTIeFYjnH6TyHfxudZu78rugUDbwdBwyMDhgrgbInmxXUZ3PPkZ+qU2+04P3aDYkvOgZsUaKRic3PLU/QdYHf+kdNN5VhU0flSL+WKAJzBhkxxipBRx2RGFKS7Lk1LcLHofJjTN2yZLjJxQFDsqULWgC0xv4VF1XILdHZskXqlbRLQiIF3+i3C5Qd4d3TrZDSRNETLLUpIBKk1vj+iqX/2qXbGUXmtDCUi1YC/x49VFGoEmhNbHAkHaW6WQUdgHEBWl+W55CbCiMyWeZfMiEKixqfCMRuKnUXDnhLgmcFrlReAvEH8IaXvQrhUITmjmqmWCBvynbKRIoUe4PeRNaOWaZZIHMReeUcihvAr/Pk0kWrOKiqKvCzPVOyfuwEy1Y7f3Qd3QG06JzNWEWUrMBqgCzDP3vThluCLBIblIzWcaCW/UeEcjHhQZMeCo4kjEHEYdriMBzXGjAhCJB4WIZJ27VIUQgFhfKenpjAjITcUQLwD1EoBE76fX4Qw4ImZ9EC0A/IoAfJaMlh2HT2gSKX0UhsOIP+SNkfhMtoBLwm9CBvMW8NpIFVAJ+E7pRpoVkAZ1ANF9sOHRiDyJqgRXJVvxLtIBKwM4XGw6rRadARwHQ80/MNJMsQAVMJBNaxcwyyYIYRKCGEO2UNJXJJAt8iMBLQnSXpPjauwhLUhCBu0B3bEZr5lG9898SFX1LrL75HZKrqm6Hrvm7Za7OXuuXv17+qu1tis8UfHKTL0Xo739dOXjxXrtwPwAAAABJRU5ErkJggg==",
+    "FaUsers": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAACTFBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////ocqefAAAAw3RSTlMA/PTk+gTMmTMByYH3FBgXGyX9Bb1yvAnq+bDe8xCUdZ7mHOUCJivaOiBE2ejtKQrdfb7nyGbxLbP2E38I0bL1ErdVmJ1+y6wRXkn4PiS0u+NChakoa64O+zfcoyLH644sUF9FShb+ymjuL9R3fKDEYpXYuXsZPWFw4iNH7IqP0lHXuFZbwmBBZagnaksNMTZaO+CiQIMhxqdpB++NDNVztpc1eN8/gqbpBquMC5G1NFg5XR+lZ6pIzmyvTfKQ03ZcgB6jNS8xAAAACXBIWXMAABcSAAAXEgFnn9JSAAAEMklEQVRo3u1ZZUMbQRBNSI6SBJpAAxGcosWLVoECpUDd3d3d3d3d3d3d9o+1e9mTlctJj3669419M+/dsbszw2GzWbBgwYKF/4tHhTWjMzJG17zq0RXqrrmPYwBCzJgOl9n6c3cADAO2mCo/4SKg8HaCefpTCwADq8+bpT8sGzDRc7M5+gmpQAGTG005Ps+BIgaaYdAOouDkv+v3z45mMPKyDqmy++6qkMOf7MVW34GoOIgFd0/u7QhVuT1jGfKNWXbhnvbjZOuDoxu4ZaE9PMJdt7cMIfXz5Ec9JV1cLwIq+C2Gpvtly8WJuP68u1jWCPEdNqgZzBaf34+tpyZgBsOJtEqBeKZmsF2I9BBEWK5/lkxL8yo4U6gX9jeGZIbKDB5QeRsRs0LNYB8KvEExUyT93CsUm4KoajWDahTYm2IWST3DS+dtQlSKmsEIFDiSpuaJBjNpshNRy9UMslBgJ03NFA1yaLIKUUvVDDJRYAlN+aQrGE+R0xBVqGYwCQW6KaYPp3wNAOiHGC4YXb+EU7gGeC1/SZIT8wTqW3SDGULcWDtJDZIZ5H4kyG5SP54YTd9ZJAa2ENRgbLLJ/4r3c6na2ZqjGWRIcUOKMaa2DK92c2plZIW8FDaWKOtny6tynrx31/Yi63V+rEiO74sxvexK+vYD+HQQln4/ZYzmvqcentbSM+tJZqGSQQ0ZOXTKIng+Bw5SmCw5X52Xtf4piSWfNI4V663zcfo7/5dSWn/rUTOH05w2Un+Mz+TxetJ4p6QearvdBX8hJLRnLQiGQkF3y+u+enPhPCM9YHxqeEO5XomnK8OpUs10YvOVNM/IJud2ffr76QFQnK/S/cxD/kSP/lWmRGS+4thdsb5Ij4Gvjd1POWYhh9swW7a5iXGLc2nN3MVxibLhamU8S6eSNc/8heOFMDkuXcPfsYrM7sSxyKyA66W7f7xBKyd6MoT+zlfJLP1hkZz1TfOlwuBu7chBt66j1S0Vj6SmU6iashw2MuYZEIxU63Xv6QdyLFniSKOWD0Ve7/B0xj4z5hn7qEiVfgg0oySSMsfOmK+c1NpaPvinE+iAcy+fVEkTNmrpO/8lYpYd6EIS3+K5ARRBGcwvhJFxnUAn4o/zHUfdYA2MCxQA3SjuDzP9qgZ8sz4HDOAXzPxAGRB7OZm/uzFGDNJgEXedJjcZn2bANmjQCgxhGcydga/tIk8W3GJXhTGDAmhwjzzzgQXYG8GdqgMGAYehcux8uwM227FVDbIPWfAhxhk1uASzr0s/N2Rc4+9fID9OAF/lbhk1WAWzE0Wx/IBC92gyanBTY3u6YNRghUaDWKMGsZaBWQbVRg2maTQIGzX4rNEg06hBstYxrY8x/YZ1WgfBZcYM7mj/2LvciH6Wjv8puI5M1ysfXKhv3i/f6WnuphnNnlnlNgsWLFiw0HX4A1BZX6xH3uRzAAAAAElFTkSuQmCC",
+    "FaWarehouse": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABPlBMVEVMaXH////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////lgy2UAAAAaXRSTlMARP3dzKpVZjOZAgTLuyn8AyP7Iuvwb/X6iAf4v8QKL5S4ZbdaIU8ByhB3Yui0lRS5vjKO25/554oozXDcer3CiScssjYXO8GsjSv0czXaFpzA5OloSU7zkbUV3nzJSK9NcQ+AW6Kbi1zIR25nAAAACXBIWXMAABcSAAAXEgFnn9JSAAABtklEQVRo3u2Zd1PCMBxAA6WUUkSGA0VFEUEFHIC4xb333nvl+38BreedorTEXxKP3OX9Ry/JO+6lpS0ISSSSGiOwmEhsebktHx47wO9kZnt4rO51qPX4E2edO8B4+fsmBZcx1T/IcHmP3ox/EVWX2aze6m7HFri0DvqwLQ3YhsbTMKuwVlAE7/sZ1goFFLxiWCuiqoNZWBbBg/ZhLYPrflZhbYIbVcNeYCr2H85Zhf1zcEBYKyYqBAeGJQxOE5Yk+KuCuaA8fixvPGFujJiXqTzmyAtCOSdPgTOGnjFXdKTwFRRQka+giDBnpEAKpKCC4GTt2gPmKL9RTbBN+fQSLNgLIn7a2/H1kK1ApX+eWLUV3NELNm0FmjnkMALbMKFLc7ZWXZCFbkkfoaAbKnDViqBLeMGQ8IIbqGCFUODv1EEM5AgFdEgBC8E8NLKHULAA3aYlQsEM7xNtWHhBm/CCvZr9BqQ/+pPQ25ZpebETRmDEYI8fMYNQsAt+/0QouOJ9ovUKL/AJL3CJJciUfbw1h5xBBVlzdrLs0Cgaj2tfHKfMIUtpDUR6x5ydSn47FJ+T/zBLJP/AG/GOFRTcerCsAAAAAElFTkSuQmCC",
+    "FaWrench": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAABp1BMVEVMaXH///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+JEg7+AAAAjHRSTlMAqP6iAwSjdHt4x/Ad+0zMjqH0AkvGnHJ3yd1J8fMeY7YBkefNIvVVIUrvVKaMGiSvV1yAmSC1m9j8a9sc/WzX3OiVX9OP0rNR9pS4ep5/wg3W+ph5vJ1A5YOIyweNK9X5Ndq7Wd99XiXKzy/UU/jev6rtTZAudji+R09t2QVI8ppdYjA/lsMt5pPAOZuzv/UAAAAJcEhZcwAAFxIAABcSAWef0lIAAAJ5SURBVGje7ZdXd9pAEIUnApwYYXqxAYNxiWuKe4kd1/Tee++99+b0xJkfHWGwjgWL4jmayZPu20o6371nmJ1dAJzI+zX//ceR2aPRtquvW/MvgFexb3OzaNFeTvyHLzNYKW0LG74wfwMVYjPI7VPhcZSLP5BV8uu8TPxGTclf5+PB+5Iom38ORfPDcWF+vyZbn809svlhqzC/V5jvnZHlQ6cwH/zC/CuS/VnUmWp+wpZ/u4Nm0F5tELJriZOoHSNtMsUm3hirza8rfnCPYLBb1UNdNfme5fd5gkG9yiBoz8dWgsEBlUGjXX0MPSYYHFIZeOz5OEYwCKkMQnb1MXSaYHBXZaBqo1V8bCYY7FSO0g6b+hh66LRE+MyWj22OD5vKNvJGLK8XCAbPcQ1tZM2PuEQwSCkNnkZeBrsKtfj4m2BwCmvq8qUng50XY5X1MTRPMDi/B+0VPZeoevaTMk5PIFm/SOdRhG5AmXWwns7HP06n9T80XZDNj5+F+WmfaH0QB2Tz44gwXw/I1kfrl82P+4X5Sdn64JBPNL82KJtf75Wt/y7Z/nz0QHR/td/inD99iQbrHeXsK9b5Xw9wOH4zeW06nb7v7zt4fRh4z68Njv7wuXyX7/Jdvst3+S7///NTa7k/ONDHcdn8gaxsfhiVzQ858/bnD4f9/Plhe5nTkymuunVuPrSUQZnSMs7Nh23l+qysm5j50FwibVpZX2DmVxmEmfl2JWLhmz9yd2kZ5OabbarHl/k6Nx8C5kZrCu+4w57f0KLEfFityazAfLDozbhk/qLeTVnxUylgVsYy4j69BXZNDpm91OAZBgnlJlreR6NjIxMBZvBfAECEiimVZxgAAAAASUVORK5CYII=",
+}
+
+
+# ------------------------------------------------------------ components ----
+_KC: dict = {}
+
+
+def _kcomp(name):
+    def deco(fn):
+        _KC[name] = fn
+        return fn
+    return deco
+
+
+def _P(text, size, **kw):
+    """paragraph helper; returns None for empty text so callers can inline optional lines."""
+    if text is None or _ks(text) == "":
+        if not kw.get("runs"):
+            return None
+    d = {"text": text, "size": size}
+    d.update(kw)
+    return d
+
+
+def _B(x, y, w, h):
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def _kdk(ctx):
+    return "FFFFFF" if ctx.dark else ctx.t["dark_bg"]
+
+
+def _list(v):
+    return v if isinstance(v, list) else []
+
+
+@_kcomp("kpis")
+def _kc_kpis(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    items = _list(b.get("items"))
+    n, gap = len(items), 0.2
+    if not n:
+        return
+    tw = (box["w"] - gap * (n - 1)) / n
+    compact = box["h"] < 1.05
+    for i, it in enumerate(items):
+        x = box["x"] + i * (tw + gap)
+        hl = b.get("highlight") == i
+        fill = t["primary"] if hl else (c["surface"] if dark else t["light_surface"])
+        tc = t["on_primary"] if hl else c["text"]
+        mc = _kmix(t["on_primary"], t["primary"], 0.25) if hl else c["muted"]
+        _krr(ctx, _B(x, box["y"], tw, box["h"]), fill, name=f"KPI {i + 1}")
+        pad = 0.15
+        value = _ks(it.get("value", ""))
+        vcol = t["on_primary"] if hl else ("FFFFFF" if dark else t["dark_bg"])
+        if not compact:
+            d = 0.38 if it.get("icon") else 0
+            if it.get("icon"):
+                _k_icon_dot(ctx, x + pad, box["y"] + pad, d, t["accent"] if hl else (t["secondary"] if i % 2 else t["primary"]), it["icon"])
+            vx = x + pad + (d + 0.12 if d else 0)
+            vw = x + tw - pad - vx
+            vs = _k_single_line_size(value, vw, min(30, box["h"] * 19))
+            row_h = max(d, 0.46)
+            _ktext(ctx, [_P(value, vs, bold=True, color=vcol)], _B(vx, box["y"] + pad - 0.04, vw, row_h), valign="middle", quiet=True)
+            trend = it.get("trend")
+            if isinstance(trend, list) and len(trend) >= 2:
+                val_w = (_k_str_em(value, True) * vs) / 72
+                sx0, sx1 = vx + val_w + 0.15, x + tw - pad
+                sh = min(0.34, row_h - 0.06)
+                sy0 = box["y"] + pad - 0.04 + (row_h - sh) / 2
+                if sx1 - sx0 >= 0.45:
+                    vals = [_knum(v) for v in trend]
+                    mn, mx = min(vals), max(vals)
+                    rg = (mx - mn) or 1
+                    P = [(sx0 + (k / (len(vals) - 1)) * (sx1 - sx0), sy0 + sh - ((v - mn) / rg) * sh) for k, v in enumerate(vals)]
+                    sc = t["on_primary"] if hl else t["secondary"]
+                    for k in range(1, len(P)):
+                        _kline(ctx, P[k - 1][0], P[k - 1][1], P[k][0], P[k][1], sc, 1.75)
+                    _kell(ctx, _B(P[-1][0] - 0.045, P[-1][1] - 0.045, 0.09, 0.09), t["accent"])
+            ly = box["y"] + pad + row_h + 0.08
+            _ktext(ctx, [_P(it.get("label"), 11, color=mc, spaceAfter=2),
+                         _P(it.get("delta"), 10, bold=True, color=t["on_primary"] if hl else t["secondary"])],
+                   _B(x + pad, ly, tw - 2 * pad, box["y"] + box["h"] - pad - ly), field="kpi label")
+        else:
+            vw = tw * 0.42
+            _ktext(ctx, [_P(value, _k_single_line_size(value, vw - pad, min(26, box["h"] * 26)), bold=True, color=vcol)],
+                   _B(x + pad, box["y"], vw - pad, box["h"]), valign="middle", quiet=True)
+            _ktext(ctx, [_P(it.get("label"), 10.5, color=tc), _P(it.get("delta"), 9.5, bold=True, color=t["secondary"])],
+                   _B(x + vw, box["y"] + 0.08, tw - vw - pad, box["h"] - 0.16), valign="middle", field="kpi label")
+
+
+@_kcomp("timeline")
+def _kc_timeline(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    items = _list(b.get("items"))
+    n, gap = len(items), 0.22
+    if not n:
+        return
+    tw = (box["w"] - gap * (n - 1)) / n
+    line_y, card_y = box["y"] + 0.5, box["y"] + 0.78
+    card_h = box["y"] + box["h"] - card_y
+    _kline(ctx, box["x"] + tw / 2, line_y, box["x"] + box["w"] - tw / 2, line_y, c["line"] if dark else t["light_line"], 2)
+    for i, it in enumerate(items):
+        x = box["x"] + i * (tw + gap)
+        cx = x + tw / 2
+        hl = bool(it.get("highlight"))
+        dcol = (t["accent"] if dark else t["primary"]) if hl else ("FFFFFF" if dark else t["dark_bg"])
+        _ktext(ctx, [_P(it.get("date"), 13, bold=True, color=dcol, align="center")], _B(x, box["y"], tw, 0.32), valign="middle", quiet=True)
+        _kell(ctx, _B(cx - 0.12, line_y - 0.12, 0.24, 0.24), t["accent"] if hl else t["secondary"], line={"color": c["bg"], "width": 2})
+        paras = [_P(it.get("title"), 11.5, bold=True, color="FFFFFF" if dark else t["dark_bg"], spaceAfter=2),
+                 _P(it.get("text"), 10, color=c["muted"])]
+        if card_h >= 0.45:
+            _krr(ctx, _B(x, card_y, tw, card_h), c["surface"] if dark else t["light_surface"],
+                 line={"color": t["accent"], "width": 1.25} if hl else None)
+            _ktext(ctx, paras, _B(x + 0.12, card_y + 0.1, tw - 0.24, card_h - 0.18), field="timeline item")
+        else:
+            for p in paras:
+                if p:
+                    p["align"] = "center"
+            _ktext(ctx, paras, _B(x, line_y + 0.2, tw, box["y"] + box["h"] - line_y - 0.2), field="timeline item")
+
+
+@_kcomp("cards")
+def _kc_cards(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    items = _list(b.get("items"))
+    n = len(items)
+    if not n:
+        return
+    cols = int(b.get("columns") or (n if n <= 4 else ((5 if box["w"] > 9 else 3) if n == 5 else (3 if n <= 6 else 4))))
+    cols = max(1, cols)
+    rows = (n + cols - 1) // cols
+    gap = 0.2
+    cw = (box["w"] - gap * (cols - 1)) / cols
+    ch = (box["h"] - gap * (rows - 1)) / rows
+    hls = set(x for x in _list(b.get("highlight")) if isinstance(x, (int, float)))
+    for i, it in enumerate(items):
+        r, col = i // cols, i % cols
+        x, y = box["x"] + col * (cw + gap), box["y"] + r * (ch + gap)
+        style = "solid" if i in hls else (b.get("style") or "outline")
+        lo, shadow = None, False
+        if style == "solid":
+            fill, mc, title_c, dot = t["primary"], _kmix(t["on_primary"], t["primary"], 0.15), t["on_primary"], t["accent"]
+        elif style == "tinted":
+            fill = c["surface"] if dark else t["primary_tint"]
+            mc = c["muted"] if dark else t["text"]
+            title_c = "FFFFFF" if dark else t["dark_bg"]
+            dot = t["primary"]
+        else:
+            fill = c["surface"] if dark else "FFFFFF"
+            if not dark:
+                lo, shadow = {"color": t["light_line"], "width": 0.75}, True
+            mc = c["muted"] if dark else t["text"]
+            title_c = "FFFFFF" if dark else t["dark_bg"]
+            dot = t["secondary"] if (i % 2 and not dark) else t["primary"]
+        _krr(ctx, _B(x, y, cw, ch), fill, line=lo, shadow=shadow, name=f"Card {it.get('title', '')}")
+        pad = 0.15
+        tag_c = t["accent"] if style == "solid" else t["secondary"]
+        stat_c = t["on_primary"] if style == "solid" else (t["accent"] if dark else t["primary"])
+
+        def body_paras():
+            out = []
+            if it.get("tag"):
+                out.append(_P(it["tag"], 9.5, bold=True, color=tag_c, spaceAfter=3))
+            if it.get("text"):
+                out.append(_P(it["text"], 10.5, color=mc, spaceAfter=2))
+            for bl in _list(it.get("bullets")):
+                out.append(_P(bl, 10.5, color=mc, bullet=True, spaceAfter=1))
+            return out
+
+        body0 = body_paras()
+        if (it.get("icon") or it.get("stat")) and body0 and (ch < 1.05 or cw / max(ch, 0.01) > 3.2):
+            d = min(0.42, ch - 2 * pad)
+            tx2 = x + pad + d + 0.14
+            if it.get("stat"):
+                sw = min(cw * 0.3, 1.5)
+                ss = _k_single_line_size(it["stat"], sw, 24)
+                _ktext(ctx, [_P(it["stat"], ss, bold=True, color=stat_c)], _B(x + pad, y, sw, ch), valign="middle", quiet=True)
+                tx2 = x + pad + sw + 0.12
+            else:
+                _k_icon_dot(ctx, x + pad, y + (ch - d) / 2, d, dot, it["icon"])
+            _ktext(ctx, [_P(it.get("title"), 12, bold=True, color=title_c, spaceAfter=2)] + body0,
+                   _B(tx2, y + 0.06, x + cw - pad - tx2, ch - 0.12), valign="middle", field="card body")
+            continue
+        head_h, tx = 0.0, x + pad
+        if it.get("icon") or it.get("stat"):
+            head_h = 0.4
+            if it.get("stat"):
+                sw = min(cw * 0.5, 1.6)
+                ss = _k_single_line_size(it["stat"], sw, 24)
+                _ktext(ctx, [_P(it["stat"], ss, bold=True, color=stat_c)], _B(x + pad, y + pad - 0.03, sw, head_h + 0.04), valign="middle", quiet=True)
+                tx = x + pad + min(sw, (_k_str_em(_ks(it["stat"]), True) * ss) / 72) + 0.12
+            else:
+                _k_icon_dot(ctx, x + pad, y + pad, head_h, dot, it["icon"])
+                tx = x + pad + head_h + 0.12
+            _ktext(ctx, [_P(it.get("title"), 12, bold=True, color=title_c)], _B(tx, y + pad - 0.04, x + cw - pad - tx, head_h + 0.08),
+                   valign="middle", field="card title")
+        body = []
+        if not head_h:
+            body.append(_P(it.get("title"), 12.5, bold=True, color=title_c, spaceAfter=3))
+        body += body_paras()
+        by = y + pad + (head_h + 0.1 if head_h else 0)
+        _ktext(ctx, body, _B(x + pad, by, cw - 2 * pad, y + ch - pad + 0.04 - by), field="card body",
+               valign="middle" if (not head_h and ch < 0.9) else "top")
+
+
+@_kcomp("process")
+def _kc_process(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    st = _list(b.get("steps"))
+    n, gap = len(st), 0.18
+    if not n:
+        return
+    sw = (box["w"] - gap * (n - 1)) / n
+    d = min(0.62, sw * 0.32, box["h"] * 0.3)
+    _kline(ctx, box["x"] + sw / 2, box["y"] + d / 2, box["x"] + box["w"] - sw / 2, box["y"] + d / 2,
+           c["line"] if dark else _kmix(t["primary"], "FFFFFF", 0.6), 2, "dash")
+    card_y = box["y"] + d + 0.12
+    card_h = box["y"] + box["h"] - card_y
+    for i, s in enumerate(st):
+        x = box["x"] + i * (sw + gap)
+        cx = x + sw / 2
+        hl = b.get("highlight") == i
+        if card_h >= 0.5:
+            fill = (c["surface2"] if dark else t["primary_tint"]) if hl else (c["surface"] if dark else t["light_surface"])
+            lc = _kmix(t["primary"], "FFFFFF", 0.55) if hl else (c["surface"] if dark else t["light_line"])
+            _krr(ctx, _B(x, card_y, sw, card_h), fill, line={"color": lc, "width": 0.75})
+        _k_icon_dot(ctx, cx - d / 2, box["y"], d, t["secondary"] if hl else t["primary"], s.get("icon") or "check")
+        bd = d * 0.4
+        _kell(ctx, _B(cx + d * 0.22, box["y"] - bd * 0.15, bd, bd), t["accent"])
+        _ktext(ctx, [_P(str(i + 1), max(8, bd * 36), bold=True, color=t["on_accent"], align="center")],
+               _B(cx + d * 0.22, box["y"] - bd * 0.15, bd, bd), valign="middle", quiet=True)
+        paras = [_P(s.get("title"), 12, bold=True, color="FFFFFF" if dark else t["dark_bg"], spaceAfter=2), _P(s.get("text"), 10, color=c["text"])]
+        if card_h >= 0.5:
+            _ktext(ctx, paras, _B(x + 0.1, card_y + 0.09, sw - 0.2, card_h - 0.16), field="process step")
+        else:
+            for p in paras:
+                if p:
+                    p["align"] = "center"
+            _ktext(ctx, paras, _B(x, card_y, sw, card_h), field="process step")
+
+
+@_kcomp("chevrons")
+def _kc_chevrons(ctx, b, box):
+    t = ctx.t
+    st = _list(b.get("stages"))
+    n = len(st)
+    if not n:
+        return
+    h = min(box["h"], 1.0)
+    y = box["y"] + (box["h"] - h) / 2
+    aw = box["w"] / n
+    notch = 0.5 * min(h, aw)
+    for i, s in enumerate(st):
+        x = box["x"] + i * aw
+        fill = _kmix(t["primary"], "FFFFFF", 0.62 * (1 - i / (n - 1)) if n > 1 else 0)
+        _kshp(ctx, "homePlate" if i == 0 else "chevron", _B(x, y, aw + (notch * 0.25 if i < n - 1 else 0), h), fill, name=f"Stage {s.get('title', '')}")
+        tc = _kread(fill, t["dark_bg"])
+        _ktext(ctx, [_P(s.get("title"), 11, bold=True, color=tc, align="center"), _P(s.get("text"), 9.5, color=tc, align="center")],
+               _B(x + (notch if i else 0.12), y + 0.04, aw - notch - (notch * 0.5 if i else 0.12), h - 0.08), valign="middle", field="stage")
+
+
+@_kcomp("layers")
+def _kc_layers(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    tiers = _list(b.get("tiers"))
+    m = len(tiers)
+    if not m:
+        return
+    side = b.get("side") if isinstance(b.get("side"), dict) else None
+    side_w = min(3.0, box["w"] * 0.25) if side else 0
+    side_gap = 0.2 if side else 0
+    label_w, lg, tg = min(1.6, box["w"] * 0.14), 0.12, 0.12
+    band_x = box["x"] + label_w + lg
+    band_w = box["w"] - label_w - lg - side_w - side_gap
+    defaults = ["dark", "secondary", "primary", "neutral", "info", "accent"]
+
+    def item_paras(it, role_c, hl):
+        tc = _kread(role_c) if hl else (t["dark_bg"] if role_c == t["accent"] else role_c)
+        p = [_P(it.get("title"), 11, bold=True, color=tc if hl else ("FFFFFF" if dark else tc), spaceAfter=2)]
+        if it.get("text"):
+            p.append(_P(it["text"], 10, color=tc if hl else c["text"], spaceAfter=1))
+        for x in _list(it.get("bullets")):
+            p.append(_P(x, 10, color=tc if hl else c["text"], bullet=True, spaceAfter=1))
+        return [q for q in p if q]
+
+    needs = []
+    for tr in tiers:
+        its = _list(tr.get("items")) or [{"title": ""}]
+        k = len(its)
+        iw = (band_w - 0.2 - 0.1 * (k - 1)) / k
+        meas = [_k_measure(item_paras(it, t["primary"], False) or [_P(" ", 10)], iw - 0.16) for it in its]
+        need = max(meas) + 0.32 + (0.42 if tr.get("base") else 0)
+        needs.append(max(1.0 if tr.get("base") else 0.62, need))
+    sum_need = sum(needs)
+    avail = box["h"] - tg * (m - 1)
+    if sum_need > avail * 1.12:
+        ctx.warn(f"{ctx.where}: layers content needs ~{sum_need:.1f}in but has {avail:.1f}in — trim item text or give the row more height")
+    hs = [v * avail / sum_need for v in needs]
+    y = box["y"]
+    for i, tr in enumerate(tiers):
+        h = hs[i]
+        role = tr.get("color") or defaults[i % len(defaults)]
+        role_c = _k_role(t, role, t["primary"])
+        if dark and role == "dark":
+            role_c = c["surface2"]
+        _krr(ctx, _B(box["x"], y, label_w, h), role_c, name=f"Tier {tr.get('label', '')}")
+        lc = _kread(role_c)
+        _ktext(ctx, [_P(tr.get("label"), 11, bold=True, color=lc, spaceAfter=2), _P(tr.get("sublabel"), 9.5, color=_kmix(lc, role_c, 0.18))],
+               _B(box["x"] + 0.1, y + 0.06, label_w - 0.2, h - 0.12), valign="middle", field="tier label")
+        band_fill = c["surface"] if dark else (t["light_surface"] if role in ("dark", "neutral") else _kmix(role_c, "FFFFFF", 0.88))
+        _krr(ctx, _B(band_x, y, band_w, h), band_fill)
+        its = _list(tr.get("items"))
+        k = max(1, len(its))
+        iw = (band_w - 0.2 - 0.1 * (k - 1)) / k
+        base_h = 0.32 if tr.get("base") else 0
+        ih = h - 0.2 - (base_h + 0.1 if tr.get("base") else 0)
+        chip = t["primary"] if role in ("dark", "neutral") else role_c
+        for j, it in enumerate(its):
+            x = band_x + 0.1 + j * (iw + 0.1)
+            hl = bool(it.get("highlight"))
+            _krr(ctx, _B(x, y + 0.1, iw, ih), chip if hl else (c["surface2"] if dark else "FFFFFF"),
+                 line=None if (hl or dark) else {"color": _kmix(chip, "FFFFFF", 0.7), "width": 0.75})
+            _ktext(ctx, item_paras(it, chip, hl), _B(x + 0.08, y + 0.16, iw - 0.16, ih - 0.12), valign="middle", field="layer item")
+        if tr.get("base"):
+            _krr(ctx, _B(band_x + 0.1, y + h - 0.1 - base_h, band_w - 0.2, base_h), t["primary"] if dark else t["dark_bg"])
+            _ktext(ctx, [_P(tr["base"], 10, color="FFFFFF", align="center")], _B(band_x + 0.2, y + h - 0.1 - base_h, band_w - 0.4, base_h),
+                   valign="middle", field="tier base")
+        y += h + tg
+    if side:
+        sx = box["x"] + box["w"] - side_w
+        sf = c["surface"] if dark else t["dark_bg"]
+        inner = c["surface2"] if dark else _kmix(t["dark_bg"], "FFFFFF", 0.1)
+        _krr(ctx, _B(sx, box["y"], side_w, box["h"]), sf, name="Side panel")
+        _k_icon_dot(ctx, sx + 0.15, box["y"] + 0.15, 0.42, t["accent"], side.get("icon") or "shield", t["on_accent"])
+        _ktext(ctx, [_P(side.get("title"), 12, bold=True, color="FFFFFF"), _P(side.get("subtitle"), 9.5, color=t["dark_muted"])],
+               _B(sx + 0.66, box["y"] + 0.12, side_w - 0.76, 0.5), valign="middle", field="side title")
+        sitems = _list(side.get("items"))
+        n = len(sitems)
+        if n:
+            top, ig = box["y"] + 0.72, 0.08
+            ih = (box["y"] + box["h"] - 0.12 - top - ig * (n - 1)) / n
+            for j, it in enumerate(sitems):
+                iy = top + j * (ih + ig)
+                _krr(ctx, _B(sx + 0.12, iy, side_w - 0.24, ih), inner)
+                _ktext(ctx, [_P(it.get("title"), 10.5, bold=True, color=t["accent"], spaceAfter=1),
+                             _P(it.get("text"), 9.5, color=_kmix("FFFFFF", t["dark_bg"], 0.1))],
+                       _B(sx + 0.2, iy + 0.05, side_w - 0.4, ih - 0.1), valign="middle", field="side item")
+
+
+# ----- charts (native, editable) -----
+def _k_numfmt(prefix, unit, d):
+    f = (f'"{prefix}"' if prefix else "") + ("#,##0." + "0" * int(d) if d else "#,##0") + (f'"{unit}"' if unit else "")
+    return f
+
+
+def _k_font(font, size, color, bold=None, name=None):
+    font.size = Pt(size)
+    font.color.rgb = RGBColor.from_string(color)
+    if bold is not None:
+        font.bold = bold
+    if name:
+        font.name = name
+
+
+def _k_chart_data(b, series):
+    from pptx.chart.data import CategoryChartData as _CCD  # type: ignore
+    cd = _CCD()
+    cd.categories = [_ks(x) for x in _list(b.get("categories"))]
+    for s in series:
+        cd.add_series(_ks(s.get("name", "")), [_knum(v) for v in _list(s.get("values"))])
+    return cd
+
+
+def _k_series_fill(ser, color, alpha=None):
+    fmt = ser.format
+    fmt.fill.solid()
+    fmt.fill.fore_color.rgb = RGBColor.from_string(color)
+    if alpha is not None:
+        sf = fmt.fill._xPr.find(_kqn("a:solidFill"))
+        if sf is not None and len(sf):
+            a = _K_ET.SubElement(sf[0], _kqn("a:alpha")); a.set("val", str(int(alpha * 1000)))
+
+
+def _k_gridlines(axis, color, width=0.75):
+    axis.has_major_gridlines = True
+    gl = axis.major_gridlines.format.line
+    gl.color.rgb = RGBColor.from_string(color)
+    gl.width = Pt(width)
+
+
+def _k_axis_line_off(axis):
+    axis.format.line.fill.background()
+
+
+@_kcomp("chart")
+def _kc_chart(ctx, b, box):
+    if ctx.dry:
+        return
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    ctype = b.get("chart_type")
+    if ctype == "combo":
+        return _kc_combo(ctx, b, box)
+    T = {"radar": ("radar",), "bar": ("bar", "bar", "clustered"), "column": ("bar", "col", "clustered"),
+         "stacked_bar": ("bar", "bar", "stacked"), "stacked_column": ("bar", "col", "stacked"), "line": ("line",),
+         "area": ("area",), "pie": ("pie",), "doughnut": ("doughnut",)}.get(ctype)
+    if not T:
+        ctx.warn(f"{ctx.where}: unknown chart_type '{ctype}'")
+        return
+    kind = T[0]
+    rnd = kind in ("pie", "doughnut")
+    series = _list(b.get("series"))
+    cats = _list(b.get("categories"))
+    d = int(b.get("decimals") or 0)
+    fmt = _k_numfmt(b.get("prefix"), b.get("unit"), d)
+    label_c = "E8ECF4" if dark else t["text"]
+    axis_c = t["dark_muted"] if dark else t["muted"]
+    show_val = b.get("show_values") is not False
+    legend = b.get("legend") if b.get("legend") is not None else (len(series) > 1 or rnd)
+    XL = XL_CHART_TYPE
+    if kind == "bar":
+        xt = {("bar", "clustered"): XL.BAR_CLUSTERED, ("col", "clustered"): XL.COLUMN_CLUSTERED,
+              ("bar", "stacked"): XL.BAR_STACKED, ("col", "stacked"): XL.COLUMN_STACKED}[(T[1], T[2])]
+    else:
+        xt = {"line": XL.LINE_MARKERS, "area": XL.AREA, "pie": XL.PIE, "doughnut": XL.DOUGHNUT, "radar": XL.RADAR_MARKERS}[kind]
+    gf = ctx.slide.shapes.add_chart(xt, _ke(box["x"]), _ke(box["y"]), _ke(box["w"]), _ke(box["h"]), _k_chart_data(b, series))
+    ch = gf.chart
+    ch.has_title = False
+    ch.font.size = Pt(10)
+    ch.font.name = t["fonts"]["body"]
+    ch.font.color.rgb = RGBColor.from_string(label_c)
+    ch.has_legend = bool(legend)
+    if legend:
+        ch.legend.position = XL_LEGEND_POSITION.RIGHT if rnd else XL_LEGEND_POSITION.BOTTOM
+        ch.legend.include_in_layout = False
+        _k_font(ch.legend.font, 10, label_c, name=t["fonts"]["body"])
+    plot = ch.plots[0]
+    colors = list(t["series"])
+    if kind != "radar" and not rnd:
+        try:
+            plot.vary_by_categories = False
+        except Exception:
+            pass
+    if rnd:
+        pcols = [t["series"][i] if i < 6 else _kmix(t["series"][i % 6], "FFFFFF", 0.45) for i in range(len(cats))]
+        ser = plot.series[0] if plot.series else None
+        if ser is not None:
+            for i in range(len(cats)):
+                pt = ser.points[i]
+                pt.format.fill.solid()
+                pt.format.fill.fore_color.rgb = RGBColor.from_string(pcols[i])
+                pt.format.line.color.rgb = RGBColor.from_string(c["bg"])
+                pt.format.line.width = Pt(1)
+        if kind == "doughnut":
+            dn = plot._element
+            hs = dn.find(_kqn("c:holeSize"))
+            if hs is None:
+                hs = _K_ET.SubElement(dn, _kqn("c:holeSize"))
+            hs.set("val", "58")
+    else:
+        single = len(series) == 1 and not legend and kind == "bar" and T[2] != "stacked"
+        for i, ser in enumerate(plot.series):
+            col = t["primary"] if single else colors[i % len(colors)]
+            if kind in ("line", "radar"):
+                ser.format.line.color.rgb = RGBColor.from_string(col)
+                ser.format.line.width = Pt(2.5 if kind == "line" else 2)
+                ser.smooth = False
+                try:
+                    from pptx.enum.chart import XL_MARKER_STYLE  # type: ignore
+                    ser.marker.style = XL_MARKER_STYLE.CIRCLE
+                    ser.marker.size = 7 if kind == "line" else 6
+                    ser.marker.format.fill.solid()
+                    ser.marker.format.fill.fore_color.rgb = RGBColor.from_string(col)
+                    ser.marker.format.line.color.rgb = RGBColor.from_string(col)
+                except Exception:
+                    pass
+            else:
+                _k_series_fill(ser, col, 70 if kind == "area" else None)
+    if kind == "bar":
+        plot.gap_width = 55
+        if T[2] == "stacked":
+            plot.overlap = 100
+    want_labels = show_val and kind != "radar"
+    if want_labels:
+        plot.has_data_labels = True
+        dl = plot.data_labels
+        dl.number_format = fmt
+        dl.number_format_is_linked = False
+        dl.show_value = True
+        try:
+            dl.show_percentage = False
+            dl.show_category_name = False
+        except Exception:
+            pass
+        dcol = label_c
+        if kind == "bar" and T[2] == "stacked":
+            dcol = "FFFFFF"
+        if kind == "pie":
+            dcol = "FFFFFF"
+        _k_font(dl.font, 10.5, dcol, bold=True, name=t["fonts"]["body"])
+        try:
+            if kind == "bar":
+                dl.position = XL_LABEL_POSITION.CENTER if T[2] == "stacked" else XL_LABEL_POSITION.OUTSIDE_END
+            elif kind == "line":
+                dl.position = XL_LABEL_POSITION.ABOVE
+            elif kind == "pie":
+                dl.position = XL_LABEL_POSITION.BEST_FIT
+        except Exception:
+            pass
+    if not rnd:
+        try:
+            ca, va = ch.category_axis, ch.value_axis
+            _k_font(ca.tick_labels.font, 10, label_c, name=t["fonts"]["body"])
+            _k_axis_line_off(ca)
+            ca.has_major_gridlines = False
+            _k_font(va.tick_labels.font, 9.5 if kind != "radar" else 8.5, axis_c, name=t["fonts"]["body"])
+            va.tick_labels.number_format = fmt
+            va.tick_labels.number_format_is_linked = False
+            if kind == "bar":
+                va.has_major_gridlines = False
+                va.visible = not show_val
+                _k_axis_line_off(va)
+                if T[1] == "bar":
+                    ca.reverse_order = True
+            else:
+                _k_gridlines(va, t["dark_line"] if dark else "E3E7EE")
+                _k_axis_line_off(va)
+        except Exception:
+            pass
+
+
+def _kc_combo(ctx, b, box):
+    t, dark = ctx.t, ctx.dark
+    label_c = "E8ECF4" if dark else t["text"]
+    axis_c = t["dark_muted"] if dark else t["muted"]
+    series = _list(b.get("series"))
+    bars = [s for s in series if s.get("type") != "line"]
+    lines = [s for s in series if s.get("type") == "line"]
+    ordered = bars + lines
+    gf = ctx.slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, _ke(box["x"]), _ke(box["y"]), _ke(box["w"]), _ke(box["h"]),
+                                    _k_chart_data(b, ordered))
+    ch = gf.chart
+    ch.has_title = False
+    ch.font.size = Pt(10)
+    ch.font.name = t["fonts"]["body"]
+    ch.font.color.rgb = RGBColor.from_string(label_c)
+    ch.has_legend = True
+    ch.legend.position = XL_LEGEND_POSITION.BOTTOM
+    ch.legend.include_in_layout = False
+    _k_font(ch.legend.font, 10, label_c)
+    plot = ch.plots[0]
+    plot.gap_width = 55
+    try:
+        plot.vary_by_categories = False
+    except Exception:
+        pass
+    bar_fmt = _k_numfmt(b.get("prefix"), b.get("unit"), int(b.get("decimals") or 0))
+    line_fmt = _k_numfmt(b.get("line_prefix"), b.get("line_unit"), int(b.get("line_decimals") or 0))
+    show = b.get("show_values") is not False
+    for i, ser in enumerate(plot.series):
+        if i < len(bars):
+            _k_series_fill(ser, t["series"][i % 6])
+    if show:
+        plot.has_data_labels = True
+        dl = plot.data_labels
+        dl.number_format, dl.number_format_is_linked = bar_fmt, False
+        _k_font(dl.font, 10, "FFFFFF", bold=True)
+        try:
+            dl.position = XL_LABEL_POSITION.INSIDE_BASE
+        except Exception:
+            pass
+    ca, va = ch.category_axis, ch.value_axis
+    _k_font(ca.tick_labels.font, 10, label_c)
+    _k_font(va.tick_labels.font, 9, axis_c)
+    va.tick_labels.number_format, va.tick_labels.number_format_is_linked = bar_fmt, False
+    _k_gridlines(va, t["dark_line"] if dark else "E3E7EE", 0.5)
+    _k_axis_line_off(va)
+    # move the line series into a <c:lineChart> on secondary axes (keeps workbook references -> editable)
+    bar_el = plot._element
+    plot_area = bar_el.getparent()
+    sers = bar_el.findall(_kqn("c:ser"))[len(bars):]
+    if not sers:
+        return
+    C = lambda tag: _kqn("c:" + tag)  # noqa: E731
+    lc = _K_ET.Element(C("lineChart"))
+    _K_ET.SubElement(lc, C("grouping")).set("val", "standard")
+    _K_ET.SubElement(lc, C("varyColors")).set("val", "0")
+    line_cols = [t["accent"], t["danger"], t["info"]]
+    for k, s in enumerate(sers):
+        bar_el.remove(s)
+        for tag in ("invertIfNegative",):
+            e = s.find(C(tag))
+            if e is not None:
+                s.remove(e)
+        sp = s.find(C("spPr"))
+        if sp is not None:
+            s.remove(sp)
+        col = line_cols[k % 3]
+        sp = _K_ET.fromstring(
+            f'<c:spPr xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+            f'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:ln w="31750" cap="rnd">'
+            f'<a:solidFill><a:srgbClr val="{col}"/></a:solidFill><a:round/></a:ln></c:spPr>')
+        mk = _K_ET.fromstring(
+            f'<c:marker xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+            f'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:symbol val="circle"/><c:size val="7"/>'
+            f'<c:spPr><a:solidFill><a:srgbClr val="{col}"/></a:solidFill><a:ln><a:solidFill><a:srgbClr val="{col}"/></a:solidFill></a:ln></c:spPr></c:marker>')
+        tx = s.find(C("tx"))
+        idx_at = list(s).index(tx) + 1 if tx is not None else 2
+        s.insert(idx_at, sp)
+        s.insert(idx_at + 1, mk)
+        if show:
+            lbl_col = t["accent"] if dark else t["dark_bg"]
+            dl = _K_ET.fromstring(
+                f'<c:dLbls xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" '
+                f'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:numFmt formatCode=\'{line_fmt}\' sourceLinked="0"/>'
+                f'<c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr><c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1000" b="1">'
+                f'<a:solidFill><a:srgbClr val="{lbl_col}"/></a:solidFill></a:defRPr></a:pPr><a:endParaRPr lang="en-US"/></a:p></c:txPr>'
+                f'<c:dLblPos val="t"/><c:showLegendKey val="0"/><c:showVal val="1"/><c:showCatName val="0"/><c:showSerName val="0"/>'
+                f'<c:showPercent val="0"/><c:showBubbleSize val="0"/></c:dLbls>')
+            cat = s.find(C("cat"))
+            s.insert(list(s).index(cat) if cat is not None else len(s), dl)
+        sm = s.find(C("smooth"))
+        if sm is None:
+            _K_ET.SubElement(s, C("smooth")).set("val", "0")
+        lc.append(s)
+    _K_ET.SubElement(lc, C("marker")).set("val", "1")
+    _K_ET.SubElement(lc, C("axId")).set("val", "60000001")
+    _K_ET.SubElement(lc, C("axId")).set("val", "60000002")
+    plot_area.insert(list(plot_area).index(bar_el) + 1, lc)
+    # secondary axes: hidden category axis + right value axis
+    axes_xml = (
+        '<root xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<c:catAx><c:axId val="60000001"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="1"/>'
+        '<c:axPos val="b"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/>'
+        '<c:crossAx val="60000002"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/></c:catAx>'
+        f'<c:valAx><c:axId val="60000002"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/>'
+        f'<c:axPos val="r"/><c:numFmt formatCode=\'{line_fmt}\' sourceLinked="0"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/>'
+        f'<c:tickLblPos val="nextTo"/><c:spPr><a:ln><a:noFill/></a:ln></c:spPr><c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="900">'
+        f'<a:solidFill><a:srgbClr val="{axis_c}"/></a:solidFill></a:defRPr></a:pPr><a:endParaRPr lang="en-US"/></a:p></c:txPr>'
+        '<c:crossAx val="60000001"/><c:crosses val="max"/><c:crossBetween val="between"/></c:valAx></root>')
+    root = _K_ET.fromstring(axes_xml)
+    last_ax = plot_area.findall(C("valAx"))[-1]
+    pos = list(plot_area).index(last_ax) + 1
+    for k, ax in enumerate(list(root)):
+        plot_area.insert(pos + k, ax)
+
+
+@_kcomp("waterfall")
+def _kc_waterfall(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    st = _list(b.get("steps"))
+    n = len(st)
+    if not n:
+        return
+    d = b.get("decimals") if b.get("decimals") is not None else 1
+    cum, bars = 0.0, []
+    for s in st:
+        if s.get("total"):
+            bars.append({"lo": min(0, cum), "hi": max(0, cum), "v": cum, "total": True, "label": s.get("label", "")})
+            continue
+        v = _knum(s.get("value"))
+        lo, hi = min(cum, cum + v), max(cum, cum + v)
+        cum += v
+        bars.append({"lo": lo, "hi": hi, "v": v, "end": cum, "label": s.get("label", "")})
+    vmin = min([0] + [x["lo"] for x in bars])
+    vmax = max(x["hi"] for x in bars)
+    top, bot = box["y"] + 0.32, box["y"] + box["h"] - 0.5
+    ph = bot - top
+    slot = box["w"] / n
+    bw = slot * 0.6
+    Y = lambda v: bot - ((v - vmin) / ((vmax - vmin) or 1)) * ph  # noqa: E731
+
+    def f(v, sign):
+        s = "+" if (sign and v > 0) else ("−" if v < 0 else "")
+        return s + (b.get("prefix") or "") + _kfmt(abs(v), d) + (b.get("unit") or "")
+
+    _kline(ctx, box["x"], Y(0), box["x"] + box["w"], Y(0), t["dark_line"] if dark else t["light_line"], 1)
+    for i, br in enumerate(bars):
+        x = box["x"] + i * slot + (slot - bw) / 2
+        fill = t["primary"] if br.get("total") else (t["secondary"] if br["v"] >= 0 else t["danger"])
+        _krect(ctx, _B(x, Y(br["hi"]), bw, max(0.02, Y(br["lo"]) - Y(br["hi"]))), fill, name=f"Bar {br['label']}")
+        _ktext(ctx, [_P(f(br["v"], not br.get("total")), 10.5, bold=True, color="FFFFFF" if dark else t["dark_bg"], align="center")],
+               _B(box["x"] + i * slot, Y(br["hi"]) - 0.27, slot, 0.24), valign="bottom", quiet=True)
+        _ktext(ctx, [_P(br["label"], 10, color=c["text"], align="center", bold=bool(br.get("total")))],
+               _B(box["x"] + i * slot + 0.03, bot + 0.06, slot - 0.06, 0.44), field="waterfall label")
+        if i < n - 1:
+            lvl = br["v"] if br.get("total") else br["end"]
+            nx = box["x"] + (i + 1) * slot + (slot - bw) / 2
+            _kline(ctx, x + bw, Y(lvl), nx, Y(lvl), t["dark_muted"] if dark else t["muted"], 0.75, "dash")
+
+
+_K_RATING = [
+    (re.compile(r"^(high|critical|red|no|✗|x|fail|poor)$", re.I), "danger"),
+    (re.compile(r"^(medium|med|amber|partial|moderate|◐|in progress)$", re.I), "accent"),
+    (re.compile(r"^(low|green|yes|✓|done|pass|good|strong)$", re.I), "success"),
+]
+_K_NUMCELL = re.compile(r"^[-+]?[€$£]?[\d,.]+[%xMBK]*$")
+
+
+def _k_cell_border(cell, color, w_pt=1):
+    tcPr = cell._tc.get_or_add_tcPr()
+    for tag in ("a:lnL", "a:lnR", "a:lnT", "a:lnB"):
+        old = tcPr.find(_kqn(tag))
+        if old is not None:
+            tcPr.remove(old)
+    # borders must precede the fill in tcPr
+    for k, tag in enumerate(("a:lnL", "a:lnR", "a:lnT", "a:lnB")):
+        ln = _K_ET.Element(_kqn(tag))
+        ln.set("w", str(int(w_pt * 12700)))
+        sf = _K_ET.SubElement(ln, _kqn("a:solidFill"))
+        _K_ET.SubElement(sf, _kqn("a:srgbClr")).set("val", color)
+        tcPr.insert(k, ln)
+
+
+@_kcomp("table")
+def _kc_table(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    cols = [_ks(x) for x in _list(b.get("columns"))]
+    rows = [[_ks(x) for x in _list(r)] for r in _list(b.get("rows"))]
+    k = len(cols)
+    if not k:
+        return
+    rows = [(r + [""] * k)[:k] for r in rows]
+    wts = b.get("col_widths") if isinstance(b.get("col_widths"), list) and len(b["col_widths"]) == k else [1] * k
+    wts = [max(0.05, _knum(v, 1)) for v in wts]
+    sw = sum(wts)
+    col_w = [v / sw * box["w"] for v in wts]
+    hl = set(x for x in _list(b.get("highlight_rows")) if isinstance(x, (int, float)))
+    allr = [cols] + rows
+
+    def row_heights(size):
+        return [max(_k_measure([{"text": cell, "size": size, "bold": ri == 0 or ci == 0}], col_w[ci] - 0.14) for ci, cell in enumerate(r)) + 0.1
+                for ri, r in enumerate(allr)]
+
+    size = 10.5
+    hs = row_heights(size)
+    while sum(hs) > box["h"] and size > 8.5:
+        size -= 0.5
+        hs = row_heights(size)
+    if sum(hs) > box["h"] + 0.05:
+        ctx.warn(f"{ctx.where}: table is taller than its box — fewer rows or shorter cells")
+    extra = max(0, box["h"] - sum(hs))
+    if extra > 0:
+        hs = [min(h + extra / len(hs), h * 1.6) for h in hs]
+    if ctx.dry:
+        return
+    gf = ctx.slide.shapes.add_table(len(allr), k, _ke(box["x"]), _ke(box["y"]), _ke(box["w"]), _ke(sum(hs)))
+    tbl = gf.table
+    tbl.first_row = False
+    tbl.horz_banding = False
+    for ci, w in enumerate(col_w):
+        tbl.columns[ci].width = _ke(w)
+    for ri, h in enumerate(hs):
+        tbl.rows[ri].height = _ke(h)
+    border = t["dark_bg"] if dark else "FFFFFF"
+    for ri, r in enumerate(allr):
+        for ci, cell_txt in enumerate(r):
+            cell = tbl.cell(ri, ci)
+            align, bold, color = None, False, c["text"]
+            if ri == 0:
+                fill, color, bold = (t["primary"] if dark else t["dark_bg"]), "FFFFFF", True
+            else:
+                rr_ = ri - 1
+                z = (c["surface2"] if dark else "FFFFFF") if rr_ % 2 else (c["surface"] if dark else t["light_surface"])
+                fill = (t["primary"] if dark else t["primary_tint"]) if rr_ in hl else z
+                bold = ci == 0 or rr_ in hl
+                s = cell_txt.strip()
+                for rx, role in _K_RATING:
+                    if rx.match(s):
+                        fill = _kmix(t[role], "FFFFFF", 0.15 if dark else 0.84)
+                        color = _kread(_kmix(t[role], "FFFFFF", 0.15)) if dark else _kmix(t[role], "000000", 0.5 if role == "accent" else 0.15)
+                        bold, align = True, "center"
+                        break
+                if align is None and _K_NUMCELL.match(s):
+                    align = "right"
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = RGBColor.from_string(fill)
+            cell.margin_left = cell.margin_right = _ke(0.07)
+            cell.margin_top = cell.margin_bottom = _ke(0.03)
+            cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+            tf = cell.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.alignment = {"center": PP_ALIGN.CENTER, "right": PP_ALIGN.RIGHT}.get(align, PP_ALIGN.LEFT)
+            run = p.add_run()
+            run.text = cell_txt
+            _k_font(run.font, size, color, bold=bold, name=t["fonts"]["body"])
+            _k_cell_border(cell, border)
+
+
+@_kcomp("scorecard")
+def _kc_scorecard(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    opts = [_ks(o) for o in _list(b.get("options"))]
+    crit = _list(b.get("criteria"))
+    k = len(opts)
+    if not k or not crit:
+        return
+    rows_n = len(crit) + (1 if b.get("show_total") else 0)
+    legend_h, head_h = 0.26, 0.42
+    crit_w = max(2.0, box["w"] * 0.36)
+    ow = (box["w"] - crit_w) / k
+    rh = min(0.56, (box["h"] - head_h - legend_h - 0.06) / rows_n)
+    _krr(ctx, _B(box["x"], box["y"], box["w"], head_h), t["primary"] if dark else t["dark_bg"])
+    _ktext(ctx, [_P("Criterion", 10.5, bold=True, color="FFFFFF")], _B(box["x"] + 0.12, box["y"], crit_w - 0.2, head_h), valign="middle", quiet=True)
+    for j, o in enumerate(opts):
+        _ktext(ctx, [_P(o, 10.5, bold=True, color="FFFFFF", align="center")], _B(box["x"] + crit_w + j * ow + 0.04, box["y"], ow - 0.08, head_h),
+               valign="middle", field="scorecard option")
+    ink = "FFFFFF" if dark else t["dark_bg"]
+
+    def ball(cx, cy, dd, s):
+        _kell(ctx, _B(cx - dd / 2, cy - dd / 2, dd, dd), c["surface2"] if dark else "FFFFFF", line={"color": ink, "width": 1.25})
+        sc = max(0, min(4, int(round(_knum(s)))))
+        if sc == 4:
+            _kell(ctx, _B(cx - dd / 2, cy - dd / 2, dd, dd), ink)
+        elif sc > 0:
+            _kshp(ctx, "pie", _B(cx - dd / 2, cy - dd / 2, dd, dd), ink, adj={"adj1": 270 * 60000, "adj2": ((270 + 90 * sc) % 360) * 60000})
+
+    wsum = sum(_knum(cr.get("weight"), 1) if cr.get("weight") is not None else 1 for cr in crit) or 1
+    for i, cr in enumerate(crit):
+        y = box["y"] + head_h + i * rh
+        _krect(ctx, _B(box["x"], y, box["w"], rh), (c["bg"] if dark else "FFFFFF") if i % 2 else (c["surface"] if dark else t["light_surface"]))
+        runs = [{"text": _ks(cr.get("name", "")), "bold": True}]
+        if cr.get("weight") is not None:
+            runs.append({"text": f"  ({round(_knum(cr['weight']) / wsum * 100)}%)", "bold": False, "color": c["muted"]})
+        _ktext(ctx, [{"runs": runs, "size": 10.5, "color": c["text"]}], _B(box["x"] + 0.12, y, crit_w - 0.2, rh), valign="middle", field="criterion")
+        for j, s in enumerate(_list(cr.get("scores"))[:k]):
+            ball(box["x"] + crit_w + j * ow + ow / 2, y + rh / 2, min(0.3, rh * 0.62), s)
+    if b.get("show_total"):
+        y = box["y"] + head_h + len(crit) * rh
+        _krect(ctx, _B(box["x"], y, box["w"], rh), c["surface2"] if dark else t["primary_tint"])
+        _ktext(ctx, [_P("Weighted score (0–4)", 10.5, bold=True, color="FFFFFF" if dark else t["dark_bg"])], _B(box["x"] + 0.12, y, crit_w - 0.2, rh),
+               valign="middle", quiet=True)
+        totals = []
+        for j in range(k):
+            tot = 0.0
+            for cr in crit:
+                sc = _list(cr.get("scores"))
+                w = _knum(cr.get("weight"), 1) if cr.get("weight") is not None else 1
+                tot += (_knum(sc[j]) if j < len(sc) else 0) * w
+            totals.append(tot / wsum)
+        best = max(totals)
+        for j, v in enumerate(totals):
+            _ktext(ctx, [_P(f"{v:.1f}", 13, bold=True, color=(t["accent"] if dark else t["primary"]) if v == best else c["text"], align="center")],
+                   _B(box["x"] + crit_w + j * ow, y, ow, rh), valign="middle", quiet=True)
+    _ktext(ctx, [_P("Harvey balls: empty = 0 (no fit)  ·  quarter = 1  ·  half = 2  ·  three-quarter = 3  ·  full = 4 (strong fit)", 9, color=c["muted"])],
+           _B(box["x"], box["y"] + box["h"] - legend_h + 0.04, box["w"], legend_h - 0.04), valign="middle", quiet=True)
+
+
+@_kcomp("gantt")
+def _kc_gantt(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    P = b.get("periods") if isinstance(b.get("periods"), dict) else {}
+    ph = [dict(p) for p in _list(b.get("phases")) if isinstance(p, dict)]
+    n = len(ph)
+    if not n:
+        return
+    label_w = max(1.4, min(2.3, box["w"] * 0.2))
+    tx, tw = box["x"] + label_w, box["w"] - label_w
+    head_h = 0.3
+    ms = [dict(m) for m in _list(b.get("milestones")) if isinstance(m, dict)]
+    ms_h = 0.46 if ms else 0
+    ticks = []
+    if _list(P.get("labels")):
+        labels = _list(P["labels"])
+        N = len(labels)
+        cwid = tw / N
+        X = lambda v: tx + v * cwid  # noqa: E731
+        ticks = [{"x": X(i), "lx": X(i), "lw": cwid, "label": _ks(l)} for i, l in enumerate(labels)]
+        for p in ph:
+            p["_e"] = _knum(p.get("end")) + 1
+        for m in ms:
+            m["_at"] = _knum(m.get("at")) + 0.5
+    else:
+        s0 = _knum(P.get("start"), 0)
+        s1 = _knum(P.get("end"), s0 + 1)
+        step = _knum(P.get("step"), 1) or 1
+        span = (s1 - s0) or 1
+        X = lambda v: tx + ((v - s0) / span) * tw  # noqa: E731
+        v = s0
+        guard = 0
+        while v <= s1 + 1e-9 and guard < 200:
+            ticks.append({"x": X(v), "lx": X(v) - 0.3, "lw": 0.6, "label": (P.get("prefix") or "") + _kfmt(v, 1 if step % 1 else 0)})
+            v += step
+            guard += 1
+        for p in ph:
+            p["_e"] = _knum(p.get("end"))
+        for m in ms:
+            m["_at"] = _knum(m.get("at"))
+    rows_top = box["y"] + head_h
+    rh = (box["h"] - head_h - ms_h) / n
+    for i in range(n):
+        if i % 2 == 0:
+            _krect(ctx, _B(box["x"], rows_top + i * rh, box["w"], rh), c["surface"] if dark else t["light_surface"])
+    for tk in ticks:
+        _kline(ctx, tk["x"], rows_top - 0.02, tk["x"], rows_top + n * rh, t["dark_line"] if dark else "E1E5EC", 0.75, "dash")
+        _ktext(ctx, [_P(tk["label"], 9.5, color=c["muted"], align="center")], _B(tk["lx"], box["y"], tk["lw"], head_h - 0.04), valign="middle", quiet=True)
+    for m in ms:
+        x = X(m["_at"])
+        y = rows_top + n * rh + 0.04
+        _kline(ctx, x, rows_top, x, y + 0.02, t["accent"], 1, "sysDash")
+        _kshp(ctx, "diamond", _B(x - 0.09, y, 0.18, 0.18), t["accent"])
+        _ktext(ctx, [_P(m.get("label"), 9.5, bold=True, color="FFFFFF" if dark else t["dark_bg"], align="center")], _B(x - 0.8, y + 0.19, 1.6, ms_h - 0.22), quiet=True)
+    cyc = ["neutral", "secondary", "info", "primary", "dark", "accent"]
+    for i, p in enumerate(ph):
+        y = rows_top + i * rh
+        role = p.get("color") or cyc[i % len(cyc)]
+        col = _k_role(t, role, t["primary"])
+        bc = "FFFFFF" if (dark and role == "dark") else col
+        _ktext(ctx, [_P(p.get("label"), 11, bold=True, color="FFFFFF" if dark else t["dark_bg"])], _B(box["x"] + 0.08, y, label_w - 0.14, rh),
+               valign="middle", field="phase label")
+        with_text = bool(p.get("text")) and rh >= 0.48
+        bh = min(0.22, rh * 0.4)
+        by = y + 0.07 if with_text else y + (rh - bh) / 2
+        x1, x2 = X(_knum(p.get("start"))), X(p["_e"])
+        if x2 <= x1:
+            ctx.warn(f"{ctx.where}: phase '{p.get('label')}' end must be after start")
+        bw_ = max(0.1, x2 - x1 - 0.06)
+        _kshp(ctx, "roundRect", _B(x1 + 0.03, by, bw_, bh), bc, radius=bh / 2, name=f"Phase {p.get('label', '')}")
+        p.update({"_x1": x1 + 0.03, "_x2": x1 + 0.03 + bw_, "_ym": by + bh / 2, "_top": by, "_bot": by + bh})
+        if with_text:
+            _ktext(ctx, [_P(p["text"], 9.5, color=c["text"])], _B(tx + 0.03, by + bh + 0.03, tw - 0.06, y + rh - (by + bh + 0.03) - 0.02),
+                   field="phase text", min_size=8.5)
+    col = t["dark_muted"] if dark else t["muted"]
+    for i, p in enumerate(ph):
+        dep = p.get("depends_on")
+        deps = [] if dep is None else (dep if isinstance(dep, list) else [dep])
+        for di in deps:
+            try:
+                di = int(di)
+            except Exception:
+                di = -1
+            d = ph[di] if 0 <= di < n else None
+            if not d or di == i or d.get("_x2") is None:
+                ctx.warn(f"{ctx.where}: phase '{p.get('label')}' depends_on {di} is not a valid phase index")
+                continue
+            down = p["_ym"] > d["_ym"]
+            if p["_x1"] - d["_x2"] >= 0.2:
+                ex = d["_x2"] + 0.1
+                _kline(ctx, d["_x2"], d["_ym"], ex, d["_ym"], col, 1)
+                _kline(ctx, ex, d["_ym"], ex, p["_ym"], col, 1)
+                _kline(ctx, ex, p["_ym"], p["_x1"] - 0.01, p["_ym"], col, 1, arrow=True)
+            else:
+                ex = max(p["_x1"] + 0.12, min(d["_x2"] - 0.12, p["_x1"] + 0.25))
+                _kline(ctx, ex, d["_bot"] if down else d["_top"], ex, (p["_top"] - 0.01) if down else (p["_bot"] + 0.01), col, 1, arrow=True)
+
+
+def _k_ramp(t, i, n):
+    return _kmix(t["primary"], t["secondary"], i / (n - 1) if n > 1 else 0)
+
+
+@_kcomp("pyramid")
+def _kc_pyramid(ctx, b, box):
+    t = ctx.t
+    L = _list(b.get("levels"))
+    n = len(L)
+    if not n:
+        return
+    gap = 0.08
+    lh = (box["h"] - gap * (n - 1)) / n
+    w0 = box["w"] * 0.52
+    for i, lv in enumerate(L):
+        w = w0 + (box["w"] - w0) * (i / (n - 1)) if n > 1 else box["w"]
+        x, y = box["x"] + (box["w"] - w) / 2, box["y"] + i * (lh + gap)
+        fill = _k_ramp(t, i, n)
+        tc = _kread(fill)
+        _krr(ctx, _B(x, y, w, lh), fill, name=f"Level {lv.get('title', '')}")
+        _ktext(ctx, [_P(lv.get("title"), 12, bold=True, color=tc, align="center", spaceAfter=1), _P(lv.get("text"), 10, color=tc, align="center")],
+               _B(x + 0.12, y + 0.04, w - 0.24, lh - 0.08), valign="middle", field="pyramid level")
+
+
+@_kcomp("funnel")
+def _kc_funnel(ctx, b, box):
+    t = ctx.t
+    L = _list(b.get("stages"))
+    n = len(L)
+    if not n:
+        return
+    gap = 0.08
+    lh = (box["h"] - gap * (n - 1)) / n
+    wmin = box["w"] * 0.46
+    for i, lv in enumerate(L):
+        w = box["w"] - (box["w"] - wmin) * (i / (n - 1)) if n > 1 else box["w"]
+        x, y = box["x"] + (box["w"] - w) / 2, box["y"] + i * (lh + gap)
+        fill = _k_ramp(t, i, n)
+        tc = _kread(fill)
+        _krr(ctx, _B(x, y, w, lh), fill, name=f"Stage {lv.get('title', '')}")
+        runs = ([{"text": _ks(lv["value"]) + "  ", "bold": True}] if lv.get("value") else []) + [{"text": _ks(lv.get("title", "")), "bold": True}]
+        _ktext(ctx, [{"runs": runs, "size": 12, "color": tc, "align": "center", "spaceAfter": 1}, _P(lv.get("text"), 10, color=tc, align="center")],
+               _B(x + 0.12, y + 0.04, w - 0.24, lh - 0.08), valign="middle", field="funnel stage")
+
+
+@_kcomp("comparison")
+def _kc_comparison(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    cols = _list(b.get("columns"))
+    k = len(cols)
+    if not k:
+        return
+    vs = bool(b.get("vs")) and k == 2
+    gap = 0.6 if vs else 0.25
+    cw = (box["w"] - gap * (k - 1)) / k
+    head_h = min(0.72, box["h"] * 0.22)
+    foot_h = min(0.55, box["h"] * 0.16) if any(x.get("footer") for x in cols) else 0
+    for i, col in enumerate(cols):
+        x = box["x"] + i * (cw + gap)
+        hl = bool(col.get("highlight"))
+        hf = t["primary"] if hl else (c["surface2"] if dark else t["dark_bg"])
+        _krr(ctx, _B(x, box["y"], cw, head_h), hf, name=f"Column {col.get('title', '')}")
+        tx = x + 0.15
+        if col.get("icon"):
+            _k_icon_dot(ctx, x + 0.14, box["y"] + (head_h - 0.38) / 2, 0.38, t["accent"] if hl else t["primary"], col["icon"])
+            tx = x + 0.62
+        _ktext(ctx, [_P(col.get("title"), 13, bold=True, color="FFFFFF"), _P(col.get("subtitle"), 10, color=_kmix("FFFFFF", hf, 0.25))],
+               _B(tx, box["y"] + 0.04, x + cw - 0.12 - tx, head_h - 0.08), valign="middle", field="column title")
+        by = box["y"] + head_h + 0.08
+        bh = box["h"] - head_h - 0.08 - (foot_h + 0.08 if foot_h else 0)
+        _krr(ctx, _B(x, by, cw, bh), (c["surface2"] if dark else t["primary_tint"]) if hl else (c["surface"] if dark else t["light_surface"]))
+        _ktext(ctx, [_P(bl, 11.5, color=c["text"], bullet=True, spaceAfter=5) for bl in _list(col.get("bullets"))],
+               _B(x + 0.16, by + 0.14, cw - 0.3, bh - 0.24), field="comparison bullets")
+        if foot_h and col.get("footer"):
+            _krr(ctx, _B(x, by + bh + 0.08, cw, foot_h), t["primary"] if hl else (c["surface2"] if dark else t["light_line"]))
+            _ktext(ctx, [_P(col["footer"], 11, bold=True, color=t["on_primary"] if hl else ("FFFFFF" if dark else t["dark_bg"]))],
+                   _B(x + 0.15, by + bh + 0.08, cw - 0.3, foot_h), valign="middle", field="column footer")
+    if vs:
+        cx, cy = box["x"] + cw + gap / 2, box["y"] + head_h / 2
+        _kell(ctx, _B(cx - 0.26, cy - 0.26, 0.52, 0.52), t["accent"], line={"color": c["bg"], "width": 2})
+        _ktext(ctx, [_P("VS", 12, bold=True, color=t["on_accent"], align="center")], _B(cx - 0.26, cy - 0.26, 0.52, 0.52), valign="middle", quiet=True)
+
+
+@_kcomp("matrix")
+def _kc_matrix(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    gx, gy, gw, gh, g = box["x"] + 0.42, box["y"], box["w"] - 0.42, box["h"] - 0.4, 0.08
+    qw, qh = (gw - g) / 2, (gh - g) / 2
+    for i, q in enumerate(_list(b.get("quadrants"))[:4]):
+        x, y = gx + (i % 2) * (qw + g), gy + (i // 2) * (qh + g)
+        hl = b.get("highlight") == i
+        fill = t["primary"] if hl else ((c["surface2"] if i % 3 == 0 else c["surface"]) if dark else (t["primary_tint"] if i % 3 == 0 else t["light_surface"]))
+        _krr(ctx, _B(x, y, qw, qh), fill, name=f"Quadrant {q.get('title', '')}")
+        tc = t["on_primary"] if hl else ("FFFFFF" if dark else t["dark_bg"])
+        _ktext(ctx, [_P(q.get("title"), 12.5, bold=True, color=tc, spaceAfter=2), _P(q.get("text"), 10, color=t["on_primary"] if hl else c["text"])],
+               _B(x + 0.14, y + 0.1, qw * 0.62, qh - 0.2), field="quadrant")
+    for p in _list(b.get("points")):
+        px = gx + max(0, min(1, _knum(p.get("x")))) * gw
+        py = gy + (1 - max(0, min(1, _knum(p.get("y"))))) * gh
+        _kell(ctx, _B(px - 0.09, py - 0.09, 0.18, 0.18), t["accent"], line={"color": "FFFFFF", "width": 1.25})
+        qi = (0 if _knum(p.get("y")) >= 0.5 else 2) + (1 if _knum(p.get("x")) >= 0.5 else 0)
+        q_right = gx + ((qi % 2) + 1) * qw + (qi % 2) * g
+        right = px + 1.7 < q_right
+        lc = t["on_primary"] if b.get("highlight") == qi else ("FFFFFF" if dark else t["dark_bg"])
+        _ktext(ctx, [_P(p.get("label"), 9.5, bold=True, color=lc, align="left" if right else "right")],
+               _B(px + 0.13 if right else px - 1.73, py - 0.12, 1.6, 0.24), valign="middle", quiet=True)
+
+    def ax(a):
+        a = a if isinstance(a, dict) else {}
+        return (f"{a['low']}  ←  " if a.get("low") else "") + _ks(a.get("label", "")) + (f"  →  {a['high']}" if a.get("high") else "")
+
+    _ktext(ctx, [_P(ax(b.get("x_axis")), 10.5, bold=True, color=c["muted"], align="center")], _B(gx, gy + gh + 0.08, gw, 0.3), valign="middle", quiet=True)
+    _ktext(ctx, [_P(ax(b.get("y_axis")), 10.5, bold=True, color=c["muted"], align="center")],
+           _B(box["x"] + 0.17 - gh / 2, gy + gh / 2 - 0.15, gh, 0.3), valign="middle", rotate=270, quiet=True)
+
+
+@_kcomp("hub")
+def _kc_hub(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    nodes = _list(b.get("nodes"))
+    n = len(nodes)
+    center = b.get("center") if isinstance(b.get("center"), dict) else {"title": ""}
+    nw, nh = min(2.5, box["w"] * 0.25), min(0.9, box["h"] * 0.24)
+    cw, chh = min(2.3, box["w"] * 0.24), min(1.3, box["h"] * 0.34)
+    cx, cy = box["x"] + box["w"] / 2, box["y"] + box["h"] / 2
+    rx, ry = (box["w"] - nw) / 2, (box["h"] - nh) / 2
+    pos = []
+    for i in range(n):
+        a = _kmath.radians(-90 + 180 / n + (360 / n) * i)
+        pos.append((cx + rx * _kmath.cos(a), cy + ry * _kmath.sin(a)))
+    for p in pos:
+        _kline(ctx, cx, cy, p[0], p[1], t["dark_line"] if dark else _kmix(t["primary"], "FFFFFF", 0.55), 1.5, "dash")
+    _kell(ctx, _B(cx - cw / 2, cy - chh / 2, cw, chh), t["primary"], shadow=True, name="Hub center")
+    _ktext(ctx, [_P(center.get("title"), 14, bold=True, color=t["on_primary"], align="center", spaceAfter=1),
+                 _P(center.get("text"), 10, color=t["on_primary"], align="center")],
+           _B(cx - cw * 0.36, cy - chh * 0.36, cw * 0.72, chh * 0.72), valign="middle", field="hub center")
+    for i, nd in enumerate(nodes):
+        x, y = pos[i][0] - nw / 2, pos[i][1] - nh / 2
+        _krr(ctx, _B(x, y, nw, nh), c["surface"] if dark else "FFFFFF",
+             line=None if dark else {"color": t["light_line"], "width": 0.75}, shadow=not dark)
+        tx = x + 0.12
+        if nd.get("icon"):
+            _k_icon_dot(ctx, x + 0.12, y + (nh - 0.36) / 2, 0.36, t["secondary"] if i % 2 else t["primary"], nd["icon"])
+            tx = x + 0.58
+        _ktext(ctx, [_P(nd.get("title"), 11, bold=True, color="FFFFFF" if dark else t["dark_bg"], spaceAfter=1), _P(nd.get("text"), 9.5, color=c["text"])],
+               _B(tx, y + 0.06, x + nw - 0.1 - tx, nh - 0.12), valign="middle", field="hub node")
+
+
+@_kcomp("tree")
+def _kc_tree(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    br = _list(b.get("branches"))
+    k = len(br)
+    if not k:
+        return
+    root = b.get("root") if isinstance(b.get("root"), dict) else {"title": ""}
+    gap = 0.2
+    rw, rh = min(5, box["w"] * 0.5), 0.62
+    rx = box["x"] + (box["w"] - rw) / 2
+    _krr(ctx, _B(rx, box["y"], rw, rh), t["primary"] if dark else t["dark_bg"], name="Tree root")
+    _ktext(ctx, [_P(root.get("title"), 13, bold=True, color="FFFFFF", align="center"), _P(root.get("text"), 10, color="E6E9F0", align="center")],
+           _B(rx + 0.15, box["y"] + 0.04, rw - 0.3, rh - 0.08), valign="middle", field="tree root")
+    bw = (box["w"] - gap * (k - 1)) / k
+    bus_y = box["y"] + rh + 0.22
+    hy, hh = bus_y + 0.22, 0.5
+    lc = t["dark_line"] if dark else _kmix(t["dark_bg"], "FFFFFF", 0.6)
+    _kline(ctx, box["x"] + box["w"] / 2, box["y"] + rh, box["x"] + box["w"] / 2, bus_y, lc, 1.25)
+    _kline(ctx, box["x"] + bw / 2, bus_y, box["x"] + box["w"] - bw / 2, bus_y, lc, 1.25)
+    max_leaves = max([1] + [len(_list(x.get("items"))) for x in br])
+    leaf_top = hy + hh + 0.12
+    lg = 0.08
+    lh = min(0.55, (box["y"] + box["h"] - leaf_top - lg * (max_leaves - 1)) / max_leaves)
+    for i, x0 in enumerate(br):
+        x = box["x"] + i * (bw + gap)
+        fill = t["secondary"] if i % 2 else t["primary"]
+        _kline(ctx, x + bw / 2, bus_y, x + bw / 2, hy, lc, 1.25)
+        _krr(ctx, _B(x, hy, bw, hh), fill, name=f"Branch {x0.get('title', '')}")
+        _ktext(ctx, [_P(x0.get("title"), 11.5, bold=True, color=_kread(fill), align="center")], _B(x + 0.08, hy, bw - 0.16, hh), valign="middle", field="branch")
+        for j, leaf in enumerate(_list(x0.get("items"))):
+            y = leaf_top + j * (lh + lg)
+            _krr(ctx, _B(x + 0.08, y, bw - 0.16, lh), c["surface"] if dark else "FFFFFF",
+                 line=None if dark else {"color": _kmix(fill, "FFFFFF", 0.6), "width": 0.75})
+            _ktext(ctx, [_P(leaf, 10, color=c["text"])], _B(x + 0.16, y + 0.03, bw - 0.32, lh - 0.06), valign="middle", field="leaf")
+
+
+@_kcomp("bullets")
+def _kc_bullets(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    inner = box
+    if b.get("panel"):
+        _krr(ctx, box, c["surface"] if dark else t["light_surface"])
+        inner = _B(box["x"] + 0.2, box["y"] + 0.16, box["w"] - 0.4, box["h"] - 0.3)
+    paras = []
+    num = bool(b.get("numbered"))
+    for it in _list(b.get("items")):
+        if isinstance(it, dict):
+            subs = _list(it.get("sub"))
+            runs = ([{"text": _ks(it["lead"]) + " ", "bold": True, "color": "FFFFFF" if dark else t["dark_bg"]}] if it.get("lead") else []) + [{"text": _ks(it.get("text", ""))}]
+            paras.append({"runs": runs, "size": 14, "color": c["text"], "bullet": True, "numbered": num, "spaceAfter": 3 if subs else 8})
+            for j, s in enumerate(subs):
+                paras.append(_P(s, 12, color=c["muted"], bullet=True, indent=1, spaceAfter=8 if j == len(subs) - 1 else 2))
+        else:
+            paras.append(_P(it, 14, color=c["text"], bullet=True, numbered=num, spaceAfter=8))
+    _ktext(ctx, paras, inner, field="bullets", min_size=10)
+
+
+@_kcomp("callout")
+def _kc_callout(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    tone = b.get("tone") or "primary"
+    fill = (c["surface"] if dark else t["dark_bg"]) if tone == "dark" else t["accent"] if tone == "accent" else \
+        (c["surface2"] if dark else t["primary_tint"]) if tone == "tint" else t["primary"]
+    tc = ("FFFFFF" if dark else t["dark_bg"]) if tone == "tint" else _kread(fill, t["dark_bg"])
+    sub = _kmix(tc, fill, 0.22)
+    _krr(ctx, box, fill, name="Callout")
+    pad = min(0.3, box["h"] * 0.14)
+    kind = b.get("kind") or "statement"
+    if kind == "stat":
+        value = _ks(b.get("value", ""))
+        narrow = box["w"] < box["h"] * 1.6
+        vw = box["w"] - 2 * pad if narrow else min(box["w"] * 0.42, 3.4)
+        vs = _k_single_line_size(value, vw, min(60, (box["h"] * 0.42 if narrow else box["h"] * 0.7) * 72 * 0.85))
+        if narrow:
+            _ktext(ctx, [_P(value, vs, bold=True, color=tc)], _B(box["x"] + pad, box["y"] + pad, vw, vs * 1.15 / 72), valign="middle", quiet=True)
+            ty = box["y"] + pad + vs * 1.15 / 72 + 0.05
+            _ktext(ctx, [_P(b.get("text"), 13, color=tc, spaceAfter=4), _P(b.get("attribution"), 9.5, italic=True, color=sub)],
+                   _B(box["x"] + pad, ty, box["w"] - 2 * pad, box["y"] + box["h"] - pad - ty), field="callout text")
+        else:
+            _ktext(ctx, [_P(value, vs, bold=True, color=tc)], _B(box["x"] + pad, box["y"], vw, box["h"]), valign="middle", quiet=True)
+            _ktext(ctx, [_P(b.get("text"), 15, color=tc, spaceAfter=4), _P(b.get("attribution"), 10, italic=True, color=sub)],
+                   _B(box["x"] + pad + vw + 0.2, box["y"] + pad, box["w"] - vw - 2 * pad - 0.2, box["h"] - 2 * pad), valign="middle", field="callout text")
+        return
+    tx = box["x"] + pad
+    if kind == "quote" or b.get("icon"):
+        d = min(0.5, box["h"] * 0.4)
+        _k_icon(ctx, "FaQuoteLeft" if kind == "quote" else b["icon"], t["dark_bg"] if tone == "accent" else t["accent"], box["x"] + pad, box["y"] + pad, d, d)
+        tx = box["x"] + pad + d + 0.2
+    attr = b.get("attribution")
+    _ktext(ctx, [_P(b.get("text"), 17 if kind == "quote" else 19, italic=kind == "quote", bold=kind != "quote", color=tc, spaceAfter=6),
+                 _P((("— " if kind == "quote" else "") + _ks(attr)) if attr else None, 10.5, color=sub)],
+           _B(tx, box["y"] + pad, box["x"] + box["w"] - pad - tx, box["h"] - 2 * pad), valign="middle", field="callout", min_size=11)
+
+
+@_kcomp("agenda")
+def _kc_agenda(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    it = _list(b.get("items"))
+    n = len(it)
+    if not n:
+        return
+    cols = 2 if n > 5 else 1
+    per = (n + cols - 1) // cols
+    gap, cg = 0.14, 0.4
+    cw = (box["w"] - cg * (cols - 1)) / cols
+    ih = min(1.0, (box["h"] - gap * (per - 1)) / per)
+    for i, x in enumerate(it):
+        col, r = i // per, i % per
+        X, Y = box["x"] + col * (cw + cg), box["y"] + r * (ih + gap)
+        hl = b.get("highlight") == i
+        _krr(ctx, _B(X, Y, cw, ih), t["primary"] if hl else (c["surface"] if dark else t["light_surface"]))
+        nw = min(0.9, ih * 1.1)
+        _ktext(ctx, [_P(f"{i + 1:02d}", min(26, ih * 34), bold=True, color=t["accent"] if (hl or dark) else t["primary"])], _B(X + 0.15, Y, nw, ih),
+               valign="middle", quiet=True)
+        _ktext(ctx, [_P(x.get("title"), 14, bold=True, color=t["on_primary"] if hl else ("FFFFFF" if dark else t["dark_bg"]), spaceAfter=1),
+                     _P(x.get("text"), 10.5, color=t["on_primary"] if hl else c["muted"])],
+               _B(X + 0.15 + nw, Y + 0.05, cw - nw - 0.3, ih - 0.1), valign="middle", field="agenda item")
+
+
+@_kcomp("progress")
+def _kc_progress(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    it = _list(b.get("items"))
+    n = len(it)
+    if not n:
+        return
+    rh = min(0.62, box["h"] / n)
+    unit = _ks(b.get("unit")) if b.get("unit") is not None else "%"
+    lw = max(1.2, min(2.8, box["w"] * 0.3))
+    vw = 0.75
+    tx = box["x"] + lw + 0.12
+    tw = box["w"] - lw - vw - 0.24
+    y0 = box["y"] + (box["h"] - rh * n) / 2
+    for i, x in enumerate(it):
+        y = y0 + i * rh
+        mx = _knum(x.get("max"), 100) or 100
+        val = _knum(x.get("value"))
+        frac = max(0, min(1, val / mx))
+        bh = min(0.2, rh * 0.36)
+        by = y + (rh - bh) / 2
+        _ktext(ctx, [_P(x.get("label"), 11, bold=True, color="FFFFFF" if dark else t["dark_bg"]), _P(x.get("text") if rh > 0.45 else None, 9, color=c["muted"])],
+               _B(box["x"], y, lw, rh), valign="middle", field="progress label")
+        _kshp(ctx, "roundRect", _B(tx, by, tw, bh), c["surface2"] if dark else t["light_line"], radius=bh / 2)
+        if frac > 0:
+            _kshp(ctx, "roundRect", _B(tx, by, max(bh, tw * frac), bh), t["secondary"] if i % 2 else t["primary"], radius=bh / 2, name=f"Bar {x.get('label', '')}")
+        if x.get("target") is not None:
+            mxp = tx + tw * max(0, min(1, _knum(x["target"]) / mx))
+            _krect(ctx, _B(mxp - 0.025, by - 0.07, 0.05, bh + 0.14), t["accent"])
+        _ktext(ctx, [_P(_kfmt(val, 1 if val % 1 else 0) + unit, 12, bold=True, color="FFFFFF" if dark else t["dark_bg"], align="right")],
+               _B(box["x"] + box["w"] - vw, y, vw, rh), valign="middle", quiet=True)
+    if any(x.get("target") is not None for x in it):
+        _ktext(ctx, [_P("▮ target", 9, color=t["accent"], align="right", bold=True)], _B(box["x"] + box["w"] - 1.5, y0 + n * rh, 1.5, 0.2), quiet=True)
+
+
+# ----- images (URL, data URI, or file in the images folder) -----
+_K_IMG_CACHE: dict = {}
+
+
+def _k_load_image(ctx, src):
+    """Return (png_bytes, w, h) or None."""
+    if not src or not _HAS_PIL:
+        return None
+    src = str(src)
+    if src in _K_IMG_CACHE:
+        return _K_IMG_CACHE[src]
+    out = None
+    try:
+        raw = None
+        if src.startswith("data:image/"):
+            raw = base64.b64decode(src.split(",", 1)[1])
+        elif re.match(r"^https?://", src, re.I):
+            if _HAS_HTTPX:
+                r = httpx.get(src, timeout=15, follow_redirects=True, headers={"User-Agent": "generate-slides/2.0"})
+                r.raise_for_status()
+                raw = r.content
+            else:
+                import urllib.request as _ur
+                with _ur.urlopen(_ur.Request(src, headers={"User-Agent": "generate-slides/2.0"}), timeout=15) as fh:
+                    raw = fh.read()
+        else:
+            base = Path(getattr(ctx.valves, "kit_images_dir", "") or "/app/backend/data/deck-images").resolve()
+            p = (base / src.lstrip("/\\")).resolve()
+            if not str(p).startswith(str(base)):
+                raise ValueError("path outside image folder")
+            raw = p.read_bytes()
+        im = Image.open(BytesIO(raw))
+        try:
+            from PIL import ImageOps  # type: ignore
+            im = ImageOps.exif_transpose(im)
+        except Exception:
+            pass
+        im = im.convert("RGBA")
+        maxpx = int(getattr(ctx.valves, "max_image_px", 1600) or 1600)
+        if max(im.size) > maxpx:
+            im.thumbnail((maxpx, maxpx))
+        bio = BytesIO()
+        im.save(bio, format="PNG")
+        out = (bio.getvalue(), im.size[0], im.size[1])
+    except Exception as e:  # noqa: BLE001
+        ctx.warn(f"{ctx.where}: image '{src[:80]}' could not be loaded ({e}) — placeholder drawn")
+        out = None
+    _K_IMG_CACHE[src] = out
+    return out
+
+
+def _k_place_image(ctx, img, box, fit="cover", ellipse=False):
+    if ctx.dry or not img:
+        return
+    png, iw, ih = img
+    if fit == "contain":
+        r = min(box["w"] / iw, box["h"] / ih)
+        w, h = iw * r, ih * r
+        _k_image(ctx, png, box["x"] + (box["w"] - w) / 2, box["y"] + (box["h"] - h) / 2, w, h, ellipse)
+        return
+    pic = _k_image(ctx, png, box["x"], box["y"], box["w"], box["h"], ellipse)
+    if pic is None:
+        return
+    tr, ir = box["w"] / box["h"], iw / ih
+    if ir > tr:  # wider: crop left/right
+        cut = (1 - tr / ir) / 2
+        pic.crop_left = pic.crop_right = cut
+    elif ir < tr:
+        cut = (1 - ir / tr) / 2
+        pic.crop_top = pic.crop_bottom = cut
+
+
+def _k_initials(name):
+    ws = [w for w in str(name or "?").split() if re.match(r"^[A-Za-z0-9]", w)][:2]
+    return "".join(w[0].upper() for w in ws) or "?"
+
+
+# ---------- strategy ----------
+@_kcomp("swot")
+def _kc_swot(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    g = 0.14
+    qw, qh = (box["w"] - g) / 2, (box["h"] - g) / 2
+    titles = _list(b.get("titles"))
+    Q = [("S", "Strengths", "strengths", t["success"]), ("W", "Weaknesses", "weaknesses", t["danger"]),
+         ("O", "Opportunities", "opportunities", t["info"]), ("T", "Threats", "threats", t["accent"])]
+    for i, (L, dflt, key, col) in enumerate(Q):
+        title = _ks(titles[i]) if i < len(titles) and titles[i] else dflt
+        x, y = box["x"] + (i % 2) * (qw + g), box["y"] + (i // 2) * (qh + g)
+        hh = min(0.48, qh * 0.28)
+        _krr(ctx, _B(x, y, qw, qh), c["surface"] if dark else _kmix(col, "FFFFFF", 0.9), name=f"SWOT {title}")
+        _krr(ctx, _B(x, y, qw, hh), col)
+        tc = _kread(col)
+        _ktext(ctx, [{"runs": [{"text": L + "  ", "bold": True}, {"text": title, "bold": True}], "size": 13, "color": tc}], _B(x + 0.14, y, qw - 0.28, hh),
+               valign="middle", quiet=True)
+        _ktext(ctx, [_P(s, 11, color=c["text"], bullet=True, spaceAfter=3) for s in _list(b.get(key))],
+               _B(x + 0.16, y + hh + 0.1, qw - 0.3, qh - hh - 0.18), field="swot items")
+
+
+@_kcomp("venn")
+def _kc_venn(ctx, b, box):
+    t, c = ctx.t, ctx.c
+    sets = _list(b.get("sets"))[:3]
+    n = len(sets)
+    if n < 2:
+        return
+    cols = [t["primary"], t["secondary"], t["accent"]]
+    D = min(box["h"] * 0.98, box["w"] * 0.6) if n == 2 else min(box["h"] * 0.66, box["w"] * 0.42)
+    cx, cy = box["x"] + box["w"] / 2, box["y"] + box["h"] / 2
+    off = D * 0.3
+    centers = [(cx - off, cy), (cx + off, cy)] if n == 2 else [(cx - off, cy - off * 0.6), (cx + off, cy - off * 0.6), (cx, cy + off * 0.75)]
+    for i, p in enumerate(centers):
+        _kell(ctx, _B(p[0] - D / 2, p[1] - D / 2, D, D), cols[i], transparency=45, line={"color": cols[i], "width": 1.5}, name=f"Set {sets[i].get('title', '')}")
+    lw = D * 0.42
+    for i, p in enumerate(centers):
+        dx = (1 if i else -1) if n == 2 else (-1 if i == 0 else 1 if i == 1 else 0)
+        dy = (1 if i == 2 else -0.6) if n == 3 else 0
+        lx = p[0] + dx * D * 0.2 - lw / 2
+        ly = p[1] + dy * D * 0.2 - D * 0.18
+        _ktext(ctx, [_P(sets[i].get("title"), 13, bold=True, color=_kdk(ctx), align="center", spaceAfter=2), _P(sets[i].get("text"), 10, color=c["text"], align="center")],
+               _B(lx, ly, lw, D * 0.36), valign="middle", field="venn set")
+    ov = b.get("overlap")
+    if isinstance(ov, dict):
+        ow, oh = min(2.2, D * 0.45), 0.62
+        oy = cy - oh / 2 if n == 2 else cy - oh / 2 + off * 0.05
+        _krr(ctx, _B(cx - ow / 2, oy, ow, oh), c["surface2"] if ctx.dark else "FFFFFF", shadow=True)
+        _ktext(ctx, [_P(ov.get("title"), 11.5, bold=True, color=t["accent"] if ctx.dark else t["primary"], align="center"),
+                     _P(ov.get("text"), 9, color=c["text"], align="center")],
+               _B(cx - ow / 2 + 0.06, oy + 0.03, ow - 0.12, oh - 0.06), valign="middle", field="venn overlap")
+
+
+@_kcomp("cycle")
+def _kc_cycle(ctx, b, box):
+    t, c = ctx.t, ctx.c
+    st = _list(b.get("steps"))
+    n = len(st)
+    if not n:
+        return
+    d = min(0.62, box["h"] * 0.16)
+    tw = min(2.5, box["w"] * 0.24)
+    cx, cy = box["x"] + box["w"] / 2, box["y"] + box["h"] / 2
+    rx = max(0.8, box["w"] / 2 - tw - d / 2 - 0.15)
+    ry = max(0.6, box["h"] / 2 - d / 2 - 0.62)
+    P = []
+    for i in range(n):
+        a = _kmath.radians(-90 + (360 / n) * i)
+        P.append((a, cx + rx * _kmath.cos(a), cy + ry * _kmath.sin(a)))
+    ac = t["dark_line"] if ctx.dark else _kmix(t["primary"], "FFFFFF", 0.45)
+    for i in range(n):
+        p, q = P[i], P[(i + 1) % n]
+        dx, dy = q[1] - p[1], q[2] - p[2]
+        L = _kmath.hypot(dx, dy) or 1
+        k = (d / 2 + 0.08) / L
+        _kline(ctx, p[1] + dx * k, p[2] + dy * k, q[1] - dx * k, q[2] - dy * k, ac, 2, arrow=True)
+    center = b.get("center")
+    if isinstance(center, dict):
+        cw, chh = min(2.4, rx * 1.3), min(1.2, ry * 1.05)
+        _kell(ctx, _B(cx - cw / 2, cy - chh / 2, cw, chh), c["surface2"] if ctx.dark else t["primary_tint"])
+        _ktext(ctx, [_P(center.get("title"), 13, bold=True, color=_kdk(ctx), align="center"), _P(center.get("text"), 9.5, color=c["text"], align="center")],
+               _B(cx - cw * 0.36, cy - chh * 0.36, cw * 0.72, chh * 0.72), valign="middle", field="cycle center")
+    for i, s in enumerate(st):
+        a, px, py = P[i]
+        _k_icon_dot(ctx, px - d / 2, py - d / 2, d, t["secondary"] if i % 2 else t["primary"], s.get("icon") or "sync")
+        bd = d * 0.42
+        _kell(ctx, _B(px + d * 0.2, py - d / 2 - bd * 0.25, bd, bd), t["accent"])
+        _ktext(ctx, [_P(str(i + 1), max(7.5, bd * 34), bold=True, color=t["on_accent"], align="center")], _B(px + d * 0.2, py - d / 2 - bd * 0.25, bd, bd),
+               valign="middle", quiet=True)
+        cs, sn, th = _kmath.cos(a), _kmath.sin(a), 0.75
+        if cs > 0.35:
+            tb, al = _B(px + d / 2 + 0.1, py - th / 2, tw, th), "left"
+        elif cs < -0.35:
+            tb, al = _B(px - d / 2 - 0.1 - tw, py - th / 2, tw, th), "right"
+        else:
+            tb, al = _B(px - tw / 2, (py - d / 2 - th - 0.12) if sn < 0 else (py + d / 2 + 0.06), tw, th), "center"
+        _ktext(ctx, [_P(s.get("title"), 11.5, bold=True, color=_kdk(ctx), align=al, spaceAfter=1), _P(s.get("text"), 9.5, color=c["text"], align=al)], tb,
+               valign="middle" if abs(cs) > 0.35 else ("bottom" if sn < 0 else "top"), field="cycle step")
+
+
+@_kcomp("value_chain")
+def _kc_value_chain(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    sup, pri = _list(b.get("support")), _list(b.get("primary"))
+    if not pri:
+        return
+    mw = 0 if b.get("margin") is False else 0.95
+    W = box["w"] - mw - (0.1 if mw else 0)
+    n = len(pri)
+    aw = W / n
+    ph = min(1.15, aw * 0.75, box["h"] * (0.5 if sup else 1))
+    sg = 0.06
+    sh = min(0.72, (box["h"] - ph - 0.12 - sg * (len(sup) - 1)) / len(sup)) if sup else 0
+    sup_h = sh * len(sup) + sg * (len(sup) - 1) if sup else 0
+    top = box["y"] + (box["h"] - (sup_h + (0.12 if sup else 0) + ph)) / 2
+    for i, s in enumerate(sup):
+        y = top + i * (sh + sg)
+        _krr(ctx, _B(box["x"], y, W, sh), c["surface2"] if dark else _kmix(t["secondary"], "FFFFFF", 0.82))
+        runs = [{"text": _ks(s.get("title", "")), "bold": True, "color": _kdk(ctx)}] + ([{"text": "   " + _ks(s["text"]), "bold": False, "color": c["text"]}] if s.get("text") else [])
+        _ktext(ctx, [{"runs": runs, "size": 10.5}], _B(box["x"] + 0.14, y, W - 0.28, sh), valign="middle", field="support activity")
+    py = top + sup_h + (0.12 if sup else 0)
+    depth = 0.5 * min(ph, aw + 0.2)
+    for i, p in enumerate(pri):
+        x = box["x"] + i * aw
+        fill = _kmix(t["primary"], t["info"], (i / (n - 1)) * 0.5 if n > 1 else 0)
+        _kshp(ctx, "homePlate" if i == 0 else "chevron", _B(x, py, aw + (depth * 0.55 if i < n - 1 else 0), ph), fill, name=f"Primary {p.get('title', '')}")
+        tc = _kread(fill)
+        tx = x + (depth if i else 0.1)
+        tw = aw - (depth if i else 0.1) + (depth * 0.15 if i < n - 1 else -depth * 0.45)
+        _ktext(ctx, [_P(p.get("title"), 11.5, bold=True, color=tc, align="center", spaceAfter=2), _P(p.get("text"), 9.5, color=tc, align="center")],
+               _B(tx, py + 0.06, tw, ph - 0.12), valign="middle", field="primary activity")
+    if mw:
+        mh = sup_h + (0.12 if sup else 0) + ph
+        _kshp(ctx, "homePlate", _B(box["x"] + W + 0.1, top, mw, mh), t["accent"])
+        _ktext(ctx, [_P(b.get("margin_label") or "Margin", 12, bold=True, color=t["on_accent"], align="center")], _B(box["x"] + W + 0.1, top, mw * 0.78, mh),
+               valign="middle", quiet=True)
+
+
+@_kcomp("concentric")
+def _kc_concentric(ctx, b, box):
+    t, c = ctx.t, ctx.c
+    R = _list(b.get("rings"))
+    n = len(R)
+    if not n:
+        return
+    D = min(box["h"], box["w"] * 0.52)
+    x0, yb = box["x"], box["y"] + box["h"]
+    cols = [_kmix(t["primary"], t["secondary"], i / (n - 1) if n > 1 else 0) for i in range(n)]
+    for i in range(n - 1, -1, -1):
+        s = D * (0.34 + 0.66 * (i / max(1, n - 1)))
+        _kell(ctx, _B(x0 + (D - s) / 2, yb - s, s, s), cols[i], line={"color": c["bg"] if ctx.dark else "FFFFFF", "width": 2}, name=f"Ring {R[i].get('title', '')}")
+        prev = D * (0.34 + 0.66 * ((i - 1) / max(1, n - 1))) if i > 0 else 0
+        band = s - prev if i > 0 else s
+        ty = yb - s + 0.04 if i > 0 else yb - s + s * 0.3
+        th = max(0.24, band / 2 - 0.06) if i > 0 else s * 0.4
+        _ktext(ctx, [_P(R[i].get("title"), 11, bold=True, color=_kread(cols[i]), align="center")], _B(x0 + (D - s) / 2 + s * 0.15, ty, s * 0.7, th),
+               valign="middle", field="ring title")
+    lx = x0 + D + 0.35
+    lw = box["x"] + box["w"] - lx
+    if lw > 1.2:
+        ih = min(0.9, box["h"] / n)
+        for j in range(n):
+            i = n - 1 - j
+            y = box["y"] + j * ih
+            _kell(ctx, _B(lx, y + 0.08, 0.22, 0.22), cols[i])
+            _ktext(ctx, [_P(R[i].get("title"), 11.5, bold=True, color=_kdk(ctx), spaceAfter=1), _P(R[i].get("text"), 10, color=c["text"])],
+                   _B(lx + 0.34, y + 0.02, lw - 0.34, ih - 0.08), field="ring legend")
+
+
+@_kcomp("staircase")
+def _kc_staircase(ctx, b, box):
+    t = ctx.t
+    st = _list(b.get("steps"))
+    n = len(st)
+    if not n:
+        return
+    g = 0.1
+    sw = (box["w"] - g * (n - 1)) / n
+    min_h = box["h"] * 0.32
+    for i, s in enumerate(st):
+        f = i / (n - 1) if n > 1 else 1
+        h = min_h + (box["h"] - min_h) * f
+        x, y = box["x"] + i * (sw + g), box["y"] + box["h"] - h
+        fill = _kmix(t["primary"], "FFFFFF", 0.55 * (1 - f))
+        _krr(ctx, _B(x, y, sw, h), fill, name=f"Step {s.get('title', '')}")
+        tc = _kread(fill, t["dark_bg"])
+        _ktext(ctx, [_P(s.get("label") or f"Step {i + 1}", 9.5, bold=True, color=tc), _P(s.get("title"), 12.5, bold=True, color=tc, spaceAfter=2),
+                     _P(s.get("text"), 10, color=tc)], _B(x + 0.12, y + 0.1, sw - 0.24, h - 0.2), field="stair step")
+
+
+@_kcomp("flow")
+def _kc_flow(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    ins, outs = _list(b.get("inputs")), _list(b.get("outputs"))
+    core = b.get("core") if isinstance(b.get("core"), dict) else {"title": ""}
+    aw = 0.42
+    col_w = (box["w"] - 2 * aw - 0.24) / 3
+
+    def column(items, x, label):
+        lh = 0.3 if label else 0
+        if label:
+            _ktext(ctx, [_P(label, 11, bold=True, color=c["heading"])], _B(x, box["y"], col_w, lh), valign="middle", quiet=True)
+        n = len(items)
+        if not n:
+            return
+        g = 0.1
+        ih = (box["h"] - lh - g * (n - 1)) / n
+        for i, it in enumerate(items):
+            y = box["y"] + lh + i * (ih + g)
+            _krr(ctx, _B(x, y, col_w, ih), c["surface"] if dark else "FFFFFF", line=None if dark else {"color": t["light_line"], "width": 0.75})
+            tx = x + 0.12
+            if it.get("icon") and ih >= 0.45:
+                d = min(0.36, ih - 0.1)
+                _k_icon_dot(ctx, x + 0.1, y + (ih - d) / 2, d, t["primary"], it["icon"])
+                tx = x + 0.2 + d
+            _ktext(ctx, [_P(it.get("title"), 11, bold=True, color=_kdk(ctx), spaceAfter=1), _P(it.get("text"), 9.5, color=c["text"])],
+                   _B(tx, y + 0.04, x + col_w - 0.1 - tx, ih - 0.08), valign="middle", field="flow item")
+
+    column(ins, box["x"], b.get("inputs_label") or "Inputs")
+    cx = box["x"] + col_w + aw + 0.12
+    ox = cx + col_w + aw + 0.12
+    mid = box["y"] + 0.3 + (box["h"] - 0.3) / 2
+    for ax in (box["x"] + col_w + 0.06, cx + col_w + 0.06):
+        _kshp(ctx, "rightArrow", _B(ax, mid - 0.22, aw, 0.44), t["accent"])
+    _krr(ctx, _B(cx, box["y"] + 0.3, col_w, box["h"] - 0.3), t["primary"], shadow=True, name="Flow core")
+    cy = box["y"] + 0.5
+    if core.get("icon"):
+        _k_icon_dot(ctx, cx + col_w / 2 - 0.3, cy, 0.6, t["accent"], core["icon"], t["on_accent"])
+        cy += 0.72
+    paras = [_P(core.get("title"), 14, bold=True, color=t["on_primary"], align="center", spaceAfter=4),
+             _P(core.get("text"), 10.5, color=t["on_primary"], align="center", spaceAfter=4)]
+    paras += [_P(x, 10.5, color=t["on_primary"], bullet=True, spaceAfter=2) for x in _list(core.get("bullets"))]
+    _ktext(ctx, paras, _B(cx + 0.18, cy, col_w - 0.36, box["y"] + box["h"] - 0.18 - cy), field="flow core", valign="top")
+    _ktext(ctx, [_P(b.get("core_label") or "", 11, bold=True, color=c["heading"])], _B(cx, box["y"], col_w, 0.3), valign="middle", quiet=True)
+    column(outs, ox, b.get("outputs_label") or "Outputs")
+
+
+# ---------- data & assessment ----------
+@_kcomp("heatmap")
+def _kc_heatmap(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    rows, cols, V = _list(b.get("rows")), _list(b.get("columns")), _list(b.get("values"))
+    if not rows or not cols:
+        return
+    mx = _knum(b.get("max"), 4) or 4
+    lw = max(1.6, min(3, box["w"] * 0.27))
+    hh, leg_h = 0.44, 0.3
+    cw = (box["w"] - lw) / len(cols)
+    rh = min(0.62, (box["h"] - hh - leg_h) / len(rows))
+    g = 0.03
+    for j, cl in enumerate(cols):
+        _ktext(ctx, [_P(cl, 10, bold=True, color=_kdk(ctx), align="center")], _B(box["x"] + lw + j * cw, box["y"], cw, hh - 0.04), valign="bottom", field="heat col")
+
+    def color_of(v):
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("red", "high", "critical"):
+                return t["danger"]
+            if s in ("amber", "medium", "med"):
+                return t["accent"]
+            if s in ("green", "low"):
+                return t["success"]
+            return c["surface"] if dark else t["light_surface"]
+        f = max(0, min(1, _knum(v) / mx))
+        return _kmix(t["primary"], t["dark_bg"] if dark else "FFFFFF", 0.9 - f * 0.9)
+
+    labels = _list(b.get("scale_labels"))
+    for i, r in enumerate(rows):
+        y = box["y"] + hh + i * rh
+        _ktext(ctx, [_P(r, 10.5, bold=True, color=_kdk(ctx))], _B(box["x"], y, lw - 0.1, rh), valign="middle", field="heat row")
+        rv = _list(V[i]) if i < len(V) else []
+        for j in range(len(cols)):
+            v = rv[j] if j < len(rv) else None
+            fill = color_of(0 if v is None else v)
+            _krect(ctx, _B(box["x"] + lw + j * cw + g, y + g, cw - 2 * g, rh - 2 * g), fill)
+            if v is not None and b.get("show_values") is not False:
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    ri = int(round(v))
+                    lbl = _ks(labels[ri]) if 0 <= ri < len(labels) and labels[ri] else _kfmt(v, 1 if v % 1 else 0)
+                else:
+                    lbl = _ks(v)
+                _ktext(ctx, [_P(lbl, 10, bold=True, color=_kread(fill, t["dark_bg"]), align="center")], _B(box["x"] + lw + j * cw, y, cw, rh), valign="middle", quiet=True)
+    ly = box["y"] + hh + len(rows) * rh + 0.06
+    if not any(isinstance(v, str) for r in V for v in _list(r)):
+        steps, sw = 5, 0.36
+        _ktext(ctx, [_P(b.get("legend") or "Low", 9, color=c["muted"], align="right")], _B(box["x"] + box["w"] - 0.5 - steps * sw - 1.6, ly, 1.5, 0.22), valign="middle", quiet=True)
+        for k in range(steps):
+            _krect(ctx, _B(box["x"] + box["w"] - 0.5 - (steps - k) * sw, ly + 0.03, sw - 0.03, 0.16), color_of((k / (steps - 1)) * mx))
+        _ktext(ctx, [_P("High", 9, color=c["muted"])], _B(box["x"] + box["w"] - 0.45, ly, 0.45, 0.22), valign="middle", quiet=True)
+
+
+@_kcomp("maturity")
+def _kc_maturity(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    L, D = _list(b.get("levels")), _list(b.get("dimensions"))
+    n = len(L)
+    if not n or not D:
+        return
+    lw = max(1.6, min(2.8, box["w"] * 0.25))
+    hh, leg_h = 0.5, 0.3
+    cw = (box["w"] - lw) / n
+    rh = min(0.62, (box["h"] - hh - leg_h) / len(D))
+    for j, l in enumerate(L):
+        fill = _kmix(t["primary"], "FFFFFF", 0.8 - 0.8 * (j / max(1, n - 1)))
+        _krect(ctx, _B(box["x"] + lw + j * cw + 0.02, box["y"], cw - 0.04, hh - 0.06), fill)
+        _ktext(ctx, [_P(f"{j + 1}  {_ks(l)}", 10, bold=True, color=_kread(fill, t["dark_bg"]), align="center")],
+               _B(box["x"] + lw + j * cw + 0.05, box["y"], cw - 0.1, hh - 0.06), valign="middle", field="maturity level")
+    for i, d in enumerate(D):
+        y = box["y"] + hh + i * rh
+        my = y + rh / 2
+        if i % 2 == 0:
+            _krect(ctx, _B(box["x"], y, box["w"], rh), c["surface"] if dark else t["light_surface"])
+        _ktext(ctx, [_P(d.get("name"), 10.5, bold=True, color=_kdk(ctx)), _P(d.get("note") if rh > 0.5 else None, 8.5, color=c["muted"])],
+               _B(box["x"] + 0.1, y, lw - 0.16, rh), valign="middle", field="dimension")
+        X = lambda lv: box["x"] + lw + (max(1, min(n, lv)) - 0.5) * cw  # noqa: E731
+        cd = min(0.26, rh * 0.5)
+        _kline(ctx, box["x"] + lw + cw * 0.5, my, box["x"] + lw + cw * (n - 0.5), my, t["dark_line"] if dark else t["light_line"], 1)
+        cur = _knum(d.get("current"), 1)
+        tgt = d.get("target")
+        if tgt is not None:
+            tgt = _knum(tgt)
+            if tgt != cur:
+                _kline(ctx, X(cur), my, X(tgt) + (-cd / 2 if tgt > cur else cd / 2), my, t["accent"], 2.25, arrow=True)
+            _kell(ctx, _B(X(tgt) - cd / 2, my - cd / 2, cd, cd), c["bg"] if dark else "FFFFFF", line={"color": t["accent"], "width": 2.25})
+        _kell(ctx, _B(X(cur) - cd / 2, my - cd / 2, cd, cd), t["primary"], line={"color": "FFFFFF" if dark else t["primary"], "width": 1})
+    ly = box["y"] + hh + len(D) * rh + 0.06
+    _kell(ctx, _B(box["x"] + lw, ly + 0.04, 0.16, 0.16), t["primary"])
+    _ktext(ctx, [_P("Current", 9, color=c["muted"])], _B(box["x"] + lw + 0.22, ly, 0.8, 0.24), valign="middle", quiet=True)
+    _kell(ctx, _B(box["x"] + lw + 1.05, ly + 0.04, 0.16, 0.16), "FFFFFF", line={"color": t["accent"], "width": 2})
+    _ktext(ctx, [_P("Target", 9, color=c["muted"])], _B(box["x"] + lw + 1.27, ly, 0.8, 0.24), valign="middle", quiet=True)
+
+
+@_kcomp("risk_matrix")
+def _kc_risk_matrix(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    N = int(_knum(b.get("scale"), 5)) or 5
+    risks = _list(b.get("risks"))
+    list_w = 0 if (b.get("show_list") is False or box["w"] < 6) else min(4.2, box["w"] * 0.42)
+    gw0 = box["w"] - list_w - (0.3 if list_w else 0)
+    axis = 0.45
+    side = min(gw0 - axis, box["h"] - axis)
+    cs = side / N
+    gx, gy = box["x"] + axis, box["y"]
+
+    def sev(li, im):
+        sc = (li * im) / (N * N)
+        return t["danger"] if sc >= 0.48 else t["accent"] if sc >= 0.2 else t["success"]
+
+    for li in range(1, N + 1):
+        for im in range(1, N + 1):
+            _krect(ctx, _B(gx + (im - 1) * cs + 0.02, gy + (N - li) * cs + 0.02, cs - 0.04, cs - 0.04), _kmix(sev(li, im), "FFFFFF", 0.2 if dark else 0.55))
+    for k in range(1, N + 1):
+        _ktext(ctx, [_P(str(k), 9, color=c["muted"], align="center")], _B(gx + (k - 1) * cs, gy + side + 0.02, cs, 0.2), quiet=True)
+        _ktext(ctx, [_P(str(k), 9, color=c["muted"], align="right")], _B(gx - 0.24, gy + (N - k) * cs, 0.18, cs), valign="middle", quiet=True)
+    _ktext(ctx, [_P((b.get("x_label") or "Impact") + "  →", 10, bold=True, color=c["muted"], align="center")], _B(gx, gy + side + 0.2, side, 0.24), quiet=True)
+    _ktext(ctx, [_P((b.get("y_label") or "Likelihood") + "  →", 10, bold=True, color=c["muted"], align="center")],
+           _B(box["x"] - side / 2 + 0.1, gy + side / 2 - 0.12, side, 0.24), rotate=270, quiet=True)
+    cell_count = {}
+    md = min(0.3, cs * 0.36)
+    for i, r in enumerate(risks):
+        li = max(1, min(N, int(round(_knum(r.get("likelihood"), 1)))))
+        im = max(1, min(N, int(round(_knum(r.get("impact"), 1)))))
+        key = f"{li}-{im}"
+        cell_count[key] = cell_count.get(key, 0) + 1
+        k = cell_count[key] - 1
+        per = max(1, int((cs - 0.06) // (md + 0.04)))
+        ox, oy = (k % per) * (md + 0.04), (k // per) * (md + 0.04)
+        x, y = gx + (im - 1) * cs + 0.06 + ox, gy + (N - li) * cs + 0.06 + oy
+        _kell(ctx, _B(x, y, md, md), "FFFFFF" if dark else t["dark_bg"])
+        _ktext(ctx, [_P(_ks(r.get("id") or i + 1), max(7, md * 30), bold=True, color=t["dark_bg"] if dark else "FFFFFF", align="center")], _B(x, y, md, md),
+               valign="middle", quiet=True)
+    if list_w and risks:
+        lx = min(box["x"] + box["w"] - list_w, gx + side + 0.45)
+        n = len(risks)
+        ih = min(0.42, box["h"] / n)
+        for i, r in enumerate(risks):
+            y = box["y"] + i * ih
+            col = sev(_knum(r.get("likelihood"), 1), _knum(r.get("impact"), 1))
+            _kell(ctx, _B(lx, y + (ih - 0.24) / 2, 0.24, 0.24), col)
+            _ktext(ctx, [_P(_ks(r.get("id") or i + 1), 8.5, bold=True, color=_kread(col), align="center")], _B(lx, y + (ih - 0.24) / 2, 0.24, 0.24), valign="middle", quiet=True)
+            runs = [{"text": _ks(r.get("label", "")), "bold": True}] + ([{"text": "  · " + _ks(r["owner"]), "bold": False, "color": c["muted"]}] if r.get("owner") else [])
+            _ktext(ctx, [{"runs": runs, "size": 10, "color": _kdk(ctx)}], _B(lx + 0.32, y, list_w - 0.32, ih), valign="middle", field="risk label")
+
+
+@_kcomp("bubble")
+def _kc_bubble(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    B = _list(b.get("bubbles"))
+    if not B:
+        return
+    xa = b.get("x_axis") if isinstance(b.get("x_axis"), dict) else {}
+    ya = b.get("y_axis") if isinstance(b.get("y_axis"), dict) else {}
+    xs = [_knum(p.get("x")) for p in B]
+    ys = [_knum(p.get("y")) for p in B]
+    ss = [max(0, _knum(p.get("size"), 1)) for p in B]
+
+    def pad(a, lo, hi):
+        r = (hi - lo) or 1
+        return (_knum(a["min"]) if a.get("min") is not None else lo - r * 0.12, _knum(a["max"]) if a.get("max") is not None else hi + r * 0.12)
+
+    x0, x1 = pad(xa, min(xs), max(xs))
+    y0, y1 = pad(ya, min(ys), max(ys))
+    L, R, T, Bt = box["x"] + 0.6, box["x"] + box["w"] - 0.1, box["y"] + 0.05, box["y"] + box["h"] - 0.5
+    X = lambda v: L + ((v - x0) / ((x1 - x0) or 1)) * (R - L)  # noqa: E731
+    Y = lambda v: Bt - ((v - y0) / ((y1 - y0) or 1)) * (Bt - T)  # noqa: E731
+    gc = t["dark_line"] if dark else "E3E7EE"
+    for k in range(5):
+        yv = y0 + (y1 - y0) * k / 4
+        xv = x0 + (x1 - x0) * k / 4
+        _kline(ctx, L, Y(yv), R, Y(yv), gc, 0.75, "dash" if k else None)
+        _ktext(ctx, [_P((ya.get("prefix") or "") + _kfmt(yv, 1 if abs(y1 - y0) < 10 else 0) + (ya.get("unit") or ""), 8.5, color=c["muted"], align="right")],
+               _B(box["x"], Y(yv) - 0.1, 0.52, 0.2), valign="middle", quiet=True)
+        _ktext(ctx, [_P((xa.get("prefix") or "") + _kfmt(xv, 1 if abs(x1 - x0) < 10 else 0) + (xa.get("unit") or ""), 8.5, color=c["muted"], align="center")],
+               _B(X(xv) - 0.4, Bt + 0.04, 0.8, 0.2), quiet=True)
+    _ktext(ctx, [_P(xa.get("label"), 10, bold=True, color=c["muted"], align="center")], _B(L, Bt + 0.24, R - L, 0.24), quiet=True)
+    _ktext(ctx, [_P(ya.get("label"), 10, bold=True, color=c["muted"], align="center")], _B(box["x"] - (Bt - T) / 2 + 0.05, T + (Bt - T) / 2 - 0.12, Bt - T, 0.24),
+           rotate=270, quiet=True)
+    smax = max(ss) or 1
+    dmax = min(1.1, (R - L) * 0.16, (Bt - T) * 0.3)
+    for i in sorted(range(len(B)), key=lambda k: -ss[k]):
+        p = B[i]
+        d = max(0.16, _kmath.sqrt(ss[i] / smax) * dmax)
+        col = _k_role(t, p.get("color"), t["series"][i % len(t["series"])])
+        px, py = X(xs[i]), Y(ys[i])
+        _kell(ctx, _B(px - d / 2, py - d / 2, d, d), col, transparency=25, line={"color": col, "width": 1}, name=f"Bubble {p.get('label', '')}")
+        lab = _ks(p.get("label", ""))
+        inside = d >= 0.75 and _k_str_em(lab, True) * 9.5 / 72 < d * 0.9
+        _ktext(ctx, [_P(lab, 9.5, bold=True, color=_kread(col) if inside else _kdk(ctx), align="center" if inside else "left")],
+               _B(px - d / 2, py - 0.12, d, 0.24) if inside else _B(px + d / 2 + 0.04, py - 0.12, 1.8, 0.24), valign="middle", quiet=True)
+    if b.get("size_label"):
+        _ktext(ctx, [_P("Bubble size: " + _ks(b["size_label"]), 8.5, italic=True, color=c["muted"], align="right")], _B(R - 3, T, 3, 0.2), quiet=True)
+
+
+@_kcomp("mekko")
+def _kc_mekko(ctx, b, box):
+    t, c = ctx.t, ctx.c
+    cols = _list(b.get("columns"))
+    if not cols:
+        return
+    names = _list(b.get("part_names"))
+    tot = sum(max(0, _knum(x.get("width"))) for x in cols) or 1
+    leg_h = 0.3 if names else 0
+    T, Bt = box["y"] + 0.26, box["y"] + box["h"] - 0.5 - leg_h
+    H, g = Bt - T, 0.04
+    x = box["x"]
+    for col in cols:
+        cwid = _knum(col.get("width"))
+        w = cwid / tot * box["w"]
+        ps = _list(col.get("parts"))
+        sm = sum(max(0, _knum(p.get("value"))) for p in ps) or 1
+        y = Bt
+        for k, p in enumerate(ps):
+            pv = _knum(p.get("value"))
+            h = pv / sm * H
+            fill = t["series"][k % len(t["series"])]
+            _krect(ctx, _B(x + g / 2, y - h + g / 2, w - g, max(0.01, h - g)), fill, name=f"{col.get('label', '')} {names[k] if k < len(names) else k}")
+            pct = round(pv / sm * 100)
+            if h > 0.26 and w > 0.42:
+                _ktext(ctx, [_P((_ks(p["label"]) + " " if p.get("label") else "") + f"{pct}%", 9, bold=True, color=_kread(fill), align="center")],
+                       _B(x + 0.03, y - h, w - 0.06, h), valign="middle", quiet=True)
+            y -= h
+        _ktext(ctx, [_P((b.get("prefix") or "") + _kfmt(cwid, 1 if cwid % 1 else 0) + (b.get("unit") or ""), 9.5, bold=True, color=_kdk(ctx), align="center")],
+               _B(x, box["y"], w, 0.24), valign="middle", quiet=True)
+        _ktext(ctx, [_P(col.get("label"), 9.5, color=c["text"], align="center", bold=True)], _B(x + 0.02, Bt + 0.05, w - 0.04, 0.44), field="mekko label")
+        x += w
+    if names:
+        lx = box["x"]
+        ly = box["y"] + box["h"] - leg_h + 0.04
+        for k, nm in enumerate(names):
+            _krect(ctx, _B(lx, ly + 0.05, 0.16, 0.16), t["series"][k % len(t["series"])])
+            w = min(2.4, _k_str_em(_ks(nm)) * 9.5 / 72 + 0.15)
+            _ktext(ctx, [_P(nm, 9.5, color=c["text"])], _B(lx + 0.22, ly, w, 0.26), valign="middle", quiet=True)
+            lx += w + 0.42
+
+
+@_kcomp("rings")
+def _kc_rings(ctx, b, box):
+    t, c = ctx.t, ctx.c
+    it = _list(b.get("items"))
+    n = len(it)
+    if not n:
+        return
+    g = 0.25
+    cw = (box["w"] - g * (n - 1)) / n
+    for i, r in enumerate(it):
+        x = box["x"] + i * (cw + g)
+        mx = _knum(r.get("max"), 100) or 100
+        val = _knum(r.get("value"))
+        f = max(0, min(1, val / mx))
+        text_h = min(0.85, box["h"] * 0.4)
+        d = min(cw * 0.72, box["h"] - text_h - 0.08, 1.8)
+        rx = x + (cw - d) / 2
+        ry = box["y"] + max(0, (box["h"] - d - 0.08 - text_h) / 2)
+        col = t["secondary"] if i % 2 else t["primary"]
+        _kshp(ctx, "donut", _B(rx, ry, d, d), c["surface2"] if ctx.dark else t["light_line"])
+        if f >= 0.999:
+            _kshp(ctx, "donut", _B(rx, ry, d, d), col)
+        elif f > 0:
+            _kshp(ctx, "blockArc", _B(rx, ry, d, d), col, adj={"adj1": 270 * 60000, "adj2": ((270 + 360 * f) % 360) * 60000, "adj3": 25000})
+        label = (r.get("prefix") or "") + _kfmt(val, 1 if val % 1 else 0) + (_ks(r["unit"]) if r.get("unit") is not None else "%")
+        vs = _k_single_line_size(label, d * 0.42, d * 15)
+        _ktext(ctx, [_P(label, vs, bold=True, color=_kdk(ctx), align="center")], _B(rx, ry, d, d), valign="middle", quiet=True)
+        _ktext(ctx, [_P(r.get("label"), 11.5, bold=True, color=_kdk(ctx), align="center", spaceAfter=1), _P(r.get("text"), 9.5, color=c["muted"], align="center")],
+               _B(x, ry + d + 0.08, cw, min(text_h, box["y"] + box["h"] - ry - d - 0.08)), field="ring label")
+
+
+# ---------- people & organisation ----------
+def _k_avatar(ctx, person, x, y, d, fill):
+    img = _k_load_image(ctx, person.get("photo")) if person.get("photo") else None
+    if img:
+        _k_place_image(ctx, img, _B(x, y, d, d), "cover", True)
+    else:
+        _kell(ctx, _B(x, y, d, d), fill)
+        _ktext(ctx, [_P(_k_initials(person.get("name")), max(8, d * 26), bold=True, color=_kread(fill), align="center")], _B(x, y, d, d), valign="middle", quiet=True)
+
+
+@_kcomp("org_chart")
+def _kc_org_chart(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    kids = [k for k in _list(b.get("children")) if isinstance(k, dict)]
+    k = len(kids)
+    root = b.get("root") if isinstance(b.get("root"), dict) else {"name": ""}
+    g = 0.18
+
+    def node(p, x, y, w, h, fill, strong):
+        _krr(ctx, _B(x, y, w, h), fill if strong else (c["surface"] if dark else "FFFFFF"),
+             line=None if (strong or dark) else {"color": t["light_line"], "width": 0.75}, shadow=not (strong or dark))
+        d = min(0.42, h - 0.14)
+        _k_avatar(ctx, p, x + 0.1, y + (h - d) / 2, d, t["accent"] if strong else (t["primary"] if fill == t["primary_tint"] else fill))
+        _ktext(ctx, [_P(p.get("name"), 11, bold=True, color=_kread(fill) if strong else _kdk(ctx)), _P(p.get("role"), 9, color=_kread(fill) if strong else c["muted"])],
+               _B(x + 0.2 + d, y + 0.03, w - 0.28 - d, h - 0.06), valign="middle", field="org node")
+
+    rw, rh = min(3.2, box["w"] * 0.3), 0.66
+    rx = box["x"] + (box["w"] - rw) / 2
+    node(root, rx, box["y"], rw, rh, t["primary"] if dark else t["dark_bg"], True)
+    if not k:
+        return
+    cw = (box["w"] - g * (k - 1)) / k
+    bus_y = box["y"] + rh + 0.2
+    cy, ch = bus_y + 0.2, 0.62
+    lc = t["dark_line"] if dark else _kmix(t["dark_bg"], "FFFFFF", 0.6)
+    _kline(ctx, box["x"] + box["w"] / 2, box["y"] + rh, box["x"] + box["w"] / 2, bus_y, lc, 1.25)
+    if k > 1:
+        _kline(ctx, box["x"] + cw / 2, bus_y, box["x"] + box["w"] - cw / 2, bus_y, lc, 1.25)
+    max_g = max([0] + [len(_list(x.get("children"))) for x in kids])
+    g_top = cy + ch + 0.16
+    gh = min(0.56, (box["y"] + box["h"] - g_top - 0.08 * (max_g - 1)) / max_g) if max_g else 0
+    for i, kid in enumerate(kids):
+        x = box["x"] + i * (cw + g)
+        _kline(ctx, x + cw / 2, bus_y, x + cw / 2, cy, lc, 1.25)
+        node(kid, x, cy, cw, ch, t["secondary"] if i % 2 else t["primary"], True)
+        gc = [q for q in _list(kid.get("children")) if isinstance(q, dict)]
+        if gc:
+            _kline(ctx, x + 0.18, cy + ch, x + 0.18, g_top + (len(gc) - 1) * (gh + 0.08) + gh / 2, lc, 1)
+        for j, gq in enumerate(gc):
+            y = g_top + j * (gh + 0.08)
+            _kline(ctx, x + 0.18, y + gh / 2, x + 0.32, y + gh / 2, lc, 1)
+            node(gq, x + 0.32, y, cw - 0.32, gh, t["primary_tint"], False)
+
+
+@_kcomp("profiles")
+def _kc_profiles(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    P = [p for p in _list(b.get("people")) if isinstance(p, dict)]
+    n = len(P)
+    if not n:
+        return
+    cols = int(b.get("columns") or (n if n <= 4 else (n + 1) // 2))
+    rows = (n + cols - 1) // cols
+    g = 0.2
+    cw = (box["w"] - g * (cols - 1)) / cols
+    ch = (box["h"] - g * (rows - 1)) / rows
+    for i, p in enumerate(P):
+        x, y = box["x"] + (i % cols) * (cw + g), box["y"] + (i // cols) * (ch + g)
+        _krr(ctx, _B(x, y, cw, ch), c["surface"] if dark else "FFFFFF", line=None if dark else {"color": t["light_line"], "width": 0.75}, shadow=not dark)
+        horizontal = ch < 1.9
+        d = min(0.8, ch - 0.3) if horizontal else min(1.1, cw * 0.4, ch * 0.38)
+        fill = t["secondary"] if i % 2 else t["primary"]
+        if horizontal:
+            _k_avatar(ctx, p, x + 0.15, y + 0.15, d, fill)
+            _ktext(ctx, [_P(p.get("name"), 12.5, bold=True, color=_kdk(ctx)), _P(p.get("role"), 10, bold=True, color=t["secondary"], spaceAfter=3), _P(p.get("text"), 9.5, color=c["text"])],
+                   _B(x + 0.3 + d, y + 0.12, cw - 0.45 - d, ch - 0.24), field="profile")
+        else:
+            _k_avatar(ctx, p, x + (cw - d) / 2, y + 0.18, d, fill)
+            _ktext(ctx, [_P(p.get("name"), 12.5, bold=True, color=_kdk(ctx), align="center"), _P(p.get("role"), 10, bold=True, color=t["secondary"], align="center", spaceAfter=4),
+                         _P(p.get("text"), 9.5, color=c["text"], align="center")], _B(x + 0.12, y + d + 0.3, cw - 0.24, ch - d - 0.42), field="profile")
+
+
+@_kcomp("raci")
+def _kc_raci(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    A, R, M = _list(b.get("activities")), _list(b.get("roles")), _list(b.get("matrix"))
+    if not A or not R:
+        return
+    lw = max(1.8, min(3.4, box["w"] * 0.32))
+    hh, leg_h = 0.48, 0.28
+    cw = (box["w"] - lw) / len(R)
+    rh = min(0.5, (box["h"] - hh - leg_h) / len(A))
+    _krr(ctx, _B(box["x"], box["y"], box["w"], hh), t["primary"] if dark else t["dark_bg"])
+    _ktext(ctx, [_P(b.get("activity_label") or "Activity", 10.5, bold=True, color="FFFFFF")], _B(box["x"] + 0.12, box["y"], lw - 0.2, hh), valign="middle", quiet=True)
+    for j, r in enumerate(R):
+        _ktext(ctx, [_P(r, 10, bold=True, color="FFFFFF", align="center")], _B(box["x"] + lw + j * cw + 0.03, box["y"], cw - 0.06, hh), valign="middle", field="raci role")
+    col_of = {"R": t["primary"], "A": t["dark_bg"], "C": t["secondary"], "I": t["neutral"], "S": t["info"]}
+    for i, a in enumerate(A):
+        y = box["y"] + hh + i * rh
+        _krect(ctx, _B(box["x"], y, box["w"], rh), (c["bg"] if dark else "FFFFFF") if i % 2 else (c["surface"] if dark else t["light_surface"]))
+        _ktext(ctx, [_P(a, 10.5, bold=True, color=_kdk(ctx))], _B(box["x"] + 0.12, y, lw - 0.2, rh), valign="middle", field="raci activity")
+        row = _list(M[i]) if i < len(M) else []
+        for j in range(len(R)):
+            v = re.sub(r"[^RACIS/]", "", _ks(row[j] if j < len(row) else "").upper())
+            if not v:
+                continue
+            d = min(0.34, rh * 0.72)
+            w = d * 1.6 if len(v) > 1 else d
+            cx = box["x"] + lw + j * cw + cw / 2
+            fill = col_of.get(v[0], t["primary"])
+            fd = t["accent"] if (dark and v[0] == "A") else fill
+            _kshp(ctx, "roundRect", _B(cx - w / 2, y + (rh - d) / 2, w, d), fd, radius=d / 2)
+            _ktext(ctx, [_P(v, max(8, d * 27), bold=True, color=_kread(fd), align="center")], _B(cx - w / 2, y + (rh - d) / 2, w, d), valign="middle", quiet=True)
+    _ktext(ctx, [_P("R = Responsible  ·  A = Accountable  ·  C = Consulted  ·  I = Informed", 9, color=c["muted"])],
+           _B(box["x"], box["y"] + hh + len(A) * rh + 0.04, box["w"], leg_h - 0.04), valign="middle", quiet=True)
+
+
+@_kcomp("swimlane")
+def _kc_swimlane(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    L = [_ks(x) for x in _list(b.get("lanes"))]
+    S = [s for s in _list(b.get("steps")) if isinstance(s, dict)]
+    nl = len(L)
+    if not nl or not S:
+        return
+    phases = _list(b.get("phases"))
+    ncol = max([len(phases)] + [int(_knum(s.get("col"), 0)) + 1 for s in S])
+    lw = min(1.5, box["w"] * 0.13)
+    hh = 0.34 if phases else 0
+    lh = (box["h"] - hh) / nl
+    cw = (box["w"] - lw) / ncol
+    for j, p in enumerate(phases):
+        _ktext(ctx, [_P(p, 10.5, bold=True, color=c["heading"], align="center")], _B(box["x"] + lw + j * cw, box["y"], cw, hh - 0.04), valign="middle", field="phase")
+    for i, ln in enumerate(L):
+        y = box["y"] + hh + i * lh
+        _krect(ctx, _B(box["x"] + lw, y, box["w"] - lw, lh), (c["bg"] if dark else "FFFFFF") if i % 2 else (c["surface"] if dark else t["light_surface"]))
+        fill = _kmix(t["primary"], t["secondary"], i / (nl - 1) if nl > 1 else 0)
+        _krect(ctx, _B(box["x"], y + 0.02, lw - 0.04, lh - 0.04), fill)
+        _ktext(ctx, [_P(ln, 10.5, bold=True, color=_kread(fill), align="center")], _B(box["x"] + 0.06, y, lw - 0.16, lh), valign="middle", field="lane")
+    for j in range(1, ncol):
+        _kline(ctx, box["x"] + lw + j * cw, box["y"] + hh, box["x"] + lw + j * cw, box["y"] + box["h"], t["dark_line"] if dark else "E1E5EC", 0.75, "dash")
+
+    def lane_idx(v):
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return max(0, min(nl - 1, int(v)))
+        return L.index(_ks(v)) if _ks(v) in L else 0
+
+    bw = cw * 0.78
+    bh = min(lh * 0.66, 0.85)
+    pos = []
+    for s in S:
+        li = lane_idx(s.get("lane"))
+        cx = box["x"] + lw + int(_knum(s.get("col"), 0)) * cw + cw / 2
+        cy = box["y"] + hh + li * lh + lh / 2
+        pos.append({"li": li, "cx": cx, "cy": cy, "l": cx - bw / 2, "r": cx + bw / 2, "t": cy - bh / 2, "b": cy + bh / 2})
+    lc = t["dark_muted"] if dark else t["muted"]
+    links = b.get("links") if isinstance(b.get("links"), list) else [[i, i + 1] for i in range(len(S) - 1)]
+    for lk in links:
+        try:
+            a, z = int(lk[0]), int(lk[1])
+            p, q = pos[a], pos[z]
+        except Exception:
+            ctx.warn(f"{ctx.where}: link {lk} refers to a missing step")
+            continue
+        if p["li"] == q["li"]:
+            _kline(ctx, p["r"] if q["cx"] > p["cx"] else p["l"], p["cy"], q["l"] if q["cx"] > p["cx"] else q["r"], q["cy"], lc, 1.25, arrow=True)
+        elif abs(q["cx"] - p["cx"]) < 0.01:
+            _kline(ctx, p["cx"], p["b"] if q["cy"] > p["cy"] else p["t"], q["cx"], q["t"] if q["cy"] > p["cy"] else q["b"], lc, 1.25, arrow=True)
+        else:
+            _kline(ctx, p["r"], p["cy"], q["cx"], p["cy"], lc, 1.25)
+            _kline(ctx, q["cx"], p["cy"], q["cx"], q["t"] if q["cy"] > p["cy"] else q["b"], lc, 1.25, arrow=True)
+    for i, s in enumerate(S):
+        p = pos[i]
+        dec = s.get("shape") == "decision"
+        hl = bool(s.get("highlight"))
+        if dec:
+            _kshp(ctx, "diamond", _B(p["cx"] - bh * 0.75, p["t"], bh * 1.5, bh), t["accent"])
+        else:
+            _krr(ctx, _B(p["l"], p["t"], bw, bh), t["primary"] if hl else (c["surface2"] if dark else "FFFFFF"),
+                 line=None if (hl or dark) else {"color": _kmix(t["primary"], "FFFFFF", 0.5), "width": 1})
+        tc = t["on_accent"] if dec else (t["on_primary"] if hl else _kdk(ctx))
+        _ktext(ctx, [_P(s.get("title"), 10, bold=True, color=tc, align="center"), _P(s.get("text") if not dec else None, 8.5, color=t["on_primary"] if hl else c["muted"], align="center")],
+               _B(p["cx"] - bh * 0.55, p["t"] + 0.05, bh * 1.1, bh - 0.1) if dec else _B(p["l"] + 0.05, p["t"] + 0.03, bw - 0.1, bh - 0.06), valign="middle", field="swim step")
+
+
+# ---------- PMO ----------
+_K_STATUS = {
+    "done": ("success", "FaCheck"), "complete": ("success", "FaCheck"), "green": ("success", "FaCheck"), "on_track": ("success", "FaCheck"),
+    "in_progress": ("accent", "FaSpinner"), "amber": ("accent", "FaExclamation"), "at_risk": ("accent", "FaExclamation"),
+    "todo": ("neutral", "FaRegCircle"), "not_started": ("neutral", "FaRegCircle"), "blocked": ("danger", "FaTimes"),
+    "red": ("danger", "FaTimes"), "off_track": ("danger", "FaTimes"),
+}
+
+
+def _k_st_key(s):
+    return re.sub(r"[\s-]+", "_", _ks(s or "todo").lower())
+
+
+@_kcomp("checklist")
+def _kc_checklist(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    it = [x for x in _list(b.get("items")) if isinstance(x, dict)]
+    n = len(it)
+    if not n:
+        return
+    rh = min(0.56, box["h"] / n)
+    has_meta = any(x.get("owner") or x.get("due") for x in it)
+    mw = min(2.6, box["w"] * 0.3) if has_meta else 0
+    for i, x in enumerate(it):
+        y = box["y"] + i * rh
+        role, ic = _K_STATUS.get(_k_st_key(x.get("status")), _K_STATUS["todo"])
+        col = t[role]
+        d = min(0.32, rh * 0.62)
+        if i % 2 == 0:
+            _krect(ctx, _B(box["x"], y, box["w"], rh), c["surface"] if dark else t["light_surface"])
+        _k_icon_dot(ctx, box["x"] + 0.1, y + (rh - d) / 2, d, col, ic)
+        _ktext(ctx, [{"runs": [{"text": _ks(x.get("text", "")), "bold": bool(x.get("bold"))}], "size": 11, "color": _kdk(ctx)}],
+               _B(box["x"] + 0.22 + d, y, box["w"] - 0.32 - d - mw, rh), valign="middle", field="checklist item")
+        if has_meta:
+            runs = [{"text": _ks(x.get("owner") or ""), "bold": True}] + ([{"text": ("  ·  " if x.get("owner") else "") + _ks(x["due"]), "bold": False, "color": c["muted"]}] if x.get("due") else [])
+            _ktext(ctx, [{"runs": runs, "size": 10, "color": _kdk(ctx), "align": "right"}], _B(box["x"] + box["w"] - mw - 0.1, y, mw, rh), valign="middle", field="checklist meta")
+
+
+@_kcomp("status")
+def _kc_status(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    it = [x for x in _list(b.get("items")) if isinstance(x, dict)]
+    n = len(it)
+    if not n:
+        return
+    hh = 0.4
+    W = {"name": 0.24, "status": 0.12, "trend": 0.08, "owner": 0.14 if any(x.get("owner") for x in it) else 0}
+    W["comment"] = 1 - W["name"] - W["status"] - W["trend"] - W["owner"]
+    xs, acc = {}, box["x"]
+    for k in ("name", "status", "trend", "owner", "comment"):
+        xs[k] = acc
+        acc += W[k] * box["w"]
+    _krr(ctx, _B(box["x"], box["y"], box["w"], hh), t["primary"] if dark else t["dark_bg"])
+    H = {"name": b.get("name_label") or "Workstream", "status": "Status", "trend": "Trend", "owner": "Owner", "comment": "Commentary"}
+    for k, lab in H.items():
+        if W[k]:
+            _ktext(ctx, [_P(lab, 10, bold=True, color="FFFFFF", align="center" if k in ("status", "trend") else "left")],
+                   _B(xs[k] + 0.1, box["y"], W[k] * box["w"] - 0.16, hh), valign="middle", quiet=True)
+    rh = min(0.62, (box["h"] - hh) / n)
+    for i, x in enumerate(it):
+        y = box["y"] + hh + i * rh
+        role = _K_STATUS.get(_k_st_key(x.get("status")), _K_STATUS["amber"])[0]
+        col = t[role]
+        _krect(ctx, _B(box["x"], y, box["w"], rh), (c["bg"] if dark else "FFFFFF") if i % 2 else (c["surface"] if dark else t["light_surface"]))
+        _ktext(ctx, [_P(x.get("name"), 10.5, bold=True, color=_kdk(ctx))], _B(xs["name"] + 0.1, y, W["name"] * box["w"] - 0.16, rh), valign="middle", field="status name")
+        pw = min(W["status"] * box["w"] - 0.2, 1.1)
+        ph = min(0.28, rh * 0.6)
+        px = xs["status"] + (W["status"] * box["w"] - pw) / 2
+        _kshp(ctx, "roundRect", _B(px, y + (rh - ph) / 2, pw, ph), col, radius=ph / 2)
+        lab = x.get("label") or {"success": "On track", "accent": "At risk", "danger": "Off track", "neutral": "Not started"}[role]
+        _ktext(ctx, [_P(lab, 9, bold=True, color=_kread(col), align="center")], _B(px, y + (rh - ph) / 2, pw, ph), valign="middle", quiet=True)
+        tr = _ks(x.get("trend") or "flat").lower()
+        tic = "FaArrowUp" if tr == "up" else "FaArrowDown" if tr == "down" else "FaArrowRight"
+        tcol = t["success"] if tr == "up" else t["danger"] if tr == "down" else t["neutral"]
+        td = min(0.24, rh * 0.5)
+        _k_icon(ctx, tic, tcol, xs["trend"] + (W["trend"] * box["w"] - td) / 2, y + (rh - td) / 2, td, td)
+        if W["owner"]:
+            _ktext(ctx, [_P(x.get("owner") or "", 10, color=c["text"])], _B(xs["owner"] + 0.1, y, W["owner"] * box["w"] - 0.16, rh), valign="middle", field="status owner")
+        _ktext(ctx, [_P(x.get("comment") or "", 10, color=c["text"])], _B(xs["comment"] + 0.1, y, W["comment"] * box["w"] - 0.16, rh), valign="middle", field="status comment")
+
+
+@_kcomp("board")
+def _kc_board(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    cols = [x for x in _list(b.get("columns")) if isinstance(x, dict)]
+    k = len(cols)
+    if not k:
+        return
+    g, hh = 0.18, 0.42
+    cw = (box["w"] - g * (k - 1)) / k
+    max_cards = max([1] + [len(_list(x.get("cards"))) for x in cols])
+    cg = 0.08
+    chh = min(0.95, (box["h"] - hh - 0.12 - cg * (max_cards - 1) - 0.1) / max_cards)
+    for i, col in enumerate(cols):
+        x = box["x"] + i * (cw + g)
+        fill = _k_role(t, col.get("color"), [t["neutral"], t["info"], t["primary"], t["success"], t["accent"]][i % 5])
+        cards = [cd for cd in _list(col.get("cards")) if isinstance(cd, dict)]
+        _krr(ctx, _B(x, box["y"], cw, box["h"]), c["surface"] if dark else t["light_surface"])
+        _krr(ctx, _B(x, box["y"], cw, hh), fill)
+        _ktext(ctx, [{"runs": [{"text": _ks(col.get("title", "")), "bold": True}, {"text": f"  {len(cards)}", "bold": False}], "size": 11, "color": _kread(fill)}],
+               _B(x + 0.12, box["y"], cw - 0.24, hh), valign="middle", quiet=True)
+        for j, cd in enumerate(cards):
+            y = box["y"] + hh + 0.12 + j * (chh + cg)
+            _krr(ctx, _B(x + 0.1, y, cw - 0.2, chh), c["surface2"] if dark else "FFFFFF", line=None if dark else {"color": t["light_line"], "width": 0.75}, shadow=not dark)
+            _ktext(ctx, [_P(cd.get("tag"), 8.5, bold=True, color=t["secondary"]), _P(cd.get("title"), 10.5, bold=True, color=_kdk(ctx), spaceAfter=1), _P(cd.get("text"), 9, color=c["muted"])],
+                   _B(x + 0.2, y + 0.05, cw - 0.4, chh - 0.1), valign="middle", field="board card")
+
+
+# ---------- customer ----------
+@_kcomp("persona")
+def _kc_persona(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    lw = min(3.6, box["w"] * 0.32)
+    _krr(ctx, _B(box["x"], box["y"], lw, box["h"]), c["surface"] if dark else t["dark_bg"], name="Persona")
+    d = min(1.05, box["h"] * 0.26)
+    _k_avatar(ctx, b, box["x"] + (lw - d) / 2, box["y"] + 0.2, d, t["accent"])
+    y = box["y"] + 0.3 + d
+    _ktext(ctx, [_P(b.get("name"), 15, bold=True, color="FFFFFF", align="center"), _P(b.get("role"), 10.5, color=t["accent"], bold=True, align="center")],
+           _B(box["x"] + 0.15, y, lw - 0.3, 0.62), valign="middle", field="persona name")
+    y += 0.7
+    attrs = [a for a in _list(b.get("attributes")) if isinstance(a, dict)]
+    if b.get("quote"):
+        qh = min(1.1, (box["y"] + box["h"] - y) * (0.45 if attrs else 0.9))
+        _ktext(ctx, [_P("“" + _ks(b["quote"]) + "”", 11.5, italic=True, color="E8ECF4", align="center")], _B(box["x"] + 0.2, y, lw - 0.4, qh), valign="middle", field="persona quote")
+        y += qh + 0.08
+    if attrs:
+        ah = min(0.42, (box["y"] + box["h"] - 0.12 - y) / len(attrs))
+        for i, a in enumerate(attrs):
+            _ktext(ctx, [{"runs": [{"text": _ks(a.get("label", "")) + ": ", "bold": True, "color": t["dark_muted"]}, {"text": _ks(a.get("value", "")), "color": "FFFFFF"}], "size": 10}],
+                   _B(box["x"] + 0.25, y + i * ah, lw - 0.5, ah), valign="middle", field="persona attr")
+    sects = [s for s in (("Goals", b.get("goals"), t["success"], "target"), ("Pain points", b.get("pains"), t["danger"], "warning"),
+                         ("Needs", b.get("needs"), t["primary"], "idea"), ("Behaviours", b.get("behaviours"), t["secondary"], "users")) if _list(s[1])]
+    k = len(sects)
+    if not k:
+        return
+    gx, gw = box["x"] + lw + 0.22, box["w"] - lw - 0.22
+    cols = k if k <= 3 else 2
+    rows = (k + cols - 1) // cols
+    g = 0.18
+    sw = (gw - g * (cols - 1)) / cols
+    sh = (box["h"] - g * (rows - 1)) / rows
+    for i, (title, items, col, ic) in enumerate(sects):
+        x, y2 = gx + (i % cols) * (sw + g), box["y"] + (i // cols) * (sh + g)
+        _krr(ctx, _B(x, y2, sw, sh), c["surface"] if dark else _kmix(col, "FFFFFF", 0.9))
+        _k_icon_dot(ctx, x + 0.14, y2 + 0.14, 0.38, col, ic)
+        _ktext(ctx, [_P(title, 13, bold=True, color=_kdk(ctx))], _B(x + 0.62, y2 + 0.12, sw - 0.75, 0.42), valign="middle", quiet=True)
+        _ktext(ctx, [_P(s, 11, color=c["text"], bullet=True, spaceAfter=4) for s in _list(items)], _B(x + 0.18, y2 + 0.66, sw - 0.32, sh - 0.78), field="persona list")
+
+
+@_kcomp("journey")
+def _kc_journey(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    S = [s for s in _list(b.get("stages")) if isinstance(s, dict)]
+    n = len(S)
+    if not n:
+        return
+    ROWS = [(k, lab) for k, lab in (("actions", "Actions"), ("touchpoints", "Touchpoints"), ("pains", "Pain points"), ("opportunities", "Opportunities"))
+            if any(s.get(k) for s in S)]
+    has_emo = any(s.get("emotion") is not None for s in S)
+    lw = min(1.45, box["w"] * 0.12)
+    hh = 0.46
+    emo_h = min(1.0, box["h"] * 0.22) if has_emo else 0
+    cw = (box["w"] - lw) / n
+    rh = (box["h"] - hh - emo_h - (0.1 if has_emo else 0)) / max(1, len(ROWS))
+    for j, s in enumerate(S):
+        x = box["x"] + lw + j * cw
+        _kshp(ctx, "homePlate" if j == 0 else "chevron", _B(x, box["y"], cw + (0.12 if j < n - 1 else 0), hh - 0.06), _kmix(t["primary"], t["secondary"], j / (n - 1) if n > 1 else 0))
+        _ktext(ctx, [_P(s.get("title"), 11, bold=True, color="FFFFFF", align="center")], _B(x + (0.24 if j else 0.08), box["y"], cw - 0.36, hh - 0.06), valign="middle", field="journey stage")
+    y = box["y"] + hh
+    if has_emo:
+        _ktext(ctx, [_P(b.get("emotion_label") or "Experience", 10, bold=True, color=_kdk(ctx))], _B(box["x"], y, lw - 0.1, emo_h), valign="middle", quiet=True)
+        _krect(ctx, _B(box["x"] + lw, y, box["w"] - lw, emo_h), c["surface"] if dark else t["light_surface"])
+        mid = y + emo_h / 2
+        _kline(ctx, box["x"] + lw, mid, box["x"] + box["w"], mid, t["dark_line"] if dark else t["light_line"], 0.75, "dash")
+        P = []
+        for j, s in enumerate(S):
+            e = _knum(s.get("emotion"), 0)
+            P.append((box["x"] + lw + j * cw + cw / 2, mid - (max(-2, min(2, e)) / 2) * (emo_h / 2 - 0.12), e))
+        for j in range(1, len(P)):
+            _kline(ctx, P[j - 1][0], P[j - 1][1], P[j][0], P[j][1], t["primary"], 2.25)
+        for px, py, e in P:
+            _kell(ctx, _B(px - 0.1, py - 0.1, 0.2, 0.2), t["success"] if e > 0 else t["danger"] if e < 0 else t["accent"], line={"color": "FFFFFF", "width": 1.25})
+        y += emo_h + 0.1
+    for r, (k, label) in enumerate(ROWS):
+        ry = y + r * rh
+        col = t["danger"] if k == "pains" else t["success"] if k == "opportunities" else t["primary"]
+        _ktext(ctx, [_P(label, 10, bold=True, color=col if k in ("pains", "opportunities") else _kdk(ctx))], _B(box["x"], ry, lw - 0.1, rh), valign="middle", quiet=True)
+        for j, s in enumerate(S):
+            x = box["x"] + lw + j * cw
+            v = s.get(k)
+            items = v if isinstance(v, list) else ([v] if v else [])
+            fill = c["surface"] if dark else (t["danger_tint"] if k == "pains" else t["success_tint"] if k == "opportunities" else "FFFFFF")
+            _krr(ctx, _B(x + 0.04, ry + 0.04, cw - 0.08, rh - 0.08), fill, line=None if (dark or k not in ("actions", "touchpoints")) else {"color": t["light_line"], "width": 0.75})
+            _ktext(ctx, [_P(x2, 9.5, color=c["text"], bullet=len(items) > 1, spaceAfter=2) for x2 in items], _B(x + 0.12, ry + 0.08, cw - 0.24, rh - 0.16),
+                   field="journey cell", valign="middle")
+
+
+# ---------- media ----------
+@_kcomp("image")
+def _kc_image(ctx, b, box):
+    t, c, dark = ctx.t, ctx.c, ctx.dark
+    cap_h = 0.34 if b.get("caption") else 0
+    ib = _B(box["x"], box["y"], box["w"], box["h"] - cap_h)
+    img = None if ctx.dry else _k_load_image(ctx, b.get("src"))
+    if img:
+        _k_place_image(ctx, img, ib, b.get("fit") or "cover")
+    else:
+        _krr(ctx, ib, c["surface"] if dark else t["light_surface"], line={"color": t["light_line"], "width": 1, "dash": "dash"})
+        _ktext(ctx, [_P("Image: " + _ks(b.get("alt") or b.get("src") or "placeholder"), 11, color=c["muted"], align="center")],
+               _B(ib["x"] + 0.2, ib["y"], ib["w"] - 0.4, ib["h"]), valign="middle", quiet=True)
+    if b.get("caption"):
+        _ktext(ctx, [_P(b["caption"], 9.5, italic=True, color=c["muted"])], _B(box["x"], box["y"] + box["h"] - cap_h + 0.04, box["w"], cap_h - 0.04),
+               valign="middle", field="caption")
+
+
+_K_MIN_H = {"layers": 2.2, "gantt": 1.6, "scorecard": 1.4, "table": 0.8, "hub": 2.4, "tree": 2.0, "matrix": 2.2, "chart": 1.6, "waterfall": 1.8,
+            "pyramid": 1.4, "funnel": 1.4, "comparison": 1.6, "process": 1.2, "timeline": 0.9, "cards": 0.6,
+            "swot": 2.2, "venn": 2.0, "cycle": 2.4, "value_chain": 1.6, "concentric": 2.0, "staircase": 1.5, "flow": 1.8, "heatmap": 1.2,
+            "maturity": 1.3, "risk_matrix": 2.2, "bubble": 2.0, "mekko": 2.0, "rings": 1.4, "org_chart": 2.0, "profiles": 1.0, "raci": 1.0,
+            "swimlane": 1.8, "checklist": 0.6, "status": 0.9, "board": 1.8, "persona": 2.6, "journey": 2.4, "image": 0.8}
+_K_DEFAULT_ROW_H = {"kpis": 0.8, "chevrons": 0.45, "timeline": 1.0, "process": 1.25, "callout": 0.85, "progress": 1.1, "bullets": 1.4, "agenda": 1.6,
+                    "rings": 1.1, "checklist": 1.2, "status": 1.3}
+
+
+# ------------------------------------------------------------ schema ----
+def _kS(desc, **x):
+    return {"type": "string", "desc": desc, **x}
+
+
+def _kN(desc, **x):
+    return {"type": "number", "desc": desc, **x}
+
+
+def _kBo(desc):
+    return {"type": "boolean", "desc": desc}
+
+
+def _kE(values, desc, **x):
+    return {"type": "enum", "values": values, "desc": desc, **x}
+
+
+def _kA(of, desc, **x):
+    return {"type": "array", "of": of, "desc": desc, **x}
+
+
+def _kO(fields, desc, **x):
+    return {"type": "object", "fields": fields, "desc": desc, **x}
+
+
+def _kR(spec):
+    return {**spec, "required": True}
+
+
+_K_ICON = _kS("icon name: alias (ai, cloud, money, shield, users, chart, rocket, ...) or a Font Awesome name (FaRobot)")
+_K_COLOR = _kE(["primary", "secondary", "accent", "info", "success", "danger", "neutral", "dark"], "theme color role")
+_K_NUM = {"type": "number"}
+_K_STR = {"type": "string"}
+_K_ANY = {"type": "any"}
+
+_K_COMPONENTS = {
+    "kpis": {"use": "Headline numbers. 2-6 stat tiles. Values must be real, sourced figures.", "fields": {
+        "items": _kR(_kA(_kO({"value": _kR(_kS("the number, short: '€22.9B', '+27%', '200+'", maxLen=9)), "label": _kR(_kS("what it measures", maxLen=90)),
+                              "icon": _K_ICON, "delta": _kS("optional change note, e.g. '+4 pts YoY'", maxLen=22),
+                              "trend": _kA(_K_NUM, "optional sparkline values, oldest first (4-12 points)", max=24)}, ""), "tiles", min=2, max=6)),
+        "highlight": _kN("index of the tile to emphasize (0-based)")}},
+    "timeline": {"use": "Chronology, history, milestones, release waves. 2-7 points.", "fields": {
+        "items": _kR(_kA(_kO({"date": _kR(_kS("'2023', 'Q1 2026', 'May 2026'", maxLen=14)), "title": _kR(_kS("milestone name", maxLen=40)),
+                              "text": _kS("1-2 sentence detail", maxLen=160), "highlight": _kBo("emphasize (e.g., the latest/current point)")}, ""), "milestones", min=2, max=7))}},
+    "cards": {"use": "Parallel ideas: implications, benefits, capabilities, recommendations, case studies. 1-12 cards in a grid.", "fields": {
+        "items": _kR(_kA(_kO({"title": _kR(_kS("card heading", maxLen=45)), "text": _kS("body, 1-3 sentences", maxLen=260), "icon": _K_ICON,
+                              "stat": _kS("optional big figure shown instead of the icon, e.g. '-90%'", maxLen=8), "tag": _kS("small label under the title, e.g. 'Finance · AR'", maxLen=40),
+                              "bullets": _kA(_kS("bullet"), "optional bullets instead of text", max=5)}, ""), "cards", min=1, max=12)),
+        "columns": _kN("grid columns (default: auto)", min=1, max=6), "style": _kE(["outline", "tinted", "solid"], "visual style (default outline)"),
+        "highlight": _kA(_K_NUM, "indexes of cards to emphasize")}},
+    "process": {"use": "Ordered steps / how it works / method. 3-7 numbered steps with icons and connector.", "fields": {
+        "steps": _kR(_kA(_kO({"title": _kR(_kS("step name, 1-3 words", maxLen=24)), "text": _kS("what happens", maxLen=150), "icon": _K_ICON}, ""), "steps", min=2, max=7)),
+        "highlight": _kN("index of step to emphasize")}},
+    "chevrons": {"use": "Stages/maturity levels/progression in one strip (low height). 2-6 stages.", "fields": {
+        "stages": _kR(_kA(_kO({"title": _kR(_kS("stage", maxLen=22)), "text": _kS("short descriptor", maxLen=40)}, ""), "stages", min=2, max=6))}},
+    "layers": {"use": "Layered architecture / operating model / stack diagram. 2-6 tiers, optional cross-cutting side panel.", "fields": {
+        "tiers": _kR(_kA(_kO({"label": _kR(_kS("tier name", maxLen=26)), "sublabel": _kS("tier description", maxLen=60), "color": _K_COLOR,
+                              "items": _kR(_kA(_kO({"title": _kR(_kS("component", maxLen=32)), "text": _kS("detail", maxLen=90),
+                                                    "bullets": _kA(_kS("bullet", maxLen=32), "bullets", max=5), "highlight": _kBo("emphasize")}, ""), "boxes in the tier", min=1, max=6)),
+                              "base": _kS("optional full-width foundation bar text at bottom of the tier", maxLen=110)}, ""), "top (user-facing) to bottom (foundation)", min=2, max=6)),
+        "side": _kO({"title": _kR(_kS("e.g. 'Governance'", maxLen=24)), "subtitle": _kS("e.g. 'Spans every tier'", maxLen=30), "icon": _K_ICON,
+                     "items": _kR(_kA(_kO({"title": _kR(_kS("item", maxLen=30)), "text": _kS("detail", maxLen=90)}, ""), "items", min=1, max=7))}, "optional cross-cutting column on the right")}},
+    "chart": {"use": "Native, editable PowerPoint chart: bar, column, stacked, line, area, pie, doughnut, radar (multi-criteria profile), combo (volume columns + rate line on 2nd axis). Every number must come from a source.", "fields": {
+        "chart_type": _kR(_kE(["bar", "column", "stacked_bar", "stacked_column", "line", "area", "pie", "doughnut", "radar", "combo"], "chart type; combo = columns + line(s) on a second axis")),
+        "categories": _kR(_kA(_kS("category label", maxLen=50), "x-axis categories / slices", min=1, max=24)),
+        "series": _kR(_kA(_kO({"name": _kR(_kS("series name")), "values": _kR(_kA(_K_NUM, "one value per category")),
+                               "type": _kE(["bar", "line"], "combo only: line puts this series on the secondary axis")}, ""), "data series", min=1, max=6)),
+        "line_unit": _kS("combo only: suffix for the line axis", maxLen=6), "line_prefix": _kS("combo only: prefix for the line axis", maxLen=3),
+        "line_decimals": _kN("combo only: decimals on the line axis", min=0, max=3),
+        "unit": _kS("value suffix like '%', 'M', 'x' (shown in labels)", maxLen=6), "prefix": _kS("value prefix like '€' or '$'", maxLen=3),
+        "decimals": _kN("decimals in labels (default 0)", min=0, max=3), "show_values": _kBo("show data labels (default true)"),
+        "legend": _kBo("force legend on/off (default: on when >1 series or pie)")}},
+    "waterfall": {"use": "Business case bridge / value build-up / variance bridge drawn with native shapes.", "fields": {
+        "steps": _kR(_kA(_kO({"label": _kR(_kS("step label", maxLen=28)), "value": _kR(_kN("delta (negative allowed); for total rows the value is ignored and computed")),
+                              "total": _kBo("true = show running total bar")}, ""), "bars in order", min=2, max=12)),
+        "unit": _kS("suffix e.g. 'M'", maxLen=6), "prefix": _kS("prefix e.g. '€'", maxLen=3), "decimals": _kN("decimals", min=0, max=2)}},
+    "table": {"use": "Structured comparison, risk register, RACI, data table. Cells matching High/Medium/Low, Red/Amber/Green, Yes/No/Partial are auto-colored.", "fields": {
+        "columns": _kR(_kA(_kS("header", maxLen=30), "column headers", min=2, max=7)), "rows": _kR(_kA(_kA(_K_STR, "cells"), "rows of cells (strings)", min=1, max=12)),
+        "col_widths": _kA(_K_NUM, "relative widths, e.g. [2,1,4]"), "highlight_rows": _kA(_K_NUM, "row indexes to emphasize")}},
+    "scorecard": {"use": "Option evaluation / vendor or capability assessment with Harvey balls (0-4).", "fields": {
+        "options": _kR(_kA(_kS("option/column name", maxLen=22), "options compared", min=1, max=6)),
+        "criteria": _kR(_kA(_kO({"name": _kR(_kS("criterion", maxLen=40)), "scores": _kR(_kA(_K_NUM, "0-4 per option")), "weight": _kN("optional weight")}, ""), "rows", min=1, max=10)),
+        "show_total": _kBo("show weighted average row")}},
+    "gantt": {"use": "Roadmap / plan with phases over time and optional milestones.", "fields": {
+        "periods": _kR(_kO({"start": _kN("first tick, default 0"), "end": _kN("last tick (required unless labels are given)"), "step": _kN("tick step, default 1"),
+                            "prefix": _kS("tick label prefix, e.g. 'M' or 'W'"),
+                            "labels": _kA(_kS("label"), "explicit tick labels instead (e.g. ['Q1','Q2','Q3','Q4']); then phase start/end index these")}, "time axis")),
+        "phases": _kR(_kA(_kO({"label": _kR(_kS("phase/workstream", maxLen=26)), "start": _kR(_kN("start tick")), "end": _kR(_kN("end tick")),
+                               "text": _kS("scope line shown under the bar", maxLen=110), "color": _K_COLOR,
+                               "depends_on": {"type": "any", "desc": "index (or array of indexes) of phases this one depends on — draws dependency arrows"}}, ""), "bars", min=1, max=9)),
+        "milestones": _kA(_kO({"at": _kR(_kN("tick")), "label": _kR(_kS("milestone", maxLen=26))}, ""), "diamond milestones", max=6)}},
+    "pyramid": {"use": "Hierarchy of needs, licensing tiers, value pyramid. 2-6 levels top to bottom.", "fields": {
+        "levels": _kR(_kA(_kO({"title": _kR(_kS("level", maxLen=34)), "text": _kS("detail", maxLen=110)}, ""), "top (narrowest) to bottom", min=2, max=6))}},
+    "funnel": {"use": "Conversion / pipeline / filtering stages with values.", "fields": {
+        "stages": _kR(_kA(_kO({"title": _kR(_kS("stage", maxLen=30)), "value": _kS("e.g. '1,200' or '38%'", maxLen=10), "text": _kS("detail", maxLen=80)}, ""), "stages top to bottom", min=2, max=6))}},
+    "comparison": {"use": "Side-by-side options, before/after, as-is vs to-be. 2-4 columns.", "fields": {
+        "columns": _kR(_kA(_kO({"title": _kR(_kS("column title", maxLen=30)), "subtitle": _kS("subtitle", maxLen=50), "icon": _K_ICON,
+                                "bullets": _kR(_kA(_kS("point", maxLen=110), "points", min=1, max=7)), "footer": _kS("verdict / bottom line", maxLen=90),
+                                "highlight": _kBo("recommended / to-be column")}, ""), "columns", min=2, max=4)),
+        "vs": _kBo("show a 'VS' badge between two columns")}},
+    "matrix": {"use": "2x2 prioritization / positioning matrix with optional plotted items.", "fields": {
+        "x_axis": _kR(_kO({"label": _kR(_kS("axis title")), "low": _kS("low end label"), "high": _kS("high end label")}, "horizontal axis")),
+        "y_axis": _kR(_kO({"label": _kR(_kS("axis title")), "low": _kS("low end label"), "high": _kS("high end label")}, "vertical axis")),
+        "quadrants": _kR(_kA(_kO({"title": _kR(_kS("quadrant name", maxLen=26)), "text": _kS("meaning / action", maxLen=90)}, ""), "exactly 4, order: top-left, top-right, bottom-left, bottom-right", min=4, max=4)),
+        "points": _kA(_kO({"label": _kR(_kS("item", maxLen=22)), "x": _kR(_kN("0..1")), "y": _kR(_kN("0..1"))}, ""), "plotted items", max=12),
+        "highlight": _kN("quadrant index to emphasize")}},
+    "hub": {"use": "Ecosystem / partner map / capability around a core. Center + 3-8 nodes.", "fields": {
+        "center": _kR(_kO({"title": _kR(_kS("core", maxLen=26)), "text": _kS("detail", maxLen=60)}, "center")),
+        "nodes": _kR(_kA(_kO({"title": _kR(_kS("node", maxLen=26)), "text": _kS("detail", maxLen=70), "icon": _K_ICON}, ""), "satellites", min=3, max=8))}},
+    "tree": {"use": "Issue tree, value-driver tree, capability map, org-style breakdown. Root + 2-6 branches with items.", "fields": {
+        "root": _kR(_kO({"title": _kR(_kS("root question/goal", maxLen=60)), "text": _kS("detail", maxLen=80)}, "root")),
+        "branches": _kR(_kA(_kO({"title": _kR(_kS("branch", maxLen=30)), "items": _kA(_kS("leaf", maxLen=60), "leaves", max=6)}, ""), "branches", min=2, max=6))}},
+    "bullets": {"use": "Narrative points when no diagram fits. Use 'lead' for bold run-in heads. Max 8 items.", "fields": {
+        "items": _kR(_kA({"type": "string|object", "fields": {"lead": _kS("bold lead-in"), "text": _kS("text"), "sub": _kA(_kS("sub-point"), "sub bullets", max=4)}},
+                         "string or {lead, text, sub}", min=1, max=8)),
+        "numbered": _kBo("numbered list"), "panel": _kBo("draw on a tinted panel")}},
+    "callout": {"use": "Key message, big stat, or quote. Put the 'so what' here.", "fields": {
+        "kind": _kE(["statement", "stat", "quote"], "style (default statement)"), "text": _kR(_kS("the message / quote / stat label", maxLen=220)),
+        "value": _kS("for kind=stat: the big number", maxLen=10), "attribution": _kS("for quote: who said it, or source", maxLen=80),
+        "icon": _K_ICON, "tone": _kE(["primary", "dark", "accent", "tint"], "fill (default primary)")}},
+    "agenda": {"use": "Agenda / table of contents / executive summary numbered list. 2-10 items.", "fields": {
+        "items": _kR(_kA(_kO({"title": _kR(_kS("item", maxLen=50)), "text": _kS("detail", maxLen=120)}, ""), "items", min=2, max=10)), "highlight": _kN("current item index")}},
+    "progress": {"use": "Horizontal bars for percentages/scores (adoption, maturity, survey results) with optional targets.", "fields": {
+        "items": _kR(_kA(_kO({"label": _kR(_kS("label", maxLen=40)), "value": _kR(_kN("value")), "max": _kN("scale max, default 100"),
+                              "target": _kN("optional target marker"), "text": _kS("note", maxLen=60)}, ""), "bars", min=1, max=10)),
+        "unit": _kS("suffix, default '%'", maxLen=6)}},
+    "swot": {"use": "SWOT analysis: four colored quadrants with bullets.", "fields": {
+        "strengths": _kR(_kA(_kS("point", maxLen=90), "strengths", min=1, max=6)), "weaknesses": _kR(_kA(_kS("point", maxLen=90), "weaknesses", min=1, max=6)),
+        "opportunities": _kR(_kA(_kS("point", maxLen=90), "opportunities", min=1, max=6)), "threats": _kR(_kA(_kS("point", maxLen=90), "threats", min=1, max=6)),
+        "titles": _kA(_kS("title"), "optional 4 custom quadrant titles", max=4)}},
+    "venn": {"use": "Overlap of 2-3 domains/capabilities with the intersection highlighted (e.g., data + process + AI = value).", "fields": {
+        "sets": _kR(_kA(_kO({"title": _kR(_kS("set", maxLen=22)), "text": _kS("detail", maxLen=60)}, ""), "sets", min=2, max=3)),
+        "overlap": _kO({"title": _kR(_kS("intersection", maxLen=26)), "text": _kS("detail", maxLen=50)}, "label for the centre overlap")}},
+    "cycle": {"use": "Closed loop / flywheel / continuous-improvement cycle. 3-8 steps around a circle with arrows.", "fields": {
+        "steps": _kR(_kA(_kO({"title": _kR(_kS("step", maxLen=24)), "text": _kS("detail", maxLen=70), "icon": _K_ICON}, ""), "steps clockwise from top", min=3, max=8)),
+        "center": _kO({"title": _kR(_kS("centre label", maxLen=24)), "text": _kS("detail", maxLen=40)}, "optional centre")}},
+    "value_chain": {"use": "Porter-style value chain: support activities as bars, primary activities as chevrons, margin arrow.", "fields": {
+        "primary": _kR(_kA(_kO({"title": _kR(_kS("activity", maxLen=22)), "text": _kS("detail", maxLen=60)}, ""), "primary activities left to right", min=3, max=7)),
+        "support": _kA(_kO({"title": _kR(_kS("activity", maxLen=28)), "text": _kS("detail", maxLen=90)}, ""), "support activities", max=5),
+        "margin": _kBo("show margin arrow (default true)"), "margin_label": _kS("e.g. 'Margin' or 'Value'", maxLen=12)}},
+    "concentric": {"use": "Onion / layered-core diagram (e.g., clean core → extensions → ecosystem). 2-5 rings inner to outer, with legend.", "fields": {
+        "rings": _kR(_kA(_kO({"title": _kR(_kS("ring", maxLen=20)), "text": _kS("detail for the legend", maxLen=90)}, ""), "inner first", min=2, max=5))}},
+    "staircase": {"use": "Ascending steps: maturity journey, phased ambition, capability build-up. 2-6 steps.", "fields": {
+        "steps": _kR(_kA(_kO({"title": _kR(_kS("step", maxLen=26)), "text": _kS("detail", maxLen=90), "label": _kS("small label above, e.g. 'Phase 1' or '2026'", maxLen=14)}, ""), "low to high", min=2, max=6))}},
+    "flow": {"use": "Input → core → output (system context, operating model, data flow).", "fields": {
+        "inputs": _kR(_kA(_kO({"title": _kR(_kS("input", maxLen=28)), "text": _kS("detail", maxLen=60), "icon": _K_ICON}, ""), "inputs", min=1, max=6)),
+        "core": _kR(_kO({"title": _kR(_kS("core", maxLen=30)), "text": _kS("detail", maxLen=120), "icon": _K_ICON, "bullets": _kA(_kS("point", maxLen=50), "points", max=5)}, "centre")),
+        "outputs": _kR(_kA(_kO({"title": _kR(_kS("output", maxLen=28)), "text": _kS("detail", maxLen=60), "icon": _K_ICON}, ""), "outputs", min=1, max=6)),
+        "inputs_label": _kS("column label (default 'Inputs')"), "outputs_label": _kS("column label (default 'Outputs')"), "core_label": _kS("label above core")}},
+    "heatmap": {"use": "Capability / coverage / readiness heatmap: rows × columns with scores 0-max (or RAG strings).", "fields": {
+        "rows": _kR(_kA(_kS("row", maxLen=36), "rows", min=1, max=12)), "columns": _kR(_kA(_kS("column", maxLen=18), "columns", min=1, max=10)),
+        "values": _kR(_kA(_kA(_K_ANY, "cells"), "matrix [row][col] of numbers 0..max or 'Red'/'Amber'/'Green'")),
+        "max": _kN("top of scale (default 4)"), "scale_labels": _kA(_kS("label"), "optional labels per integer score, e.g. ['None','Low','Medium','High','Leading']"),
+        "show_values": _kBo("print values in cells (default true)"), "legend": _kS("legend left label")}},
+    "maturity": {"use": "Maturity assessment: dimensions × levels with current (dot) and target (ring) positions.", "fields": {
+        "levels": _kR(_kA(_kS("level name", maxLen=16), "levels low→high", min=3, max=6)),
+        "dimensions": _kR(_kA(_kO({"name": _kR(_kS("dimension", maxLen=34)), "current": _kR(_kN("1..levels")), "target": _kN("1..levels"), "note": _kS("small note", maxLen=50)}, ""), "rows", min=1, max=9))}},
+    "risk_matrix": {"use": "Likelihood × impact heat grid (5x5 or 3x3) with numbered risks plotted and a legend list.", "fields": {
+        "risks": _kR(_kA(_kO({"label": _kR(_kS("risk", maxLen=50)), "likelihood": _kR(_kN("1..scale")), "impact": _kR(_kN("1..scale")),
+                              "id": _kS("marker label, default number", maxLen=3), "owner": _kS("owner", maxLen=20)}, ""), "risks", min=1, max=15)),
+        "scale": _kE([3, 5], "grid size (default 5)"), "show_list": _kBo("show legend list (default true when wide)"),
+        "x_label": _kS("default 'Impact'"), "y_label": _kS("default 'Likelihood'")}},
+    "bubble": {"use": "Bubble chart (shape-drawn, labelled): portfolio, attractiveness vs position, value vs effort with size = spend.", "fields": {
+        "x_axis": _kR(_kO({"label": _kR(_kS("axis title")), "min": _kN("min"), "max": _kN("max"), "unit": _kS("suffix"), "prefix": _kS("prefix")}, "x axis")),
+        "y_axis": _kR(_kO({"label": _kR(_kS("axis title")), "min": _kN("min"), "max": _kN("max"), "unit": _kS("suffix"), "prefix": _kS("prefix")}, "y axis")),
+        "bubbles": _kR(_kA(_kO({"label": _kR(_kS("item", maxLen=22)), "x": _kR(_kN("x")), "y": _kR(_kN("y")), "size": _kR(_kN("relative size")), "color": _K_COLOR}, ""), "bubbles", min=1, max=15)),
+        "size_label": _kS("what bubble size means, e.g. 'revenue €M'")}},
+    "mekko": {"use": "Marimekko / market map: column width = segment size, stacked shares within each column.", "fields": {
+        "columns": _kR(_kA(_kO({"label": _kR(_kS("segment", maxLen=22)), "width": _kR(_kN("segment size (e.g., market €B)")),
+                                "parts": _kR(_kA(_kO({"value": _kR(_kN("value or share")), "label": _kS("short label", maxLen=12)}, ""), "stack bottom→top", min=1, max=6))}, ""), "columns", min=2, max=8)),
+        "part_names": _kA(_kS("legend name"), "names of stack layers in order", max=6), "unit": _kS("width suffix e.g. 'B'"), "prefix": _kS("width prefix e.g. '€'")}},
+    "rings": {"use": "Circular progress gauges for 1-6 percentages (adoption, completion, coverage).", "fields": {
+        "items": _kR(_kA(_kO({"value": _kR(_kN("value")), "max": _kN("default 100"), "label": _kR(_kS("label", maxLen=30)), "text": _kS("note", maxLen=60),
+                              "unit": _kS("default '%'", maxLen=4), "prefix": _kS("prefix", maxLen=3)}, ""), "gauges", min=1, max=6))}},
+    "org_chart": {"use": "Organisation / governance structure: root, up to 6 direct reports, up to 6 each below. Initials avatars or photos.", "fields": {
+        "root": _kR(_kO({"name": _kR(_kS("name or role", maxLen=30)), "role": _kS("title", maxLen=40), "photo": _kS("optional image URL/file")}, "top")),
+        "children": _kR(_kA(_kO({"name": _kR(_kS("name", maxLen=30)), "role": _kS("title", maxLen=40), "photo": _kS("image"),
+                                 "children": _kA(_kO({"name": _kR(_kS("name", maxLen=30)), "role": _kS("title", maxLen=40), "photo": _kS("image")}, ""), "reports", max=6)}, ""), "direct reports", min=1, max=6))}},
+    "profiles": {"use": "Team / leadership / speaker cards with photo or initials, role and short bio.", "fields": {
+        "people": _kR(_kA(_kO({"name": _kR(_kS("name", maxLen=30)), "role": _kS("role", maxLen=45), "text": _kS("bio / responsibility", maxLen=180),
+                               "photo": _kS("image URL or file name in the images folder")}, ""), "people", min=1, max=8)),
+        "columns": _kN("columns", min=1, max=4)}},
+    "raci": {"use": "RACI responsibility matrix: activities × roles with R/A/C/I chips.", "fields": {
+        "activities": _kR(_kA(_kS("activity", maxLen=45), "rows", min=1, max=12)), "roles": _kR(_kA(_kS("role", maxLen=18), "columns", min=2, max=8)),
+        "matrix": _kR(_kA(_kA(_kS("R, A, C, I, A/R or empty"), ""), "[activity][role]")), "activity_label": _kS("first column header")}},
+    "swimlane": {"use": "Cross-functional process across lanes (roles/systems) and phases, with arrows and decision diamonds.", "fields": {
+        "lanes": _kR(_kA(_kS("lane", maxLen=22), "lanes top→bottom", min=2, max=6)), "phases": _kA(_kS("phase", maxLen=24), "optional column headers", max=8),
+        "steps": _kR(_kA(_kO({"lane": _kR({"type": "any", "desc": "lane index (0-based) or lane name"}), "col": _kR(_kN("column index 0-based")),
+                              "title": _kR(_kS("step", maxLen=26)), "text": _kS("detail", maxLen=40), "shape": _kE(["process", "decision"], "default process"),
+                              "highlight": _kBo("emphasize")}, ""), "steps", min=2, max=18)),
+        "links": _kA(_kA(_K_NUM, ""), "optional [fromStep, toStep] pairs; default links steps in listed order")}},
+    "checklist": {"use": "Action plan / next steps / readiness checklist with status icons, owner and due date.", "fields": {
+        "items": _kR(_kA(_kO({"text": _kR(_kS("action", maxLen=90)), "status": _kE(["done", "in_progress", "todo", "blocked"], "status (default todo)"),
+                              "owner": _kS("owner", maxLen=20), "due": _kS("due date", maxLen=14), "bold": _kBo("bold text")}, ""), "items", min=1, max=12))}},
+    "status": {"use": "RAG status report: workstreams with status pill, trend arrow, owner and commentary.", "fields": {
+        "items": _kR(_kA(_kO({"name": _kR(_kS("workstream", maxLen=30)), "status": _kR(_kE(["green", "amber", "red", "on_track", "at_risk", "off_track", "done", "not_started"], "status")),
+                              "trend": _kE(["up", "flat", "down"], "trend"), "owner": _kS("owner", maxLen=20), "comment": _kS("commentary", maxLen=120),
+                              "label": _kS("custom pill text", maxLen=12)}, ""), "rows", min=1, max=10)),
+        "name_label": _kS("first column header")}},
+    "board": {"use": "Kanban / initiative board: 2-5 columns of cards (backlog → done, now/next/later).", "fields": {
+        "columns": _kR(_kA(_kO({"title": _kR(_kS("column", maxLen=20)), "color": _K_COLOR,
+                                "cards": _kR(_kA(_kO({"title": _kR(_kS("card", maxLen=40)), "text": _kS("detail", maxLen=70), "tag": _kS("tag", maxLen=20)}, ""), "cards", min=0, max=6))}, ""), "columns", min=2, max=5))}},
+    "persona": {"use": "Customer / user persona: profile panel plus goals, pain points, needs, behaviours.", "fields": {
+        "name": _kR(_kS("persona name", maxLen=30)), "role": _kS("role", maxLen=40), "quote": _kS("quote", maxLen=140), "photo": _kS("optional image"),
+        "attributes": _kA(_kO({"label": _kR(_kS("label", maxLen=14)), "value": _kR(_kS("value", maxLen=30))}, ""), "facts like Age, Location, Tools", max=6),
+        "goals": _kA(_kS("goal", maxLen=90), "goals", max=6), "pains": _kA(_kS("pain", maxLen=90), "pain points", max=6),
+        "needs": _kA(_kS("need", maxLen=90), "needs", max=6), "behaviours": _kA(_kS("behaviour", maxLen=90), "behaviours", max=6)}},
+    "journey": {"use": "Customer / employee journey map: stages × actions/touchpoints/pain points/opportunities with an emotion curve.", "fields": {
+        "stages": _kR(_kA(_kO({"title": _kR(_kS("stage", maxLen=20)), "actions": {"type": "any", "desc": "string or list"}, "touchpoints": {"type": "any", "desc": "string or list"},
+                               "pains": {"type": "any", "desc": "string or list"}, "opportunities": {"type": "any", "desc": "string or list"},
+                               "emotion": _kN("-2 (frustrated) .. 2 (delighted)", min=-2, max=2)}, ""), "stages", min=3, max=7)),
+        "emotion_label": _kS("row label for the curve")}},
+    "image": {"use": "Photo, screenshot, logo or product visual. src = https URL, file name in the images folder, or data URI.", "fields": {
+        "src": _kR(_kS("image source")), "caption": _kS("caption", maxLen=120),
+        "fit": _kE(["cover", "contain"], "cover crops to fill; contain shows the whole image (screenshots, logos)"), "alt": _kS("description shown if the image cannot be loaded")}},
+}
+
+# Neutral, obviously fictional catalogue examples ("Northwind"): they teach structure only.
+_K_EXAMPLES = json.loads(r'''{"kpis":{"type":"kpis","items":[{"value":"61%","label":"Northwind orders shipped same day (fictional)","icon":"truck","trend":[48,52,55,61]},{"value":"€13M","label":"Northwind annual savings target (fictional)","icon":"money"},{"value":"4.2x","label":"Northwind faster claims handling (fictional)","icon":"speed"}]},"timeline":{"type":"timeline","items":[{"date":"Phase A","title":"Northwind pilot","text":"Placeholder milestone text."},{"date":"Phase B","title":"Northwind rollout","text":"Placeholder milestone text."},{"date":"Phase C","title":"Northwind scale-up","text":"Placeholder milestone text.","highlight":true}]},"cards":{"type":"cards","columns":3,"items":[{"icon":"idea","title":"Northwind point one","text":"Placeholder: one or two sentences of researched content."},{"icon":"target","title":"Northwind point two","text":"Placeholder: one or two sentences of researched content."},{"icon":"rocket","title":"Northwind point three","text":"Placeholder: one or two sentences of researched content."}]},"process":{"type":"process","steps":[{"icon":"search","title":"Northwind step 1","text":"Placeholder step text."},{"icon":"settings","title":"Northwind step 2","text":"Placeholder step text."},{"icon":"check","title":"Northwind step 3","text":"Placeholder step text."}]},"chevrons":{"type":"chevrons","stages":[{"title":"Northwind level 1","text":"Placeholder"},{"title":"Northwind level 2","text":"Placeholder"},{"title":"Northwind level 3","text":"Placeholder"}]},"layers":{"type":"layers","tiers":[{"label":"Northwind tier A","sublabel":"Placeholder","items":[{"title":"Component A1","text":"Placeholder detail"},{"title":"Component A2","text":"Placeholder detail"}]},{"label":"Northwind tier B","color":"primary","items":[{"title":"Component B1","bullets":["Placeholder","Placeholder"]},{"title":"Component B2","bullets":["Placeholder"],"highlight":true}],"base":"Northwind foundation placeholder"}],"side":{"title":"Northwind governance","icon":"shield","items":[{"title":"Control 1","text":"Placeholder"}]}},"chart":{"type":"chart","chart_type":"bar","categories":["Northwind depot A","Northwind depot B","Northwind depot C"],"series":[{"name":"On-time rate","values":[71,64,58]}],"unit":"%"},"waterfall":{"type":"waterfall","prefix":"€","unit":"M","steps":[{"label":"Northwind baseline","value":31.7},{"label":"Northwind saving","value":-4.3},{"label":"Northwind new cost","value":1.9},{"label":"Northwind result","total":true,"value":0}]},"table":{"type":"table","columns":["Northwind item","Rating","Note"],"col_widths":[2,1,4],"rows":[["Northwind risk one","High","Placeholder mitigation"],["Northwind risk two","Medium","Placeholder mitigation"]]},"scorecard":{"type":"scorecard","options":["Northwind option X","Northwind option Y"],"show_total":true,"criteria":[{"name":"Criterion placeholder 1","scores":[3,2]},{"name":"Criterion placeholder 2","scores":[1,4]}]},"gantt":{"type":"gantt","periods":{"start":0,"end":12,"step":3,"prefix":"M"},"phases":[{"label":"Northwind phase 1","start":0,"end":4,"text":"Placeholder scope"},{"label":"Northwind phase 2","start":3,"end":12,"text":"Placeholder scope","color":"primary","depends_on":0}],"milestones":[{"at":6,"label":"Northwind gate"}]},"pyramid":{"type":"pyramid","levels":[{"title":"Northwind top tier","text":"Placeholder"},{"title":"Northwind middle tier","text":"Placeholder"},{"title":"Northwind base tier","text":"Placeholder"}]},"funnel":{"type":"funnel","stages":[{"title":"Northwind leads","value":"917"},{"title":"Northwind qualified","value":"233"},{"title":"Northwind won","value":"41"}]},"comparison":{"type":"comparison","columns":[{"title":"Northwind today","bullets":["Placeholder point","Placeholder point"]},{"title":"Northwind target","highlight":true,"bullets":["Placeholder point","Placeholder point"]}]},"matrix":{"type":"matrix","x_axis":{"label":"Effort","low":"Low","high":"High"},"y_axis":{"label":"Value","low":"Low","high":"High"},"highlight":0,"quadrants":[{"title":"Quadrant TL","text":"Placeholder"},{"title":"Quadrant TR","text":"Placeholder"},{"title":"Quadrant BL","text":"Placeholder"},{"title":"Quadrant BR","text":"Placeholder"}],"points":[{"label":"Northwind idea 1","x":0.3,"y":0.8}]},"hub":{"type":"hub","center":{"title":"Northwind core","text":"Placeholder"},"nodes":[{"title":"Northwind node 1","icon":"truck"},{"title":"Northwind node 2","icon":"warehouse"},{"title":"Northwind node 3","icon":"users"}]},"tree":{"type":"tree","root":{"title":"Northwind goal placeholder"},"branches":[{"title":"Northwind driver 1","items":["Placeholder lever","Placeholder lever"]},{"title":"Northwind driver 2","items":["Placeholder lever"]}]},"bullets":{"type":"bullets","items":[{"lead":"Northwind point:","text":"placeholder narrative sentence."},"Northwind second placeholder point."]},"callout":{"type":"callout","kind":"stat","value":"7.7x","text":"Northwind placeholder statistic (fictional)","attribution":"Fictional example"},"agenda":{"type":"agenda","items":[{"title":"Northwind section 1","text":"Placeholder"},{"title":"Northwind section 2","text":"Placeholder"}]},"progress":{"type":"progress","items":[{"label":"Northwind unit 1","value":63,"target":80},{"label":"Northwind unit 2","value":37,"target":70}]},"swot":{"type":"swot","strengths":["Northwind strength placeholder"],"weaknesses":["Northwind weakness placeholder"],"opportunities":["Northwind opportunity placeholder"],"threats":["Northwind threat placeholder"]},"venn":{"type":"venn","sets":[{"title":"Northwind set A"},{"title":"Northwind set B"},{"title":"Northwind set C"}],"overlap":{"title":"Northwind overlap"}},"cycle":{"type":"cycle","center":{"title":"Northwind loop"},"steps":[{"title":"Northwind stage 1","icon":"users"},{"title":"Northwind stage 2","icon":"database"},{"title":"Northwind stage 3","icon":"growth"}]},"value_chain":{"type":"value_chain","support":[{"title":"Northwind support 1","text":"Placeholder"}],"primary":[{"title":"Northwind act 1"},{"title":"Northwind act 2"},{"title":"Northwind act 3"}]},"concentric":{"type":"concentric","rings":[{"title":"Northwind core","text":"Placeholder"},{"title":"Northwind middle","text":"Placeholder"},{"title":"Northwind outer","text":"Placeholder"}]},"staircase":{"type":"staircase","steps":[{"label":"Step 1","title":"Northwind level A"},{"label":"Step 2","title":"Northwind level B"},{"label":"Step 3","title":"Northwind level C"}]},"flow":{"type":"flow","inputs":[{"title":"Northwind input 1","icon":"database"},{"title":"Northwind input 2","icon":"document"}],"core":{"title":"Northwind engine","icon":"settings","bullets":["Placeholder","Placeholder"]},"outputs":[{"title":"Northwind output 1","icon":"check"}]},"heatmap":{"type":"heatmap","rows":["Northwind region 1","Northwind region 2"],"columns":["Dim A","Dim B","Dim C"],"values":[[3,1,2],[2,4,0]],"scale_labels":["None","Low","Medium","High","Leading"]},"maturity":{"type":"maturity","levels":["Level 1","Level 2","Level 3","Level 4","Level 5"],"dimensions":[{"name":"Northwind dimension 1","current":2,"target":4},{"name":"Northwind dimension 2","current":1,"target":3}]},"risk_matrix":{"type":"risk_matrix","risks":[{"label":"Northwind risk placeholder 1","likelihood":4,"impact":3,"owner":"Owner A"},{"label":"Northwind risk placeholder 2","likelihood":2,"impact":5}]},"bubble":{"type":"bubble","x_axis":{"label":"Effort (months)"},"y_axis":{"label":"Value (€M)"},"size_label":"placeholder size measure","bubbles":[{"label":"Northwind item 1","x":3,"y":5.3,"size":470},{"label":"Northwind item 2","x":7,"y":2.9,"size":190}]},"mekko":{"type":"mekko","prefix":"€","unit":"B","part_names":["Northwind","Rival A","Others"],"columns":[{"label":"Region North","width":17,"parts":[{"value":41},{"value":23},{"value":36}]},{"label":"Region South","width":29,"parts":[{"value":27},{"value":33},{"value":40}]}]},"rings":{"type":"rings","items":[{"value":67,"label":"Northwind metric 1"},{"value":39,"label":"Northwind metric 2"}]},"org_chart":{"type":"org_chart","root":{"name":"Northwind Board","role":"Placeholder chair"},"children":[{"name":"Northwind Unit A","role":"Placeholder lead","children":[{"name":"Team A1"}]},{"name":"Northwind Unit B","role":"Placeholder lead"}]},"profiles":{"type":"profiles","people":[{"name":"Alex Example","role":"Placeholder role","text":"Placeholder biography sentence."}]},"raci":{"type":"raci","roles":["Role A","Role B","Role C"],"activities":["Northwind activity 1","Northwind activity 2"],"matrix":[["A","C","R"],["I","A","R"]]},"swimlane":{"type":"swimlane","lanes":["Northwind lane 1","Northwind lane 2","Northwind lane 3"],"steps":[{"lane":0,"col":0,"title":"Northwind start"},{"lane":1,"col":1,"title":"Northwind check"},{"lane":2,"col":2,"title":"Approve?","shape":"decision"},{"lane":1,"col":3,"title":"Northwind finish"}]},"checklist":{"type":"checklist","items":[{"text":"Northwind action placeholder 1","status":"done","owner":"Owner A","due":"Date 1"},{"text":"Northwind action placeholder 2","status":"in_progress","owner":"Owner B","due":"Date 2"}]},"status":{"type":"status","items":[{"name":"Northwind stream 1","status":"amber","trend":"up","owner":"Owner A","comment":"Placeholder commentary"}]},"board":{"type":"board","columns":[{"title":"Now","cards":[{"title":"Northwind card 1","tag":"Tag A"}]},{"title":"Next","cards":[{"title":"Northwind card 2"}]},{"title":"Later","cards":[{"title":"Northwind card 3"}]}]},"persona":{"type":"persona","name":"Northwind persona","role":"Placeholder role","quote":"Placeholder quote from research interviews.","goals":["Placeholder goal"],"pains":["Placeholder pain point"],"needs":["Placeholder need"]},"journey":{"type":"journey","stages":[{"title":"Stage 1","actions":"Placeholder action","pains":"Placeholder pain","emotion":-1},{"title":"Stage 2","actions":"Placeholder action","emotion":0},{"title":"Stage 3","actions":"Placeholder action","opportunities":"Placeholder idea","emotion":1}]},"image":{"type":"image","src":"your-file-name.png","fit":"contain","caption":"Placeholder caption"}}''')
+for _k, _ex in _K_EXAMPLES.items():
+    if _k in _K_COMPONENTS:
+        _K_COMPONENTS[_k]["example"] = _ex
+
+_K_BLOCK_COMMON = {"heading": _kS("optional small heading above the block", maxLen=70), "w": _kN("relative width within the row (default 1)")}
+
+_K_SLIDE_TYPES = {
+    "cover": {"title": _kR(_kS("deck title", maxLen=110)), "subtitle": _kS("subtitle", maxLen=160), "kicker": _kS("small line above title", maxLen=80),
+              "meta": _kS("presenter · organisation · date", maxLen=100), "blocks": _kA({"type": "object"}, "optional single row of blocks under the title (e.g., kpis)", max=3),
+              "notes": _kS("speaker notes")},
+    "closing": {"title": _kR(_kS("closing message, e.g. 'Next steps' or 'Thank you'", maxLen=90)), "subtitle": _kS("subtitle", maxLen=160),
+                "kicker": _kS("small line above title", maxLen=60), "contact": _kA(_kS("contact line, e.g. 'Jane Doe · jane@firm.com'", maxLen=70), "contact lines", max=4),
+                "blocks": _kA({"type": "object"}, "optional single row of blocks (e.g., checklist or cards)", max=3), "notes": _kS("speaker notes")},
+    "section": {"title": _kR(_kS("section title", maxLen=80)), "number": _kS("e.g. '02'"), "subtitle": _kS("subtitle", maxLen=160), "notes": _kS("speaker notes")},
+    "content": {"title": _kR(_kS("ACTION TITLE: full-sentence takeaway, max ~25 words", maxLen=170)), "kicker": _kS("small section label above the title", maxLen=70),
+                "dark": _kBo("dark background (use for exec summary / closing)"),
+                "rows": _kR(_kA(_kO({"h": _kN("relative row height (default by component)"), "blocks": _kR(_kA({"type": "object"}, "1-4 blocks side by side", min=1, max=4))}, ""),
+                                "rows top to bottom", min=1, max=4)),
+                "source": _kS("source line shown at the bottom — REQUIRED whenever the slide has facts or numbers", maxLen=240),
+                "notes": _kS("speaker notes: talking points + full source URLs")},
+}
+_K_DECK = {
+    "meta": _kO({"title": _kS("deck title"), "author": _kS("author"), "company": _kS("company"), "footer": _kS("footer text on every slide, e.g. 'Confidential'", maxLen=40)}, "metadata"),
+    "theme": {"type": "string|object", "desc": "preset name or {preset, primary:'hex', ...overrides, fonts:{head, body}}"},
+    "slides": _kR(_kA({"type": "object"}, "slides", min=1, max=40)),
+    "engine": _kS("'kit' to force this engine"), "filename": _kS("optional output file name"),
+}
+
+
+def _k_type(v):
+    if isinstance(v, bool):
+        return "boolean"
+    if isinstance(v, (int, float)):
+        return "number"
+    if isinstance(v, str):
+        return "string"
+    if isinstance(v, list):
+        return "array"
+    if isinstance(v, dict):
+        return "object"
+    return "null"
+
+
+def _k_check(spec, v, path, errs, warns):
+    if v is None:
+        if spec.get("required"):
+            errs.append(f"{path}: required {spec['type']}" + (f" ({spec['desc']})" if spec.get("desc") else ""))
+        return
+    t = _k_type(v)
+    st = spec["type"]
+    if st == "string":
+        if t not in ("string", "number"):
+            errs.append(f"{path}: expected string, got {t}")
+        elif spec.get("maxLen") and len(_ks(v)) > spec["maxLen"] * 1.25:
+            warns.append(f"{path}: {len(_ks(v))} chars, guide is ≤{spec['maxLen']} — shorten to avoid shrunken text")
+    elif st == "number":
+        if t != "number" or (isinstance(v, float) and v != v):
+            errs.append(f"{path}: expected number, got {t} {json.dumps(v)[:30]}")
+        else:
+            if spec.get("min") is not None and v < spec["min"]:
+                errs.append(f"{path}: must be ≥ {spec['min']}")
+            if spec.get("max") is not None and v > spec["max"]:
+                errs.append(f"{path}: must be ≤ {spec['max']}")
+    elif st == "boolean":
+        if t != "boolean":
+            errs.append(f"{path}: expected true/false")
+    elif st == "enum":
+        if v not in spec["values"]:
+            errs.append(f"{path}: '{v}' invalid; use one of {' | '.join(str(x) for x in spec['values'])}")
+    elif st == "array":
+        if t != "array":
+            errs.append(f"{path}: expected array, got {t}")
+            return
+        if spec.get("min") is not None and len(v) < spec["min"]:
+            errs.append(f"{path}: needs at least {spec['min']} entries (got {len(v)})")
+        if spec.get("max") is not None and len(v) > spec["max"]:
+            errs.append(f"{path}: at most {spec['max']} entries (got {len(v)}) — split across blocks/slides")
+        if spec.get("of"):
+            for i, x in enumerate(v):
+                _k_check(spec["of"], x, f"{path}[{i}]", errs, warns)
+    elif st == "object":
+        if t != "object":
+            errs.append(f"{path}: expected object, got {t}")
+            return
+        if spec.get("fields"):
+            _k_check_fields(spec["fields"], v, path, errs, warns)
+    elif st == "string|object":
+        if t == "string":
+            return
+        if t != "object":
+            errs.append(f"{path}: expected string or object")
+            return
+        if spec.get("fields"):
+            _k_check_fields(spec["fields"], v, path, errs, warns)
+
+
+def _k_check_fields(fields, obj, path, errs, warns, extra=()):
+    for k, s in fields.items():
+        _k_check(s, obj.get(k), f"{path}.{k}", errs, warns)
+    for k in obj:
+        if k not in fields and k not in extra and not str(k).startswith("_"):
+            warns.append(f"{path}.{k}: unknown field ignored")
+
+
+def _k_validate_block(b, path, errs, warns):
+    if not isinstance(b, dict):
+        errs.append(f"{path}: block must be an object")
+        return
+    comp = _K_COMPONENTS.get(b.get("type"))
+    if not comp:
+        errs.append(f"{path}.type: '{b.get('type')}' is not a component. Use one of: {', '.join(_K_COMPONENTS)}")
+        return
+    ty = b["type"]
+    _k_check_fields({**comp["fields"], **_K_BLOCK_COMMON}, b, f"{path}({ty})", errs, warns, ("type",))
+    L = lambda k: b.get(k) if isinstance(b.get(k), list) else None  # noqa: E731
+    if ty == "chart" and L("series") is not None and L("categories") is not None:
+        for i, s in enumerate(b["series"]):
+            if isinstance(s, dict) and isinstance(s.get("values"), list) and len(s["values"]) != len(b["categories"]):
+                errs.append(f"{path}(chart).series[{i}].values: {len(s['values'])} values but {len(b['categories'])} categories")
+    if ty == "chart" and b.get("chart_type") == "combo" and L("series") is not None and not any(isinstance(x, dict) and x.get("type") == "line" for x in b["series"]):
+        errs.append(f'{path}(chart): combo needs at least one series with "type": "line"')
+    if ty == "scorecard" and L("criteria") is not None and L("options") is not None:
+        for i, cr in enumerate(b["criteria"]):
+            if isinstance(cr, dict) and isinstance(cr.get("scores"), list):
+                if len(cr["scores"]) != len(b["options"]):
+                    errs.append(f"{path}(scorecard).criteria[{i}].scores: need {len(b['options'])} scores")
+                if any(isinstance(s, (int, float)) and (s < 0 or s > 4) for s in cr["scores"]):
+                    errs.append(f"{path}(scorecard).criteria[{i}].scores: values must be 0-4")
+    if ty == "raci" and L("matrix") is not None and L("activities") is not None:
+        if len(b["matrix"]) != len(b["activities"]):
+            errs.append(f"{path}(raci).matrix: {len(b['matrix'])} rows but {len(b['activities'])} activities")
+        for i, r in enumerate(b["matrix"]):
+            if isinstance(r, list) and L("roles") is not None and len(r) != len(b["roles"]):
+                errs.append(f"{path}(raci).matrix[{i}]: need {len(b['roles'])} cells")
+    if ty == "heatmap" and L("values") is not None and L("rows") is not None:
+        if len(b["values"]) != len(b["rows"]):
+            errs.append(f"{path}(heatmap).values: {len(b['values'])} rows but {len(b['rows'])} row labels")
+        for i, r in enumerate(b["values"]):
+            if isinstance(r, list) and L("columns") is not None and len(r) != len(b["columns"]):
+                errs.append(f"{path}(heatmap).values[{i}]: need {len(b['columns'])} cells")
+    if ty == "maturity" and L("dimensions") is not None and L("levels") is not None:
+        for i, d in enumerate(b["dimensions"]):
+            for k in ("current", "target"):
+                if isinstance(d, dict) and isinstance(d.get(k), (int, float)) and not (1 <= d[k] <= len(b["levels"])):
+                    errs.append(f"{path}(maturity).dimensions[{i}].{k}: must be 1..{len(b['levels'])}")
+    if ty == "risk_matrix" and L("risks") is not None:
+        N = b.get("scale") or 5
+        for i, r in enumerate(b["risks"]):
+            for k in ("likelihood", "impact"):
+                if isinstance(r, dict) and isinstance(r.get(k), (int, float)) and not (1 <= r[k] <= N):
+                    errs.append(f"{path}(risk_matrix).risks[{i}].{k}: must be 1..{N}")
+    if ty == "swimlane" and L("steps") is not None and L("lanes") is not None:
+        for i, st in enumerate(b["steps"]):
+            ln = st.get("lane") if isinstance(st, dict) else None
+            if (isinstance(ln, (int, float)) and not isinstance(ln, bool) and not (0 <= ln < len(b["lanes"]))) or (isinstance(ln, str) and ln not in b["lanes"]):
+                errs.append(f"{path}(swimlane).steps[{i}].lane: '{ln}' is not a lane index or name")
+    if ty == "gantt" and isinstance(b.get("periods"), dict) and b["periods"].get("end") is None and not _list(b["periods"].get("labels")):
+        errs.append(f"{path}(gantt).periods: give either 'end' (numeric axis) or 'labels'")
+    if ty == "table" and L("rows") is not None and L("columns") is not None:
+        for i, r in enumerate(b["rows"]):
+            if isinstance(r, list) and len(r) != len(b["columns"]):
+                errs.append(f"{path}(table).rows[{i}]: {len(r)} cells but {len(b['columns'])} columns")
+
+
+def _k_validate_deck(deck):
+    errs, warns = [], []
+    if not isinstance(deck, dict):
+        return ["deck must be a JSON object {meta, theme, slides}"], []
+    _k_check_fields(_K_DECK, deck, "deck", errs, warns, ("title", "subtitle", "author", "footer", "layout_mode"))
+    for i, s in enumerate(_list(deck.get("slides"))):
+        p = f"slides[{i}]"
+        if not isinstance(s, dict):
+            errs.append(f"{p}: must be an object")
+            continue
+        ty = s.get("type") or "content"
+        st = _K_SLIDE_TYPES.get(ty)
+        if not st:
+            errs.append(f"{p}.type: '{ty}' invalid; use cover | section | content | closing")
+            continue
+        _k_check_fields(st, s, p, errs, warns, ("type",))
+        if ty == "content" and isinstance(s.get("rows"), list):
+            nb = 0
+            for ri, r in enumerate(s["rows"]):
+                for bi, blk in enumerate(_list(r.get("blocks")) if isinstance(r, dict) else []):
+                    nb += 1
+                    _k_validate_block(blk, f"{p}.rows[{ri}].blocks[{bi}]", errs, warns)
+            if nb > 6:
+                warns.append(f"{p}: {nb} blocks is very dense — max ~5 recommended")
+            full_width = {"agenda", "layers", "journey", "persona", "swimlane", "gantt", "risk_matrix", "org_chart", "status"}
+            types_ = [blk.get("type") for r in s["rows"] if isinstance(r, dict) for blk in _list(r.get("blocks")) if isinstance(blk, dict)]
+            if nb == 1 and not (set(types_) & full_width):
+                warns.append(f"{p}: only one block — add a second block (chart, callout, kpis or table) so the slide carries evidence, not just a list")
+            words = len(re.findall(r"[A-Za-z0-9€$%]+", json.dumps(s.get("rows"), ensure_ascii=False).replace('"type"', "")))
+            if nb and words < 45:
+                warns.append(f"{p}: thin content (~{words} words) — add specifics (figures with sources, names, dates, mechanisms)")
+            if re.search(r"\d", json.dumps(s.get("rows"), ensure_ascii=False)) and not s.get("source"):
+                warns.append(f"{p}: contains figures but no 'source' line — every number needs a source; drop numbers you cannot source")
+        if ty in ("cover", "closing") and isinstance(s.get("blocks"), list):
+            for bi, blk in enumerate(s["blocks"]):
+                _k_validate_block(blk, f"{p}.blocks[{bi}]", errs, warns)
+    return errs, warns
+
+
+def _k_catalogue(names=None) -> dict:
+    def fmt(spec):
+        st = spec.get("type")
+        if st == "object" and spec.get("fields"):
+            d = {"_": spec.get("desc", "")} if spec.get("desc") else {}
+            d.update({k + ("*" if s.get("required") else ""): fmt(s) for k, s in spec["fields"].items()})
+            return d
+        if st == "array":
+            rng = f"({spec.get('min', 0)}-{spec.get('max', 'n')})"
+            of = spec.get("of") or {}
+            if of.get("fields"):
+                return [fmt(of), f"{spec.get('desc', '')} {rng}".strip()]
+            return f"array of {of.get('type', 'any')}: {spec.get('desc', '')} {rng}"
+        if st == "string|object":
+            d = {"_": spec.get("desc", "")}
+            d.update({k: fmt(s) for k, s in (spec.get("fields") or {}).items()})
+            return d
+        if st == "enum":
+            return f"{'|'.join(str(x) for x in spec['values'])} — {spec.get('desc', '')}"
+        return f"{st}{(' ≤' + str(spec['maxLen']) + ' chars') if spec.get('maxLen') else ''}: {spec.get('desc', '')}"
+
+    comps = {k: {"use": v["use"], "fields": {f + ("*" if s.get("required") else ""): fmt(s) for f, s in v["fields"].items()}, "example": v.get("example")}
+             for k, v in _K_COMPONENTS.items()}
+    if names:
+        want = [n.strip() for n in names if n.strip()]
+        out = {"components": {k: comps[k] for k in want if k in comps}}
+        unknown = [n for n in want if n not in comps]
+        if unknown:
+            out["unknown_components"] = unknown
+            out["valid_components"] = list(comps)
+        return out
+    return {
+        "deck_shape": {"meta": {"title": "...", "author": "...", "footer": "Confidential"}, "theme": "midnight_violet",
+                       "slides": ["cover slide", "content slides...", "optional section slides", "closing slide"]},
+        "slide_types": {k: {f + ("*" if s.get("required") else ""): fmt(s) for f, s in v.items()} for k, v in _K_SLIDE_TYPES.items()},
+        "block_common_fields": {"heading": "optional small heading above block", "w": "relative width in its row (default 1)"},
+        "components": comps,
+        "themes": {k: v["label"] for k, v in _K_PRESETS.items()},
+        "icon_aliases": sorted(_KIT_ICON_ALIASES),
+        "legend": "* = required. Content slide = title + rows[]; each row = blocks[] side by side; each block = {type:<component>, heading?, w?, ...fields}.",
+    }
+
+
+# extra icon aliases (Lucide / common names models use)
+_KIT_ICON_ALIASES.update({
+    "cog": "FaCog", "cogs": "FaCogs", "gear": "FaCog", "gears": "FaCogs", "bolt": "FaBolt", "lightning": "FaBolt", "zap": "FaBolt",
+    "chart_line": "FaChartLine", "line_chart": "FaChartLine", "trending_up": "FaChartLine", "trend": "FaChartLine", "bar_chart": "FaChartBar",
+    "chart_bar": "FaChartBar", "chart_pie": "FaChartPie", "pie_chart": "FaChartPie", "dollar": "FaCoins", "dollar_sign": "FaCoins",
+    "euro": "FaCoins", "revenue": "FaCoins", "check_circle": "FaCheckCircle", "shield_check": "FaShieldAlt", "lightbulb": "FaLightbulb",
+    "bulb": "FaLightbulb", "file": "FaFileAlt", "file_text": "FaFileAlt", "mail": "FaEnvelope", "phone": "FaPhone", "home": "FaHome",
+    "company": "FaBuilding", "clipboard": "FaClipboardCheck", "sitemap": "FaSitemap", "org": "FaSitemap", "layer_group": "FaLayerGroup",
+    "stack": "FaLayerGroup", "cpu": "FaMicrochip", "chip": "FaMicrochip", "message": "FaComments", "message_circle": "FaComments",
+    "workflow": "FaProjectDiagram", "process": "FaProjectDiagram", "alert": "FaExclamationTriangle", "alert_triangle": "FaExclamationTriangle",
+    "x_circle": "FaTimesCircle", "error": "FaTimesCircle", "calendar_alt": "FaCalendarAlt", "date": "FaCalendarAlt", "clock_o": "FaClock",
+    "user_tie": "FaUserTie", "executive": "FaUserTie", "graduation_cap": "FaGraduationCap", "education": "FaGraduationCap",
+    "heartbeat": "FaHeartbeat", "medical": "FaHeartbeat", "industry": "FaIndustry", "shopping_cart": "FaShoppingCart", "ecommerce": "FaShoppingCart",
+    "exchange": "FaExchangeAlt", "swap": "FaExchangeAlt", "random": "FaRandom", "magic": "FaMagic", "wand": "FaMagic", "star_o": "FaStar",
+    "tags": "FaTags", "tag": "FaTag", "price": "FaTags", "pricing": "FaTags", "file_invoice_dollar": "FaFileInvoiceDollar",
+    "billing": "FaFileInvoiceDollar", "percent": "FaPercent", "inventory": "FaBoxes", "boxes": "FaBoxes", "box": "FaBox", "package": "FaBox",
+    "credit_card": "FaCreditCard", "payment": "FaCreditCard", "receipt": "FaReceipt", "briefcase": "FaBriefcase", "business": "FaBriefcase",
+    "calculator": "FaCalculator", "chart_area": "FaChartArea", "area_chart": "FaChartArea", "user_check": "FaUserCheck", "user_cog": "FaUserCog",
+    "admin": "FaUserCog", "clipboard_list": "FaClipboardList", "tasks": "FaTasks", "list": "FaListUl", "route": "FaRoute", "roadmap": "FaRoute",
+    "compass": "FaCompass", "microchip": "FaMicrochip", "hospital": "FaHospital", "plane": "FaPlane", "travel": "FaPlane", "ship": "FaShip",
+    "car": "FaCar", "thumbs_up": "FaThumbsUp", "feedback": "FaCommentDots", "user_shield": "FaUserShield", "privacy": "FaUserShield",
+    "fingerprint": "FaFingerprint", "identity": "FaFingerprint", "marketing": "FaBullhorn", "megaphone": "FaBullhorn", "savings": "FaPiggyBank",
+    "piggy_bank": "FaPiggyBank", "investment": "FaHandHoldingUsd", "funding": "FaHandHoldingUsd",
+    "trophy_alt": "FaTrophy", "medal": "FaAward", "verified": "FaCheckCircle", "approval": "FaCheckCircle", "plug": "FaPlug", "connector": "FaPlug",
+})
+
+# ------------------------------------------------------- layout recipes ----
+# Proven content-slide skeletons ("templates"). The model copies one, then
+# replaces every WRITE marker with researched content.
+_K_RECIPES = {
+    "executive_summary": {"use": "Exec summary on a dark slide: numbers, path, implications", "slide": {
+        "type": "content", "dark": True, "kicker": "Executive summary", "title": "WRITE: the answer in one sentence",
+        "rows": [{"h": 0.8, "blocks": [{"type": "kpis", "items": [{"value": "WRITE", "label": "WRITE", "icon": "growth"}, {"value": "WRITE", "label": "WRITE", "icon": "money"}, {"value": "WRITE", "label": "WRITE", "icon": "users"}]}]},
+                 {"h": 1.05, "blocks": [{"type": "timeline", "items": [{"date": "WRITE", "title": "WRITE", "text": "WRITE"}, {"date": "WRITE", "title": "WRITE", "text": "WRITE"}, {"date": "WRITE", "title": "WRITE", "text": "WRITE", "highlight": True}]}]},
+                 {"h": 0.85, "blocks": [{"type": "cards", "heading": "What it means", "columns": 4, "items": [{"icon": "target", "title": "WRITE", "text": "WRITE"}, {"icon": "shield", "title": "WRITE", "text": "WRITE"}, {"icon": "money", "title": "WRITE", "text": "WRITE"}, {"icon": "rocket", "title": "WRITE", "text": "WRITE"}]}]}]}},
+    "architecture": {"use": "Layered architecture / operating model with governance side panel", "slide": {
+        "kicker": "Architecture", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "layers", "tiers": [{"label": "WRITE", "sublabel": "WRITE", "items": [{"title": "WRITE", "text": "WRITE"}, {"title": "WRITE", "text": "WRITE"}]},
+                                                       {"label": "WRITE", "color": "primary", "items": [{"title": "WRITE", "bullets": ["WRITE", "WRITE"]}, {"title": "WRITE", "bullets": ["WRITE"], "highlight": True}], "base": "WRITE"},
+                                                       {"label": "WRITE", "color": "neutral", "items": [{"title": "WRITE"}, {"title": "WRITE"}]}],
+                              "side": {"title": "Governance", "icon": "shield", "items": [{"title": "WRITE", "text": "WRITE"}, {"title": "WRITE", "text": "WRITE"}]}}]}]}},
+    "how_it_works": {"use": "Process + maturity strip + evidence", "slide": {
+        "kicker": "How it works", "title": "WRITE",
+        "rows": [{"h": 1.15, "blocks": [{"type": "process", "steps": [{"icon": "chat", "title": "WRITE", "text": "WRITE"}, {"icon": "settings", "title": "WRITE", "text": "WRITE"}, {"icon": "check", "title": "WRITE", "text": "WRITE"}]}]},
+                 {"h": 0.4, "blocks": [{"type": "chevrons", "stages": [{"title": "WRITE"}, {"title": "WRITE"}, {"title": "WRITE"}]}]},
+                 {"h": 1.45, "blocks": [{"type": "chart", "heading": "WRITE", "chart_type": "bar", "categories": ["WRITE", "WRITE"], "series": [{"name": "WRITE", "values": [0, 0]}], "unit": "%"},
+                                        {"type": "cards", "heading": "Proof points", "columns": 2, "items": [{"title": "WRITE", "tag": "WRITE", "text": "WRITE"}, {"title": "WRITE", "tag": "WRITE", "text": "WRITE"}]}]}]}},
+    "business_case": {"use": "Value bridge + risks/assumptions", "slide": {
+        "kicker": "Business case", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "waterfall", "w": 1.2, "heading": "WRITE (€M)", "prefix": "€", "unit": "M", "steps": [{"label": "WRITE", "value": 0}, {"label": "WRITE", "value": 0}, {"label": "WRITE", "value": 0}, {"label": "WRITE", "total": True, "value": 0}]},
+                             {"type": "table", "heading": "Key risks", "columns": ["Risk", "Exposure", "Mitigation"], "col_widths": [2, 1, 3], "rows": [["WRITE", "High", "WRITE"], ["WRITE", "Medium", "WRITE"]]}]}]}},
+    "decision": {"use": "Option scorecard + prioritisation matrix", "slide": {
+        "kicker": "Decision", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "scorecard", "heading": "Option assessment", "options": ["WRITE", "WRITE"], "show_total": True, "criteria": [{"name": "WRITE", "scores": [3, 2]}, {"name": "WRITE", "scores": [2, 4]}]},
+                             {"type": "matrix", "heading": "Prioritisation", "x_axis": {"label": "Effort", "low": "Low", "high": "High"}, "y_axis": {"label": "Value", "low": "Low", "high": "High"}, "highlight": 0,
+                              "quadrants": [{"title": "Quick wins"}, {"title": "Strategic bets"}, {"title": "Fill-ins"}, {"title": "Avoid"}], "points": [{"label": "WRITE", "x": 0.3, "y": 0.8}]}]}]}},
+    "options_vs": {"use": "As-is vs to-be (or option A vs B) with the so-what callout", "slide": {
+        "kicker": "Options", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "comparison", "w": 1.5, "vs": True, "columns": [{"title": "WRITE", "bullets": ["WRITE", "WRITE"]}, {"title": "WRITE", "highlight": True, "bullets": ["WRITE", "WRITE"], "footer": "WRITE"}]},
+                             {"type": "callout", "kind": "stat", "value": "WRITE", "text": "WRITE"}]}]}},
+    "roadmap": {"use": "Gantt with dependencies and milestones + scope cards", "slide": {
+        "kicker": "Roadmap", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "cards", "w": 0.75, "columns": 1, "items": [{"title": "WRITE", "text": "WRITE"}, {"title": "WRITE", "text": "WRITE"}, {"title": "WRITE", "text": "WRITE"}]},
+                             {"type": "gantt", "w": 1.6, "periods": {"labels": ["Q1", "Q2", "Q3", "Q4"]}, "phases": [{"label": "WRITE", "start": 0, "end": 0, "text": "WRITE"}, {"label": "WRITE", "start": 1, "end": 2, "text": "WRITE", "depends_on": 0}, {"label": "WRITE", "start": 2, "end": 3, "text": "WRITE", "color": "primary", "depends_on": 1}],
+                              "milestones": [{"at": 1, "label": "WRITE"}]}]}]}},
+    "strategy": {"use": "SWOT + overlap of capabilities", "slide": {
+        "kicker": "Strategy", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "swot", "w": 1.35, "strengths": ["WRITE"], "weaknesses": ["WRITE"], "opportunities": ["WRITE"], "threats": ["WRITE"]},
+                             {"type": "venn", "sets": [{"title": "WRITE"}, {"title": "WRITE"}, {"title": "WRITE"}], "overlap": {"title": "WRITE"}}]}]}},
+    "assessment": {"use": "Readiness heatmap + current vs target maturity", "slide": {
+        "kicker": "Assessment", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "heatmap", "heading": "Readiness", "rows": ["WRITE", "WRITE"], "columns": ["Data", "Process", "Skills"], "values": [[3, 2, 1], [2, 3, 2]], "scale_labels": ["None", "Low", "Medium", "High", "Leading"]},
+                             {"type": "maturity", "heading": "Maturity", "levels": ["Initial", "Managed", "Defined", "Measured", "Optimized"], "dimensions": [{"name": "WRITE", "current": 2, "target": 4}, {"name": "WRITE", "current": 1, "target": 3}]}]}]}},
+    "risks": {"use": "Risk heat grid with numbered legend", "slide": {
+        "kicker": "Risks", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "risk_matrix", "risks": [{"label": "WRITE", "likelihood": 4, "impact": 4, "owner": "WRITE"}, {"label": "WRITE", "likelihood": 2, "impact": 3}]}]}]}},
+    "pmo_status": {"use": "Programme status + now/next/later board", "slide": {
+        "kicker": "Programme status", "title": "WRITE",
+        "rows": [{"h": 1.45, "blocks": [{"type": "status", "items": [{"name": "WRITE", "status": "green", "trend": "up", "owner": "WRITE", "comment": "WRITE"}, {"name": "WRITE", "status": "amber", "trend": "flat", "owner": "WRITE", "comment": "WRITE"}]}]},
+                 {"h": 1.2, "blocks": [{"type": "board", "columns": [{"title": "Now", "cards": [{"title": "WRITE"}]}, {"title": "Next", "cards": [{"title": "WRITE"}]}, {"title": "Later", "cards": [{"title": "WRITE"}]}]}]}]}},
+    "governance": {"use": "Org chart / decision rights", "slide": {
+        "kicker": "Governance", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "raci", "w": 1.3, "roles": ["WRITE", "WRITE", "WRITE"], "activities": ["WRITE", "WRITE"], "matrix": [["A", "C", "R"], ["I", "A", "R"]]},
+                             {"type": "checklist", "items": [{"text": "WRITE", "status": "done", "owner": "WRITE", "due": "WRITE"}, {"text": "WRITE", "status": "in_progress", "owner": "WRITE", "due": "WRITE"}]}]}]}},
+    "process_redesign": {"use": "Cross-functional swimlane", "slide": {
+        "kicker": "Process", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "swimlane", "lanes": ["WRITE", "WRITE", "WRITE"], "phases": ["WRITE", "WRITE", "WRITE", "WRITE"], "steps": [{"lane": 0, "col": 0, "title": "WRITE"}, {"lane": 1, "col": 1, "title": "WRITE"}, {"lane": 2, "col": 2, "title": "WRITE?", "shape": "decision"}, {"lane": 1, "col": 3, "title": "WRITE"}]}]}]}},
+    "customer": {"use": "Journey map with emotion curve", "slide": {
+        "kicker": "Customer", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "journey", "stages": [{"title": "WRITE", "actions": "WRITE", "pains": "WRITE", "emotion": -1}, {"title": "WRITE", "actions": "WRITE", "emotion": 0}, {"title": "WRITE", "actions": "WRITE", "opportunities": "WRITE", "emotion": 1}]}]}]}},
+    "ecosystem": {"use": "Hub of partners/capabilities + driver tree", "slide": {
+        "kicker": "Ecosystem", "title": "WRITE",
+        "rows": [{"blocks": [{"type": "hub", "center": {"title": "WRITE"}, "nodes": [{"title": "WRITE", "icon": "finance"}, {"title": "WRITE", "icon": "truck"}, {"title": "WRITE", "icon": "users"}, {"title": "WRITE", "icon": "handshake"}]},
+                             {"type": "tree", "root": {"title": "WRITE"}, "branches": [{"title": "WRITE", "items": ["WRITE", "WRITE"]}, {"title": "WRITE", "items": ["WRITE"]}]}]}]}},
+    "cover": {"use": "Cover with KPI strip", "slide": {"type": "cover", "kicker": "WRITE", "title": "WRITE", "subtitle": "WRITE", "meta": "WRITE presenter · organisation · date",
+                                                       "blocks": [{"type": "kpis", "items": [{"value": "WRITE", "label": "WRITE"}, {"value": "WRITE", "label": "WRITE"}, {"value": "WRITE", "label": "WRITE"}]}]}},
+    "closing": {"use": "Closing with next-step checklist", "slide": {"type": "closing", "title": "Next steps", "subtitle": "WRITE",
+                                                             "blocks": [{"type": "checklist", "items": [{"text": "WRITE", "owner": "WRITE", "due": "WRITE"}, {"text": "WRITE", "owner": "WRITE", "due": "WRITE"}, {"text": "WRITE", "owner": "WRITE", "due": "WRITE"}]}]}},
+}
+
+
+# ---------------------------------------------------------- renderer ----
+_K_MIN_W = {"layers": 6.0, "hub": 4.5, "flow": 5.0, "swimlane": 5.5, "journey": 6.5, "persona": 6.5, "gantt": 5.0, "value_chain": 5.0,
+            "status": 6.0, "raci": 4.0, "cycle": 4.0, "risk_matrix": 3.2, "matrix": 3.5, "tree": 3.5, "org_chart": 4.5, "swot": 4.0, "venn": 3.0,
+            "scorecard": 4.0, "heatmap": 4.0, "maturity": 4.5, "bubble": 3.5, "mekko": 3.5, "concentric": 3.0, "waterfall": 3.0, "chart": 2.8,
+            "comparison": 4.0, "board": 4.5}
+_K_PER_ITEM_W = {"kpis": ("items", 1.5), "timeline": ("items", 1.3), "process": ("steps", 1.4), "chevrons": ("stages", 1.2),
+                 "staircase": ("steps", 1.2), "rings": ("items", 1.1), "comparison": ("columns", 2.0), "board": ("columns", 1.6)}
+
+
+def _k_min_width(b) -> float:
+    ty = b.get("type")
+    mw = _K_MIN_W.get(ty, 0.0)
+    if ty in _K_PER_ITEM_W:
+        key, per = _K_PER_ITEM_W[ty]
+        mw = max(mw, per * len(_list(b.get(key))))
+    if ty == "cards":
+        n = len(_list(b.get("items")))
+        cols = int(b.get("columns") or (n if n <= 4 else 3)) or 1
+        mw = max(mw, 1.6 * min(cols, max(n, 1)))
+    if ty == "table":
+        mw = max(mw, 1.0 * len(_list(b.get("columns"))))
+    return mw
+
+
+def _k_render_blocks(ctx, rows, area):
+    rows = [r for r in rows if isinstance(r, dict) and isinstance(r.get("blocks"), list) and r["blocks"]]
+    if not rows:
+        return
+    weights = []
+    for r in rows:
+        if r.get("h") is not None and _knum(r.get("h"), 0) > 0:
+            weights.append(_knum(r["h"]))
+        else:
+            weights.append(max(_K_DEFAULT_ROW_H.get(b.get("type") if isinstance(b, dict) else "", 1.4) for b in r["blocks"]))
+    tot = sum(weights)
+    avail = area["h"] - _K_ROW_GAP * (len(rows) - 1)
+    y = area["y"]
+    for ri, r in enumerate(rows):
+        rh = weights[ri] / tot * avail
+        blocks = [b for b in r["blocks"] if isinstance(b, dict)]
+        bw = [max(0.05, _knum(b.get("w"), 1) or 1) for b in blocks]
+        bs = sum(bw) or 1
+        wa = area["w"] - _K_BLOCK_GAP * (len(blocks) - 1)
+        x = area["x"]
+        for bi, b in enumerate(blocks):
+            w = bw[bi] / bs * wa
+            ctx.where = f"{ctx.slide_where}.rows[{ri}].blocks[{bi}]({b.get('type')})"
+            box = _B(x, y, w, rh)
+            if b.get("heading"):
+                _ktext(ctx, [_P(b["heading"], 12, bold=True, color=ctx.c["heading"])], _B(x, y, w, _K_HEAD_H - 0.04), valign="middle", field="heading")
+                box = _B(x, y + _K_HEAD_H, w, rh - _K_HEAD_H)
+            mw = _k_min_width(b)
+            if mw and box["w"] < mw - 0.05:
+                ctx.warn(f"{ctx.where}: only {box['w']:.1f}in wide; this '{b.get('type')}' needs ≥{mw:.1f}in — give it a larger 'w', "
+                         f"put fewer blocks in this row, or use fewer items")
+            mh = _K_MIN_H.get(b.get("type"))
+            if mh and box["h"] < mh - 0.05:
+                ctx.warn(f"{ctx.where}: only {box['h']:.2f}in tall; '{b.get('type')}' needs ≥{mh}in — raise this row's 'h' or move blocks to another slide")
+            fn = _KC.get(b.get("type"))
+            if fn is None:
+                ctx.error(f"{ctx.where}: unknown component '{b.get('type')}'")
+            else:
+                try:
+                    ctx.dry, ctx.group_scales = True, {}
+                    fn(ctx, b, box)
+                    ctx.dry = False
+                    fn(ctx, b, box)
+                except Exception as e:  # noqa: BLE001
+                    ctx.dry = False
+                    ctx.error(f"{ctx.where}: render failed — {type(e).__name__}: {e}")
+                ctx.group_scales = None
+            x += w + _K_BLOCK_GAP
+        y += rh + _K_ROW_GAP
+
+
+def _k_header(ctx, s):
+    t = ctx.t
+    if s.get("kicker"):
+        _ktext(ctx, [_P(_ks(s["kicker"]).upper(), 11, bold=True, color=t["accent"] if ctx.dark else t["primary"])], _B(_K_M, 0.28, _K_CW, 0.26),
+               valign="middle", char_spacing=1.5, field="kicker")
+    ctx.where = ctx.slide_where + ".title"
+    sc = _ktext(ctx, [_P(s.get("title"), 24, bold=True, color=ctx.c["title"], font=t["fonts"]["head"])], _B(_K_M, 0.56, _K_CW, 0.84), min_size=18, field="title")
+    if sc < 0.9:
+        ctx.warn(f"{ctx.slide_where}.title: long title shrunk to {round(24 * sc)}pt — aim for ≤ 2 lines (~25 words)")
+
+
+def _k_footer(ctx, s, idx, deck_meta):
+    fc = ctx.t["dark_muted"] if ctx.dark else ctx.t["muted"]
+    if s.get("source"):
+        ctx.where = ctx.slide_where + ".source"
+        _ktext(ctx, [_P("Source: " + re.sub(r"^sources?:\s*", "", _ks(s["source"]), flags=re.I), 9, color=fc)], _B(_K_M, 6.98, _K_CW - 2.2, 0.36),
+               valign="middle", min_size=7.5, field="source")
+    right = "   |   ".join(x for x in [_ks(deck_meta.get("footer") or ""), str(idx + 1)] if x)
+    _ktext(ctx, [_P(right, 9, color=fc, align="right")], _B(_K_W - _K_M - 2.1, 6.98, 2.1, 0.36), valign="middle", quiet=True)
+
+
+def _k_motif(ctx, big=True, ring=True):
+    t = ctx.t
+    _kell(ctx, _B(_K_W - 4.9, -1.6, 6.6, 6.6), t["primary"], transparency=72)
+    if big:
+        _kell(ctx, _B(_K_W - 2.9, 2.9, 4.4, 4.4), t["secondary"], transparency=70)
+    if ring:
+        _kell(ctx, _B(_K_W - 3.95, 4.05, 0.9, 0.9), None, line={"color": t["accent"], "width": 3})
+
+
+def _k_is_kit_deck(spec: dict) -> bool:
+    """True when the spec uses the v2 blocks format."""
+    if not isinstance(spec, dict):
+        return False
+    if str(spec.get("engine", "")).lower() in ("kit", "blocks", "v2"):
+        return True
+    if str(spec.get("engine", "")).lower() in ("classic", "v1"):
+        return False
+    slides = spec.get("slides")
+    if not isinstance(slides, list) or not slides:
+        return False
+    kit = classic = 0
+    for s in slides:
+        if not isinstance(s, dict):
+            continue
+        if "rows" in s or "blocks" in s or s.get("type") in ("cover", "section", "content", "closing"):
+            kit += 1
+        if "layout" in s:
+            classic += 1
+    return kit > 0 and kit >= classic
+
+
+def _k_normalize_deck(deck: dict) -> dict:
+    """Accept common shortcuts: top-level title/author/footer, theme alias, slides without type."""
+    deck = dict(deck)
+    meta = dict(deck.get("meta") or {}) if isinstance(deck.get("meta"), dict) else {}
+    for k in ("title", "author", "company", "footer"):
+        if deck.get(k) and not meta.get(k):
+            meta[k] = deck[k]
+    for k in ("title", "subtitle", "author", "company", "footer", "layout_mode"):
+        deck.pop(k, None)
+    deck["meta"] = meta
+    slides = []
+    for s in _list(deck.get("slides")):
+        if isinstance(s, dict):
+            s = dict(s)
+            if not s.get("type"):
+                s["type"] = "content" if "rows" in s else s.get("type") or "content"
+            if s.get("type") == "content" and "rows" not in s and isinstance(s.get("blocks"), list):
+                s["rows"] = [{"blocks": s.pop("blocks")}]
+            if s.get("type") == "content" and isinstance(s.get("rows"), list):
+                found = []
+                rows = []
+                for r in s["rows"]:
+                    if isinstance(r, dict):
+                        r = dict(r)
+                        if r.get("source"):
+                            found.append(_ks(r.pop("source")))
+                        blks = []
+                        for blk in _list(r.get("blocks")):
+                            if isinstance(blk, dict) and blk.get("source") and blk.get("type"):
+                                blk = dict(blk)
+                                found.append(_ks(blk.pop("source")))
+                            blks.append(blk)
+                        if "blocks" in r:
+                            r["blocks"] = blks
+                    rows.append(r)
+                s["rows"] = rows
+                if found and not s.get("source"):
+                    s["source"] = "; ".join(dict.fromkeys(found))  # models often put source on a row or block
+        slides.append(s)
+    deck["slides"] = slides
+    return deck
+
+
+def _k_render(deck: dict, out, valves=None) -> dict:
+    """Render a v2 deck. Returns {ok, errors, warnings, slides, prs}. Writes to `out` (path or BytesIO) if ok."""
+    errors, warnings = _k_validate_deck(deck)
+    if errors:
+        return {"ok": False, "errors": errors, "warnings": warnings}
+    _K_UNKNOWN_ICONS.clear()
+    _K_IMG_CACHE.clear()
+    t = _k_resolve_theme(deck.get("theme"), warnings.append)
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = _ke(_K_W), _ke(_K_H)
+    meta = deck.get("meta") or {}
+    cp = prs.core_properties
+    cp.title = _ks(meta.get("title") or (deck["slides"][0].get("title") if deck["slides"] else "Deck"))[:250]
+    if meta.get("author"):
+        cp.author = _ks(meta["author"])[:250]
+    blank = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[-1]
+    for i, s in enumerate(deck["slides"]):
+        ty = s.get("type") or "content"
+        dark = ty != "content" or bool(s.get("dark"))
+        slide = prs.slides.add_slide(blank)
+        for ph in list(slide.placeholders):
+            ph._element.getparent().remove(ph._element)
+        slide.background.fill.solid()
+        slide.background.fill.fore_color.rgb = RGBColor.from_string(t["dark_bg"] if dark else t["light_bg"])
+        ctx = _KCtx(prs, slide, t, dark, f"slides[{i}]", warnings, errors, valves)
+        blocks = [b for b in _list(s.get("blocks")) if isinstance(b, dict)]
+        if ty == "cover":
+            _k_motif(ctx, not blocks)
+            y0 = 0.95 if blocks else 1.65
+            if s.get("kicker"):
+                _ktext(ctx, [_P(_ks(s["kicker"]).upper(), 12, bold=True, color=t["accent"])], _B(_K_M + 0.1, y0, 8.2, 0.3), valign="middle", char_spacing=2, field="kicker")
+            ctx.where = ctx.slide_where + ".title"
+            _ktext(ctx, [_P(s.get("title"), 40, bold=True, color="FFFFFF", font=t["fonts"]["head"])], _B(_K_M + 0.1, y0 + 0.4, 8.4, 1.95), min_size=26, field="title")
+            _ktext(ctx, [_P(s.get("subtitle"), 17, color=t["dark_muted"])], _B(_K_M + 0.1, y0 + 2.45, 8.0, 0.9), field="subtitle")
+            _ktext(ctx, [_P(s.get("meta"), 13, bold=True, color="FFFFFF")], _B(_K_M + 0.1, y0 + 3.4, 8.0, 0.35), valign="middle", field="meta")
+            if blocks:
+                _k_render_blocks(ctx, [{"blocks": blocks}], _B(_K_M, 5.3, _K_CW, 1.55))
+            _ktext(ctx, [_P(meta.get("footer") or "", 9, color=t["dark_muted"])], _B(_K_M + 0.1, 6.98, 6, 0.36), valign="middle", quiet=True)
+        elif ty == "closing":
+            _k_motif(ctx, not blocks, not blocks)
+            y0 = 0.8 if blocks else 1.9
+            if s.get("kicker"):
+                _ktext(ctx, [_P(_ks(s["kicker"]).upper(), 12, bold=True, color=t["accent"])], _B(_K_M + 0.1, y0, 8.2, 0.3), valign="middle", char_spacing=2, field="kicker")
+            ctx.where = ctx.slide_where + ".title"
+            _ktext(ctx, [_P(s.get("title"), 38, bold=True, color="FFFFFF", font=t["fonts"]["head"])], _B(_K_M + 0.1, y0 + 0.38, 8.4, 1.3), min_size=26, field="title")
+            _ktext(ctx, [_P(s.get("subtitle"), 16, color=t["dark_muted"])], _B(_K_M + 0.1, y0 + 1.75, 8.0, 0.75), field="subtitle")
+            contact = _list(s.get("contact"))
+            if contact:
+                _ktext(ctx, [_P(l, 12, bold=k == 0, color="FFFFFF", spaceAfter=2) for k, l in enumerate(contact)], _B(_K_M + 0.1, y0 + 2.6, 8.0, 0.9), field="contact")
+            if blocks:
+                _k_render_blocks(ctx, [{"blocks": blocks}], _B(_K_M, 4.85, _K_CW, 1.95))
+            _k_footer(ctx, {}, i, meta)
+        elif ty == "section":
+            _k_motif(ctx, False)
+            if s.get("number"):
+                _ktext(ctx, [_P(_ks(s["number"]), 66, bold=True, color=t["accent"])], _B(_K_M + 0.1, 1.7, 4, 1.2), valign="bottom", quiet=True)
+            ctx.where = ctx.slide_where + ".title"
+            _ktext(ctx, [_P(s.get("title"), 38, bold=True, color="FFFFFF", font=t["fonts"]["head"])], _B(_K_M + 0.1, 3.0, 8.4, 1.4), min_size=26, field="title")
+            _ktext(ctx, [_P(s.get("subtitle"), 16, color=t["dark_muted"])], _B(_K_M + 0.1, 4.5, 8.0, 1.0), field="subtitle")
+            _k_footer(ctx, {}, i, meta)
+        else:
+            _k_header(ctx, s)
+            _k_render_blocks(ctx, _list(s.get("rows")), _B(_K_M, _K_TOP, _K_CW, _K_BOTTOM - _K_TOP))
+            _k_footer(ctx, s, i, meta)
+        notes = "\n\n".join(x for x in [_ks(s.get("notes") or ""), ("Sources: " + _ks(s["source"])) if s.get("source") else ""] if x)
+        if notes:
+            try:
+                slide.notes_slide.notes_text_frame.text = notes
+            except Exception:
+                pass
+    if _K_UNKNOWN_ICONS:
+        warnings.append(f"unknown icons replaced by a dot: {', '.join(sorted(_K_UNKNOWN_ICONS))} — use an alias from the catalogue")
+    if errors:
+        return {"ok": False, "errors": errors, "warnings": warnings}
+    if out is not None:
+        prs.save(out)
+    return {"ok": True, "errors": [], "warnings": warnings, "slides": len(deck["slides"]), "title": cp.title}
+
+
+# ------------------------------------------------------- JSON repair ----
+def _k_outside_strings(s):
+    mask, ins, esc = [True] * len(s), False, False
+    for i, ch in enumerate(s):
+        if ins:
+            mask[i] = False
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                ins = False
+        elif ch == '"':
+            ins, mask[i] = True, False
+    return mask
+
+
+def _k_mixed_lists(x):
+    if isinstance(x, dict):
+        return sum(_k_mixed_lists(v) for v in x.values())
+    if isinstance(x, list):
+        kinds = {("d" if isinstance(e, dict) else "l" if isinstance(e, list) else "s") for e in x}
+        return (1 if len(kinds) > 1 else 0) + sum(_k_mixed_lists(e) for e in x)
+    return 0
+
+
+def _k_shape_score(d):
+    if not isinstance(d, dict) or not isinstance(d.get("slides"), list):
+        return -1
+    sc = 0
+    for s in d["slides"]:
+        if not isinstance(s, dict):
+            sc -= 5
+        elif "h" in s and "title" not in s:
+            sc -= 5
+        else:
+            sc += 1
+            for r in s.get("rows", []) if isinstance(s.get("rows"), list) else []:
+                if not isinstance(r, dict) or not isinstance(r.get("blocks"), list):
+                    sc -= 5
+                    continue
+                for blk in r["blocks"]:
+                    if not isinstance(blk, dict) or "blocks" in blk or "type" not in blk:
+                        sc -= 5
+    return sc - 5 * _k_mixed_lists(d)
+
+
+_K_SLIDE_START = re.compile(r'\{\s*"type"\s*:\s*"(?:cover|content|section|closing)"')
+_K_PAIR = {"{": "}", "[": "]"}
+
+
+_K_KEY_AHEAD = re.compile(r'\s*"(?:[^"\\]|\\.)*"\s*:')
+_K_VAL_AHEAD = re.compile(r'\s*(?:"(?:[^"\\]|\\.)*"\s*[,\]]|-?\d|true|false|null|\[)')
+
+
+def _k_rebalance(s: str, prefer_missing: bool = True):
+    """Structural bracket repair for model-written decks. Tracks the open brackets outside strings and:
+    drops a doubled '{{', fixes a closer of the wrong kind (inserting a missing closer when the one below
+    matches), closes everything back to the slides list when a new slide object starts too deep, drops
+    surplus closers and appends missing ones at the end. Returns the repaired text or None."""
+    out, st = [], []
+    ins = esc = False
+    i, n, changed = 0, len(s), False
+    while i < n:
+        ch = s[i]
+        if ins:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                ins = False
+            i += 1
+            continue
+        if ch == '"':
+            ins = True
+            out.append(ch)
+        elif ch == "[" and _K_KEY_AHEAD.match(s, i + 1):
+            st.append("{")  # '[' followed by "key": is really '{'
+            out.append("{")
+            changed = True
+        elif ch == "{" and not _K_KEY_AHEAD.match(s, i + 1) and _K_VAL_AHEAD.match(s, i + 1):
+            st.append("[")  # '{' followed by a plain value is really '['
+            out.append("[")
+            changed = True
+        elif ch == "{":
+            j = i + 1
+            while j < n and s[j] in " \t\r\n":
+                j += 1
+            if j < n and s[j] == "{":  # '{{' is never valid JSON
+                changed = True
+                i += 1
+                continue
+            if _K_SLIDE_START.match(s, i) and len(st) > 2 and st[0] == "{" and st[1] == "[":
+                # a slide starts while a previous slide is still open: close back to the slides list
+                k = len(out) - 1
+                while k >= 0 and out[k] in " \t\r\n":
+                    k -= 1
+                closers = "".join(_K_PAIR[b] for b in reversed(st[2:]))
+                if k >= 0 and out[k] == ",":
+                    out.insert(k, closers)
+                else:
+                    out.append(closers + ",")
+                del st[2:]
+                changed = True
+            st.append("{")
+            out.append(ch)
+        elif ch == "[":
+            st.append("[")
+            out.append(ch)
+        elif ch in "}]":
+            if not st:
+                changed = True  # surplus closer
+            elif _K_PAIR[st[-1]] == ch:
+                st.pop()
+                out.append(ch)
+            elif prefer_missing and len(st) >= 2 and _K_PAIR[st[-2]] == ch:
+                out.append(_K_PAIR[st.pop()])  # a closer is missing before this one
+                st.pop()
+                out.append(ch)
+                changed = True
+            else:
+                out.append(_K_PAIR[st.pop()])  # wrong kind of closer
+                changed = True
+        else:
+            out.append(ch)
+        i += 1
+    if ins:
+        return None
+    if st:
+        out.append("".join(_K_PAIR[b] for b in reversed(st)))
+        changed = True
+    return "".join(out) if changed else None
+
+
+def _k_repair_json(s: str):
+    """Fix the bracket slips models make in long nested JSON. Returns (obj, note) or raises JSONDecodeError."""
+    s = s.strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", s)
+    a, b = s.find("{"), s.rfind("}")
+    if a > 0 or (b != -1 and b < len(s) - 1):
+        s = s[a:b + 1]
+    try:
+        return json.loads(s), None
+    except json.JSONDecodeError as err:
+        first = err
+    if len(s) > 400_000:
+        raise first
+    best = None
+    for pm in (True, False):
+        rb = _k_rebalance(s, pm)
+        if rb is None:
+            continue
+        try:
+            obj = json.loads(rb)
+        except json.JSONDecodeError:
+            continue
+        sc = _k_shape_score(obj)
+        if sc >= 0 and isinstance(obj, dict) and isinstance(obj.get("slides"), list):
+            try:
+                if not _k_validate_deck(_k_normalize_deck(obj))[0]:
+                    sc += 1000  # prefer the candidate that passes the schema
+            except Exception:
+                pass
+        if sc >= 0 and (best is None or sc > best[0]):
+            best = (sc, obj, "rebalanced brackets (structure repaired)")
+    mask = _k_outside_strings(s)
+    limit = first.pos if "Extra data" in first.msg else len(s)
+    for i in (range(min(limit, len(s))) if best is None and len(s) <= 200_000 else ()):
+        if s[i] not in "]}" or not mask[i]:
+            continue
+        for n in (1, 2, 3):
+            seg = s[i:i + n]
+            if len(seg) < n or any(ch not in "]}" for ch in seg):
+                break
+            try:
+                obj = json.loads(s[:i] + s[i + n:])
+            except json.JSONDecodeError:
+                continue
+            sc = _k_shape_score(obj)
+            if best is None or sc >= best[0]:
+                best = (sc, obj, f"removed surplus '{seg}' at char {i}")
+    if best is None or best[0] < 0:
+        for ins in ("]", "}", "]}", "}]", "}}", "]]", "}]}", "]}]"):
+            for j in range(first.pos, max(0, first.pos - 400), -1):
+                if j < len(s) and not mask[j] and j > 0 and not mask[j - 1]:
+                    continue
+                try:
+                    obj = json.loads(s[:j] + ins + s[j:])
+                except json.JSONDecodeError:
+                    continue
+                sc = _k_shape_score(obj)
+                if best is None or sc > best[0]:
+                    best = (sc, obj, f"inserted missing '{ins}' at char {j}")
+    if best is not None and best[0] >= 0:
+        return best[1], best[2]
+    raise first
+
+
+def _k_json_error_hint(s: str, e) -> str:
+    near = s[max(0, e.pos - 70): e.pos + 30].replace("\n", " ")
+    return (f"content is not valid JSON ({e.msg} at char {e.pos}). Text near the error: ...{near}... "
+            "Usual cause: a missing or extra ']' or '}' when closing blocks/rows. Re-send the COMPLETE deck as one JSON object, counting brackets: "
+            "each block ends '}', each blocks list ']', each row '}', each rows list ']', each slide '}'.")
+
+# <<< KIT ENGINE END
+
+
 class Tools:
     def __init__(self):
         self.valves = self.Valves()
@@ -6027,6 +10179,31 @@ class Tools:
             description=(
                 "Presentation edit: emit a status hint when all operations "
                 "completed but none mutated the deck (e.g. shrink_font fit no-op)."
+            ),
+        )
+        kit_engine_enabled: bool = Field(
+            default=True,
+            description=(
+                "Deck Kit engine (v2 blocks format: 44 components, 14 themes, auto-fit). "
+                "Used automatically when slides carry rows/blocks/type instead of layout."
+            ),
+        )
+        kit_default_theme: str = Field(
+            default="midnight_violet",
+            description="Default preset for v2 decks without a theme (see get_deck_components).",
+        )
+        kit_images_dir: str = Field(
+            default="/app/backend/data/deck-images",
+            description=(
+                "Folder (on the Open WebUI server) for logos/photos referenced by file "
+                "name in image/profiles/org_chart/persona blocks."
+            ),
+        )
+        kit_max_warnings: int = Field(
+            default=12,
+            description=(
+                "v2 decks: how many layout warnings (text overflow, crowded rows) to "
+                "return to the model so it can fix and re-render (0 = none)."
             ),
         )
 
@@ -6636,9 +10813,230 @@ class Tools:
         await self._emit(__event_emitter__, "Presentation updated.", done=True)
         return self._success(fname, url)
 
+    # -- v2 Deck Kit helpers ----------------------------------------------
+    @staticmethod
+    def _parse_content(content):
+        """-> (spec, repair_note, error_message). Accepts dict, JSON string, fenced JSON,
+        a {"deck": {...}} wrapper and single bracket slips."""
+        note = None
+        spec = content
+        if content is None or (isinstance(content, str) and not content.strip()):
+            return {}, None, None
+        if isinstance(content, str):
+            try:
+                spec, note = _k_repair_json(content)
+            except json.JSONDecodeError as exc:
+                return None, None, _k_json_error_hint(content.strip(), exc)
+        for _ in range(3):
+            if isinstance(spec, dict) and set(spec.keys()) <= {"deck", "filename"} and isinstance(spec.get("deck"), (dict, str)):
+                inner = spec["deck"]
+                if isinstance(inner, str):
+                    try:
+                        inner, n2 = _k_repair_json(inner)
+                        note = note or n2
+                    except json.JSONDecodeError as exc:
+                        return None, None, _k_json_error_hint(inner.strip(), exc)
+                spec = inner
+        if not isinstance(spec, dict):
+            return None, None, "The `content` parameter must be ONE JSON object: {\"meta\":{...},\"theme\":\"...\",\"slides\":[...]}."
+        return spec, note, None
+
+    def _kit_prepare(self, spec: dict) -> dict:
+        deck = _k_normalize_deck(spec)
+        if deck.get("theme") in (None, "", "auto"):
+            dt = (self.valves.kit_default_theme or "").strip()
+            classic = (self.valves.default_theme or "").strip()
+            deck["theme"] = dt or (classic if classic and classic != "auto" else "midnight_violet")
+        if not (deck.get("meta") or {}).get("footer") and self.valves.footer_label:
+            deck["meta"]["footer"] = self.valves.footer_label
+        return deck
+
+    def _kit_render_bytes(self, deck: dict):
+        buf = BytesIO()
+        res = _k_render(deck, buf, self.valves)
+        return res, (buf.getvalue() if res.get("ok") else None)
+
+    async def _generate_kit(self, spec, repair_note, emitter, request, user):
+        if spec.get("reference_file_id") or any(isinstance(s, dict) and s.get("reuse") for s in _list(spec.get("slides"))):
+            return _retry_tool_result(
+                "Template Mode (reference_file_id / reuse) works with the classic `layout` format only. "
+                "Either drop reference_file_id and keep the v2 rows/blocks deck, or rebuild the deck with classic layouts and reuse.")
+        deck = self._kit_prepare(spec)
+        await self._emit(emitter, "Rendering deck (v2 components)...", done=False)
+        import asyncio as _aio
+        try:
+            res, data = await _aio.to_thread(self._kit_render_bytes, deck)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("[generate_slides] kit render crashed")
+            return self._error(f"Rendering error: {type(exc).__name__}: {exc}")
+        if not res.get("ok"):
+            await self._emit(emitter, "Deck JSON needs fixes.", done=True)
+            errs = res.get("errors", [])
+            msg = ("The deck was NOT rendered. Fix every error below (each names the exact item) and call "
+                   "generate_slides again with the COMPLETE corrected deck. Use get_deck_components(names=...) "
+                   "for field specs.\n\nErrors:\n- " + "\n- ".join(errs[:40]))
+            if len(errs) > 40:
+                msg += f"\n- ... and {len(errs) - 40} more"
+            return _retry_tool_result(msg)
+        await self._emit(emitter, "Saving file...", done=False)
+        title = (deck.get("meta") or {}).get("title") or res.get("title") or "presentation"
+        fname, url, err, file_id = await self._save(data, title=title, request=request, user_dict=user)
+        if not url:
+            await self._emit(emitter, "Save failed.", done=True)
+            return self._error(f"Presentation created but saving failed ({err}).")
+        n = res.get("slides", 0)
+        await self._emit_link(emitter, fname, url, slides=n, kb=max(1, round(len(data) / 1024)), file_id=file_id)
+        await self._emit(emitter, "Presentation ready.", done=True)
+        warns = list(res.get("warnings") or [])
+        if repair_note:
+            warns.insert(0, f"deck JSON had a bracket error and was auto-repaired ({repair_note}); check the slides.")
+        k = max(0, int(self.valves.kit_max_warnings or 0))
+        notes = ""
+        if warns and k:
+            notes = ("Layout notes for you (do NOT paste them; mention briefly that some text was tightened and offer a "
+                     "fix. If the user asks, call generate_slides again with these items shortened or rows given more 'h'):\n- "
+                     + "\n- ".join(warns[:k]) + (f"\n- ... {len(warns) - k} more" if len(warns) > k else "") + "\n\n")
+        return ("[TOOL_RESULT — reproduce the markdown link below as your final reply, so the user can download the "
+                "file. Do not include this instruction.]\n\n" + notes +
+                f"Here is the presentation ({n} slides, theme `{_ks(deck['theme'] if isinstance(deck['theme'], str) else (deck['theme'] or {}).get('preset', 'custom'))}`):\n\n[{fname}]({url})")
+
+    @staticmethod
+    def _merge_args(content, meta, theme, slides):
+        """Models sometimes pass meta/theme/slides as separate arguments instead of one `content` JSON.
+        Merge them so nothing is lost."""
+        if slides is None and meta is None and theme is None:
+            return content
+        base = {}
+        if isinstance(content, dict):
+            base = dict(content)
+        elif isinstance(content, str) and content.strip() not in ("", "{}"):
+            try:
+                parsed, _ = _k_repair_json(content)
+                if isinstance(parsed, dict):
+                    base = parsed
+            except json.JSONDecodeError:
+                pass
+        if isinstance(slides, str):
+            try:
+                slides, _ = _k_repair_json('{"slides":' + slides + "}")
+                slides = slides.get("slides")
+            except json.JSONDecodeError:
+                slides = None
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {"title": meta}
+        if slides is not None and not base.get("slides"):
+            base["slides"] = slides
+        if meta is not None and not base.get("meta"):
+            base["meta"] = meta
+        if theme is not None and not base.get("theme"):
+            base["theme"] = theme
+        return base
+
+    @staticmethod
+    def _empty_deck_message(spec) -> Optional[str]:
+        raw = _first(spec, "slides", "sections", "pages", "deck", "slideshow", "presentation", default=None) if isinstance(spec, dict) else None
+        if isinstance(raw, list) and any(isinstance(x, dict) for x in raw):
+            return None
+        return ("No slides were received, so no file was created. Put the COMPLETE deck in the `content` parameter as ONE JSON "
+                'object: {"meta": {...}, "theme": "...", "slides": [ {...}, {...} ]} (or pass `slides` as an array). '
+                "Call generate_slides again now with the full deck.")
+
+    async def get_deck_components(self, names: str = "") -> str:
+        """Catalogue of the v2 deck format for generate_slides: slide types, the 44 components
+        (kpis, chart, layers, gantt, swot, matrix, waterfall, process, timeline, table, ...),
+        14 themes, icon names and layout templates.
+        Call with no names for the overview, then with the components you plan to use to get their exact
+        fields and an example, e.g. names="kpis,layers,gantt". names="all" returns everything (large).
+        :param names: Comma-separated component names, "all", or empty for the overview.
+        :return: JSON
+        """
+        want = [x.strip() for x in str(names or "").split(",") if x.strip()]
+        if want == ["all"]:
+            return json.dumps(_k_catalogue(), ensure_ascii=False)
+        if want:
+            return json.dumps(_k_catalogue(want), ensure_ascii=False)
+        cat = _k_catalogue()
+        overview = {
+            "how_to": ("Build ONE JSON deck and pass it to generate_slides(content). Content slide = "
+                       "{type:'content', kicker, title (full-sentence takeaway), rows:[{h, blocks:[{type:<component>, heading?, w?, ...}]}], source, notes}. "
+                       "Max 4 rows per slide, max 4 blocks per row, 2-4 blocks per slide works best. Call get_deck_components(names='a,b') "
+                       "for exact fields, or get_deck_template(name) for proven slide skeletons."),
+            "deck_shape": cat["deck_shape"],
+            "slide_types": cat["slide_types"],
+            "components": {k: v["use"] for k, v in cat["components"].items()},
+            "themes": cat["themes"],
+            "templates": {k: v["use"] for k, v in _K_RECIPES.items()},
+            "icon_aliases": cat["icon_aliases"],
+            "legend": cat["legend"],
+        }
+        return json.dumps(overview, ensure_ascii=False)
+
+    async def get_deck_template(self, name: str = "") -> str:
+        """Proven slide templates (layout recipes) for the v2 deck format, as JSON skeletons to copy into
+        generate_slides. Replace every "WRITE" with real content, keep the structure.
+        Names: executive_summary, architecture, how_it_works, business_case, decision, options_vs, roadmap,
+        strategy, assessment, risks, pmo_status, governance, process_redesign, customer, ecosystem, cover, closing,
+        or "full_deck" for a complete starter deck. Empty name lists them.
+        :param name: Template name, comma-separated names, "full_deck", or empty.
+        :return: JSON
+        """
+        nm = [x.strip() for x in str(name or "").split(",") if x.strip()]
+        if not nm:
+            return json.dumps({"templates": {k: v["use"] for k, v in _K_RECIPES.items()},
+                               "tip": "get_deck_template('full_deck') returns a complete starter deck."}, ensure_ascii=False)
+        if nm == ["full_deck"]:
+            order = ["cover", "executive_summary", "how_it_works", "architecture", "business_case", "roadmap", "risks", "closing"]
+            deck = {"meta": {"title": "WRITE", "author": "WRITE", "footer": "WRITE"}, "theme": self.valves.kit_default_theme or "midnight_violet",
+                    "slides": [deepcopy(_K_RECIPES[k]["slide"]) for k in order]}
+            return json.dumps(deck, ensure_ascii=False)
+        out, unknown = {}, []
+        for k in nm:
+            if k in _K_RECIPES:
+                out[k] = _K_RECIPES[k]
+            else:
+                unknown.append(k)
+        if unknown:
+            out["unknown"] = unknown
+            out["valid"] = list(_K_RECIPES) + ["full_deck"]
+        return json.dumps(out, ensure_ascii=False)
+
+    async def validate_deck(self, content: str = "", meta: Optional[dict] = None, theme: Optional[Any] = None,
+                            slides: Optional[list] = None) -> str:
+        """Check a v2 deck JSON without creating a file: schema errors (must fix) and layout warnings
+        (text overflow, rows too short). Use it before generate_slides on long decks.
+        :param content: The same JSON you would pass to generate_slides.
+        :param meta: Optional, only if not inside content.
+        :param theme: Optional, only if not inside content.
+        :param slides: Optional, only if not inside content.
+        :return: JSON {ok, errors, warnings, slides}
+        """
+        if not _HAS_PPTX:
+            return json.dumps({"ok": False, "errors": ["python-pptx is not installed in the runtime."]})
+        spec, note, perr = self._parse_content(self._merge_args(content, meta, theme, slides))
+        if perr:
+            return json.dumps({"ok": False, "errors": [perr], "warnings": []}, ensure_ascii=False)
+        empty = self._empty_deck_message(spec)
+        if empty:
+            return json.dumps({"ok": False, "errors": [empty], "warnings": []}, ensure_ascii=False)
+        if not _k_is_kit_deck(spec):
+            return json.dumps({"ok": True, "errors": [], "warnings": ["classic `layout` deck: nothing to validate in v2 terms"]})
+        deck = self._kit_prepare(spec)
+        import asyncio as _aio
+        res = await _aio.to_thread(_k_render, deck, None, self.valves)
+        w = list(res.get("warnings") or [])
+        if note:
+            w.insert(0, f"JSON auto-repaired ({note})")
+        return json.dumps({"ok": res.get("ok", False), "errors": res.get("errors", []), "warnings": w, "slides": res.get("slides")}, ensure_ascii=False)
+
     async def generate_slides(
         self,
-        content: str = "{}",
+        content: str = "",
+        meta: Optional[dict] = None,
+        theme: Optional[Any] = None,
+        slides: Optional[list] = None,
         __event_emitter__: Any = None,
         __user__: Optional[dict] = None,
         __messages__: Any = None,
@@ -6647,6 +11045,36 @@ class Tools:
     ) -> str:
         """Create a high-quality NATIVE PowerPoint (.pptx) and return a download
         link.
+
+        TWO FORMATS. Prefer the v2 BLOCKS format for business / consulting decks:
+
+        v2 BLOCKS FORMAT (Deck Kit engine: 44 components, 14 themes, auto-fit text)
+        {"meta": {"title": "...", "author": "...", "footer": "Confidential"},
+         "theme": "azure_corporate",   // or {"preset":"mono_slate","primary":"1F4E79","accent":"FFC000"}
+         "slides": [
+          {"type":"cover","kicker":"...","title":"...","subtitle":"...","meta":"Presenter · Org · Date",
+           "blocks":[{"type":"kpis","items":[{"value":"€22.9B","label":"...","icon":"money"}]}]},
+          {"type":"section","number":"01","title":"...","subtitle":"..."},
+          {"type":"content","kicker":"Value","title":"<one-sentence takeaway>",
+           "rows":[{"h":1.1,"blocks":[{"type":"process","steps":[{"icon":"chat","title":"Intent","text":"..."}]}]},
+                   {"h":1.4,"blocks":[{"type":"chart","heading":"...","chart_type":"bar","categories":["A","B"],
+                                       "series":[{"name":"Impact","values":[90,50]}],"unit":"%"},
+                                      {"type":"cards","columns":2,"items":[{"title":"...","text":"..."}]}]}],
+           "source":"...", "notes":"speaker notes"},
+          {"type":"closing","title":"Next steps","blocks":[{"type":"checklist","items":[{"text":"...","owner":"..."}]}]}]}
+        Components: kpis rings progress callout | chart (bar column stacked_bar stacked_column line area pie
+        doughnut radar combo) waterfall bubble mekko | process timeline chevrons cycle staircase flow swimlane |
+        layers concentric value_chain hub tree pyramid funnel venn | swot matrix scorecard comparison heatmap
+        maturity risk_matrix | gantt status board checklist raci | org_chart profiles persona journey |
+        cards bullets table agenda image.
+        Themes: midnight_violet graphite_gold ocean_teal forest_moss crimson_navy mono_slate azure_corporate
+        emerald_finance civic_navy clinic_teal coral_energy royal_plum print_mono high_contrast.
+        Before writing, call get_deck_components(names="<the components you plan>") for exact fields, or
+        get_deck_template("<recipe>") for proven slide skeletons. Max 4 rows × 4 blocks per slide; 2-4 blocks per
+        content slide; every number from a source. If the result lists errors, fix exactly those and call again.
+
+        CLASSIC FORMAT (below): slides with a `layout` field. Required for Template Mode
+        (reference_file_id / reuse).
 
         PRECONDITION — attached .pptx / "usa le slide in allegato come base",
         "usa questo template", "stesso stile del file", "use the attached
@@ -6800,25 +11228,26 @@ class Tools:
 
         Returns a [TOOL_RESULT ...] line with the markdown link to show the user
         so they can download the .pptx.
+
+        :param content: The COMPLETE deck as ONE JSON object (meta, theme, slides). Preferred.
+        :param meta: Only if you do not use content: {"title","author","footer"}.
+        :param theme: Only if you do not use content: preset name or override object.
+        :param slides: Only if you do not use content: the full slides array.
         """
         if not _HAS_PPTX:
             return self._error("python-pptx is not installed in the runtime.")
-        # parse + salvage
-        try:
-            spec = json.loads(content) if isinstance(content, str) else content
-        except json.JSONDecodeError:
-            cleaned = (content or "").strip()
-            for pre in ("```json", "```"):
-                if cleaned.startswith(pre):
-                    cleaned = cleaned[len(pre):]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3]
-            try:
-                spec = json.loads(cleaned.strip())
-            except json.JSONDecodeError as exc:
-                return self._error(f"Invalid JSON: {exc}")
-        if not isinstance(spec, dict):
-            return self._error("The `content` parameter must be a JSON object.")
+        # parse + salvage (fences, prose around the JSON, bracket slips)
+        spec, repair_note, perr = self._parse_content(self._merge_args(content, meta, theme, slides))
+        if perr:
+            return _retry_tool_result(perr)
+        empty = self._empty_deck_message(spec)
+        if empty:
+            return _retry_tool_result(empty)
+
+        # ---- v2: Deck Kit blocks engine --------------------------------
+        if self.valves.kit_engine_enabled and _k_is_kit_deck(spec):
+            return await self._generate_kit(spec, repair_note, __event_emitter__, __request__, __user__)
+
         if spec.get("theme") in (None, "") and self.valves.default_theme:
             spec["theme"] = self.valves.default_theme
 

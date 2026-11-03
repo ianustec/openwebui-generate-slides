@@ -120,6 +120,7 @@ def main() -> None:
         ("ianustec_neura_reuse_local", ["examples/ianustec_neura_reuse_local.py"]),
         ("template_strict_mode_test", ["examples/template_strict_mode_test.py"]),
         ("inspect_master_p1_smoke", ["examples/inspect_master_p1_smoke.py"]),
+        ("kit_engine_smoke", ["examples/kit_engine_smoke.py"]),
     ]
     for label, argv in scripts:
         _run(label, argv)
