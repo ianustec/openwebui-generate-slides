@@ -6,7 +6,7 @@ funding_url: https://github.com/ianustec
 description: Generate high-quality native PowerPoint (.pptx) presentations from a JSON spec - layered graphics, native charts, icons, rich layouts. With an attached .pptx used as base/template, ALWAYS call inspect_slides first, then generate_slides with reference_file_id + per-slide reuse.
 requirements: python-pptx, pillow
 required_open_webui_version: 0.4.0
-version: 1.0.4
+version: 1.3.0
 license: MIT
 """
 
@@ -5941,6 +5941,185 @@ def _r_icon_grid(deck, slide_dict, page, cols=3):
 # The Tools class (OpenWebUI native function calling) Valves
 # ============================================================================
 
+# What generate_slides accepts. It lives in the `slides-schema` skill, not in the tool description,
+# which every chat pays for whether or not it makes a deck. Kept here too for the JSON errors, so
+# an instance without the skill still corrects itself. Same text as skills/slides-schema.md.
+_SLIDES_SCHEMA = """\
+Template workflow (when the user wants their .pptx look):
+1) `inspect_slides` → factual inventory JSON (verbatim in the reply).
+2) This tool: same `reference_file_id`, one output slide per template
+   slide to mirror, each with `reuse` {slide, keep_ids/drop_ids, text}.
+
+The `content` parameter MUST be a SINGLE JSON string (no text before or
+after, no markdown fence). Structure:
+
+{
+  "title": "Presentation title",
+  "subtitle": "Subtitle (optional)",
+  "author": "Author / company (optional)",
+  "theme": "auto",              // auto | midnight | forest | ocean |
+                                // coral | terracotta | teal | berry |
+                                // sage | cherry | charcoal | slate
+  "accent": "#C99A3B",          // opt: force the accent color
+  "footer": "Footer label",      // opt
+  "reference_file_id": "<file_id from inspect_slides, copied verbatim>",
+  "template_mapping": {          // opt: reference slide index per role
+    "default": 0, "cover": 0, "content": 1, "closing": 2
+  },
+  "template_edits": {            // opt: clone policy (defaults false)
+    "defaults": {
+      "drop_text": false,
+      "drop_placeholders": false,
+      "drop_offslide": true
+    },
+    "slides": [{ "index": 0, "drop_ids": [12, 18] }]
+  },
+  "slides": [
+    {
+      "layout": "cover",
+      "reuse": {
+        "slide": 0,
+        "keep_ids": [3, 4, 8, 9],
+        "drop_ids": [10],
+        "text": { "8": "New title", "9": "Subtitle" }
+      }
+    },
+    {
+      "reuse": {
+        "slide": 9,
+        "text": {
+          "9": "Project tracker",
+          "2": { "headers": ["Project", "Status"],
+                 "rows": [["Alpha", "Done"], ["Beta", "WIP"]] }
+        }
+      }
+    },
+    { "layout": "title_bullets", "title": "...", "bullets": [] }
+  ]
+}
+
+Per-slide `reuse` (preferred when mirroring a multi-slide template):
+clone template slide `reuse.slide` (0-based, same as inspect
+slides[].index), copy shapes by inspect `shapes[].id` via keep_ids /
+drop_ids, replace text in place via `text` — no classic layout overlay
+on that slide. Omit keep_ids to clone all cloneable shapes minus
+drop_ids. Requires reference_file_id + template_mode_enabled.
+`reference_file_id` is the inspect_slides `file_id` copied verbatim
+(a UUID, 8-4-4-4-12 hex). A number, a filename, or a slide index is
+rejected and you must call this tool again with the real id. Never
+invent one.
+
+Template tables (inspect `kind: "table"`, with `table.rows/cols/cells`)
+are refilled in place: `text["<table id>"] = {"headers": [...],
+"rows": [[...]]}` keeps the template cell formatting; rows/columns are
+added or removed to fit the data. If the slide also carries the
+classic `headers`/`rows` and the template slide has exactly one table,
+they are routed to that table automatically. A plain string on a table
+id is an error.
+
+`template_mapping` accepts explicit layout keys (e.g. `"table": 9`,
+`"team": 7`) which win over the coarse cover/section/closing/content
+roles when a slide is not using `reuse`.
+
+`drop_ids` use shape `id` from inspect JSON, not slide shape order.
+Set `drop_text` / remove text only when the user explicitly wants template
+wording removed (R8); default is to clone template textboxes.
+
+Requires admin valve `template_mode_enabled` for template rendering
+when `reference_file_id` is set. The valve alone does not clone a chat
+attachment: without `reference_file_id` (plus `template_mapping` and
+`template_edits` when needed) the deck is always the classic theme
+engine, even if the valve is true. If the valve is off, a provided
+reference is ignored and a classic deck is generated (NF8). If the
+valve is on and download, parse, or clone of the reference fails, the
+tool returns an error and does not produce a `.pptx` (F9). Do not
+retry the same request without `reference_file_id` when the user asked
+to keep their template. Template mode does not use chat attachments;
+only an explicit `reference_file_id` in this JSON applies
+the template.
+
+Each slide has a `layout` and fields consistent with that layout. Common
+fields: `title`, `eyebrow` (kicker, e.g. "PART I"), `subtitle`.
+
+AVAILABLE LAYOUTS and main fields:
+- "cover":        title, subtitle, author, eyebrow, icon, date, chips[]
+- "section":      number ("01"), eyebrow, title, lead   (chapter divider)
+- "title_bullets":title, eyebrow, bullets[] (or points/items)
+- "title_body":   title, eyebrow, body (paragraphs separated by \\n)
+- "two_column_text"/"comparison_two": left{}, right{} OR columns[];
+      each card: {heading, icon, subtitle, description, points[],
+      highlight:true, badge:"Most chosen"}
+- "kpi_row":      title, stats[] with {value, label, change}
+- "timeline_horizontal"/"process_flow": steps[] with {when, title, description}
+- "icon_list_vertical": items[] with {icon, title, description}
+- "icon_grid_2x2"/"icon_grid_3"/"pillars": items[] with {icon, title, description}
+- "chart":        chart_type (bar|line|area|pie|doughnut|radar|stacked_bar),
+      labels[] and values[]  OR  datasets[]{label,data[]};
+      opt. insight[]/insight_title for side text
+- "funnel"/"pyramid"/"cycle"/"quadrant"/"bullseye": nodes[] with
+      {label, description}; quadrant accepts x_axis/y_axis and points[]
+- "quote":        quote, author, role
+- "alert":        title, level (info|tip|warning|danger), body or bullets[]
+- "table":        headers[], rows[] (lists or list of dicts)
+- "text_image_right"/"image_left_text_right": title, bullets[]/body,
+      image_hint ("stock query") or image_url or base64, or an image
+      of the template: "image": {"template_media": "<inspect images[].ref>"}
+      (needs reference_file_id)
+- "image_full_caption": title, subtitle, image_hint/image_url/image
+- "image_grid": title, images[] (each like `image` above)
+- "closing":      title, eyebrow, takeaways[], contact
+
+DESIGN GUIDELINES (follow them):
+- "Sandwich" structure: start with "cover", use "section" between macro
+  topics, end with "closing". Alternate layouts: do NOT repeat the same
+  bulleted-list slide back to back.
+- 3-6 short bullets per slide. Prefer data/numbers: use "kpi_row",
+  "chart", "funnel"/"pyramid" instead of long lists.
+- Use `eyebrow` to number the parts ("PART I — CONTEXT").
+- Icons: names like target, rocket, lightbulb, shield, lock, users,
+  trending-up, bar-chart, cloud, cpu, dollar-sign, check-circle, award,
+  layers, scale, workflow, globe, calendar, book-open, settings.
+- Choose `theme:"auto"` if unspecified: it is inferred from the content.
+- 10-18 slides for a full deck; do not generate walls of text.
+
+Returns a [TOOL_RESULT ...] line with the markdown link to show the user
+so they can download the .pptx.
+
+#### Slide layouts (PowerPoint-faithful)
+Pick `layout` per slide from the catalog below; each layout maps 1:1 to a native PPTX layout.
+- Title/structure: `cover`, `section`, `title_only`, `title_body`, `title_bullets`, `closing`, `blank`
+- Text: `two_column_text`, `text_image_right`, `image_left_text_right`
+- Image: `image_full_caption`, `image_grid`
+- Lists: `icon_list_vertical`, `icon_grid_2x2`, `icon_grid_3`
+- Data: `kpi_row`, `chart`, `timeline_horizontal`, `process_flow`, `comparison_two`, `quote`
+
+#### Diagrams (Gamma-style SVG)
+For visual concepts use `layout: "<diagram_name>"` OR `layout: "diagram"` with `diagram_type: "..."`. Schema:
+```
+{"layout": "funnel", "title": "...", "lead": "...",
+ "nodes": [{"label": "Lead", "description": "...", "value": 1000, "icon": "users"}, ...]}
+```
+Top-level diagram aliases (use as `layout` directly): `funnel`, `pyramid`, `cycle`, `venn`, `quadrant`, `bullseye`, `pillars`, `iceberg`, `roadmap`.
+Full catalog (use via `layout: "diagram"` + `diagram_type`):
+- Linear/sequence: `minimal_path`, `road`, `semicircle_road`, `swoosh`, `slope`, `chain`, `ribbon_arrows`, `square_arrows`, `arrow_bars`, `signs`, `ideas`
+- Cyclic: `orbit`, `infinity`, `pinwheel`, `gears`, `solar_system`
+- Hierarchy: `concentric_circles`, `pyramid`, `iceberg`, `nested_diamond`, `packed_circles`, `soap_bubbles`
+- Comparison: `venn`, `linear_venn`, `linear_venn_filled`, `versus`, `quadrant`
+- Funnel/inputs: `funnel`, `minimal_funnel`, `funnel_3d`, `inputs`
+- Decision: `diamonds`, `puzzle`
+- Target/focus: `bullseye`, `circle_hero`, `impact`, `hot_air_balloons`
+- Support/structure: `pillar`, `isometric_building`, `oval`
+- Network/grid/globe: `connected_circles`, `isometric_globe`, `isometric_dashed_squares`
+- Image-style: `notes_collage`, `leaf`, `arch`, `image_arch`, `semicircle`
+
+Diagram selection rules:
+- 2-7 nodes per diagram (each renderer caps at its sweet spot, extras are dropped).
+- Pick geometry by intent: `funnel` for conversion, `pyramid` for hierarchy/maslow, `cycle`/`orbit` for continuous loops, `venn` for overlap, `quadrant` for 2x2 matrices, `bullseye` for goals/priorities, `pillars` for foundational themes, `iceberg` for visible-vs-hidden, `roadmap`/`chain` for sequential steps, `gears` for interlocking processes, `versus` for binary tradeoffs, `inputs` for many-to-one aggregation.
+- Always provide concise `label` (≤4 words). `description` only when geometry leaves room (skip for `chain`, `signs`, `pinwheel`, `gears`, `versus` works without).
+- Use `value` for funnels/slopes/bubbles when you have real numbers.
+"""
+
+
 class Tools:
     def __init__(self):
         self.valves = self.Valves()
@@ -6645,8 +6824,9 @@ class Tools:
         __metadata__: Any = None,
         __request__: Any = None,
     ) -> str:
-        """Create a high-quality NATIVE PowerPoint (.pptx) and return a download
-        link.
+        """Create a high-quality NATIVE PowerPoint (.pptx) from a JSON spec and return a download link.
+
+        Read the `slides-schema` skill first: it has the JSON structure, the layouts and the design guidelines.
 
         PRECONDITION — attached .pptx / "usa le slide in allegato come base",
         "usa questo template", "stesso stile del file", "use the attached
@@ -6660,146 +6840,6 @@ class Tools:
         is `inspect_slides`. If the user asks only for the inspect JSON, do not
         call generate_slides and do not replace the tool JSON with a markdown
         summary.
-
-        Template workflow (when the user wants their .pptx look):
-        1) `inspect_slides` → factual inventory JSON (verbatim in the reply).
-        2) This tool: same `reference_file_id`, one output slide per template
-           slide to mirror, each with `reuse` {slide, keep_ids/drop_ids, text}.
-
-        The `content` parameter MUST be a SINGLE JSON string (no text before or
-        after, no markdown fence). Structure:
-
-        {
-          "title": "Presentation title",
-          "subtitle": "Subtitle (optional)",
-          "author": "Author / company (optional)",
-          "theme": "auto",              // auto | midnight | forest | ocean |
-                                        // coral | terracotta | teal | berry |
-                                        // sage | cherry | charcoal | slate
-          "accent": "#C99A3B",          // opt: force the accent color
-          "footer": "Footer label",      // opt
-          "reference_file_id": "<file_id from inspect_slides, copied verbatim>",
-          "template_mapping": {          // opt: reference slide index per role
-            "default": 0, "cover": 0, "content": 1, "closing": 2
-          },
-          "template_edits": {            // opt: clone policy (defaults false)
-            "defaults": {
-              "drop_text": false,
-              "drop_placeholders": false,
-              "drop_offslide": true
-            },
-            "slides": [{ "index": 0, "drop_ids": [12, 18] }]
-          },
-          "slides": [
-            {
-              "layout": "cover",
-              "reuse": {
-                "slide": 0,
-                "keep_ids": [3, 4, 8, 9],
-                "drop_ids": [10],
-                "text": { "8": "New title", "9": "Subtitle" }
-              }
-            },
-            {
-              "reuse": {
-                "slide": 9,
-                "text": {
-                  "9": "Project tracker",
-                  "2": { "headers": ["Project", "Status"],
-                         "rows": [["Alpha", "Done"], ["Beta", "WIP"]] }
-                }
-              }
-            },
-            { "layout": "title_bullets", "title": "...", "bullets": [] }
-          ]
-        }
-
-        Per-slide `reuse` (preferred when mirroring a multi-slide template):
-        clone template slide `reuse.slide` (0-based, same as inspect
-        slides[].index), copy shapes by inspect `shapes[].id` via keep_ids /
-        drop_ids, replace text in place via `text` — no classic layout overlay
-        on that slide. Omit keep_ids to clone all cloneable shapes minus
-        drop_ids. Requires reference_file_id + template_mode_enabled.
-        `reference_file_id` is the inspect_slides `file_id` copied verbatim
-        (a UUID, 8-4-4-4-12 hex). A number, a filename, or a slide index is
-        rejected and you must call this tool again with the real id. Never
-        invent one.
-
-        Template tables (inspect `kind: "table"`, with `table.rows/cols/cells`)
-        are refilled in place: `text["<table id>"] = {"headers": [...],
-        "rows": [[...]]}` keeps the template cell formatting; rows/columns are
-        added or removed to fit the data. If the slide also carries the
-        classic `headers`/`rows` and the template slide has exactly one table,
-        they are routed to that table automatically. A plain string on a table
-        id is an error.
-
-        `template_mapping` accepts explicit layout keys (e.g. `"table": 9`,
-        `"team": 7`) which win over the coarse cover/section/closing/content
-        roles when a slide is not using `reuse`.
-
-        `drop_ids` use shape `id` from inspect JSON, not slide shape order.
-        Set `drop_text` / remove text only when the user explicitly wants template
-        wording removed (R8); default is to clone template textboxes.
-
-        Requires admin valve `template_mode_enabled` for template rendering
-        when `reference_file_id` is set. The valve alone does not clone a chat
-        attachment: without `reference_file_id` (plus `template_mapping` and
-        `template_edits` when needed) the deck is always the classic theme
-        engine, even if the valve is true. If the valve is off, a provided
-        reference is ignored and a classic deck is generated (NF8). If the
-        valve is on and download, parse, or clone of the reference fails, the
-        tool returns an error and does not produce a `.pptx` (F9). Do not
-        retry the same request without `reference_file_id` when the user asked
-        to keep their template. Template mode does not use chat attachments;
-        only an explicit `reference_file_id` in this JSON applies
-        the template.
-
-        Each slide has a `layout` and fields consistent with that layout. Common
-        fields: `title`, `eyebrow` (kicker, e.g. "PART I"), `subtitle`.
-
-        AVAILABLE LAYOUTS and main fields:
-        - "cover":        title, subtitle, author, eyebrow, icon, date, chips[]
-        - "section":      number ("01"), eyebrow, title, lead   (chapter divider)
-        - "title_bullets":title, eyebrow, bullets[] (or points/items)
-        - "title_body":   title, eyebrow, body (paragraphs separated by \\n)
-        - "two_column_text"/"comparison_two": left{}, right{} OR columns[];
-              each card: {heading, icon, subtitle, description, points[],
-              highlight:true, badge:"Most chosen"}
-        - "kpi_row":      title, stats[] with {value, label, change}
-        - "timeline_horizontal"/"process_flow": steps[] with {when, title, description}
-        - "icon_list_vertical": items[] with {icon, title, description}
-        - "icon_grid_2x2"/"icon_grid_3"/"pillars": items[] with {icon, title, description}
-        - "chart":        chart_type (bar|line|area|pie|doughnut|radar|stacked_bar),
-              labels[] and values[]  OR  datasets[]{label,data[]};
-              opt. insight[]/insight_title for side text
-        - "funnel"/"pyramid"/"cycle"/"quadrant"/"bullseye": nodes[] with
-              {label, description}; quadrant accepts x_axis/y_axis and points[]
-        - "quote":        quote, author, role
-        - "alert":        title, level (info|tip|warning|danger), body or bullets[]
-        - "table":        headers[], rows[] (lists or list of dicts)
-        - "text_image_right"/"image_left_text_right": title, bullets[]/body,
-              image_hint ("stock query") or image_url or base64, or an image
-              of the template: "image": {"template_media": "<inspect images[].ref>"}
-              (needs reference_file_id)
-        - "image_full_caption": title, subtitle, image_hint/image_url/image
-        - "image_grid": title, images[] (each like `image` above)
-        - "closing":      title, eyebrow, takeaways[], contact
-
-        DESIGN GUIDELINES (follow them):
-        - "Sandwich" structure: start with "cover", use "section" between macro
-          topics, end with "closing". Alternate layouts: do NOT repeat the same
-          bulleted-list slide back to back.
-        - 3-6 short bullets per slide. Prefer data/numbers: use "kpi_row",
-          "chart", "funnel"/"pyramid" instead of long lists.
-        - Use `eyebrow` to number the parts ("PART I — CONTEXT").
-        - Icons: names like target, rocket, lightbulb, shield, lock, users,
-          trending-up, bar-chart, cloud, cpu, dollar-sign, check-circle, award,
-          layers, scale, workflow, globe, calendar, book-open, settings.
-        - Choose `theme:"auto"` if unspecified: it is inferred from the content.
-        - 10-18 slides for a full deck; do not generate walls of text.
-
-        Returns a [TOOL_RESULT ...] line with the markdown link to show the user
-        so they can download the .pptx.
         """
         if not _HAS_PPTX:
             return self._error("python-pptx is not installed in the runtime.")
@@ -6816,9 +6856,9 @@ class Tools:
             try:
                 spec = json.loads(cleaned.strip())
             except json.JSONDecodeError as exc:
-                return self._error(f"Invalid JSON: {exc}")
+                return self._error(f"Invalid JSON: {exc}\n\n{_SLIDES_SCHEMA}")
         if not isinstance(spec, dict):
-            return self._error("The `content` parameter must be a JSON object.")
+            return self._error(f"The `content` parameter must be a JSON object.\n\n{_SLIDES_SCHEMA}")
         if spec.get("theme") in (None, "") and self.valves.default_theme:
             spec["theme"] = self.valves.default_theme
 

@@ -2,6 +2,10 @@
 
 All notable changes to the Generate Slides Open WebUI tool.
 
+## [1.3.0] — Schema in a skill
+
+The JSON structure, layouts and design guidelines move from the tool description to the `slides-schema` skill, so a chat that makes no deck does not carry them. A JSON error returns the schema, so an instance without the skill still corrects itself.
+
 ## [1.0.4] — Templates and presentation edit
 
 With the new valves left at their defaults, `generate_slides` still builds a deck from scratch, as in v1.0.3.
